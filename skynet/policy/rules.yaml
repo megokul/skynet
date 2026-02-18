@@ -1,0 +1,62 @@
+# SKYNET Policy Engine Rules
+# Defines risk classification and approval requirements
+
+risk_levels:
+  READ_ONLY:
+    description: "Read-only operations that don't modify system state"
+    approval_required: false
+    actions:
+      - git_status
+      - list_directory
+      - file_read
+      - run_tests
+      - lint_project
+
+  WRITE:
+    description: "Operations that modify files or create resources"
+    approval_required: true
+    confirmation_phrase: null
+    actions:
+      - file_write
+      - create_directory
+      - git_commit
+      - git_push
+      - install_dependencies
+      - build_project
+      - docker_build
+
+  ADMIN:
+    description: "Privileged operations requiring extra scrutiny"
+    approval_required: true
+    confirmation_phrase: "execute"
+    actions:
+      - shell_exec
+      - modify_registry
+      - manage_users
+      - firewall_change
+
+# Sandbox constraints
+sandbox:
+  allowed_paths:
+    - "E:/MyProjects"
+    - "E:/OpenClaw/projects"
+  denied_paths:
+    - "C:/Windows"
+    - "C:/Program Files"
+    - "/etc"
+    - "/usr/bin"
+
+# Network restrictions
+network:
+  allow_outbound: true
+  allow_inbound: false
+  blocked_domains: []
+
+# Rate limiting
+rate_limits:
+  default:
+    requests_per_minute: 120
+    requests_per_hour: 1000
+  admin:
+    requests_per_minute: 10
+    requests_per_hour: 100

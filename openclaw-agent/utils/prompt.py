@@ -1,5 +1,5 @@
 """
-OpenClaw Local Execution Agent — Terminal Confirmation Prompt
+CHATHAN Worker — Terminal Confirmation Prompt
 
 Asks the operator (the person sitting at the laptop) to approve a
 CONFIRM-tier action before it executes.  Runs in a background thread
@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 
-logger = logging.getLogger("openclaw.prompt")
+logger = logging.getLogger("chathan.prompt")
 
 
 async def ask_confirmation(

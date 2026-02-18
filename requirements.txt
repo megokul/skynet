@@ -1,0 +1,27 @@
+# SKYNET Control Plane API - Dependencies
+
+# FastAPI and web framework
+fastapi>=0.129.0
+uvicorn[standard]>=0.40.0
+pydantic>=2.12.5
+
+# AI/ML
+google-genai>=0.8.0
+
+# Utilities
+python-dotenv>=1.2.1
+httpx>=0.28.1
+aiohttp>=3.13.3
+python-telegram-bot>=21.0,<22.0
+aiosqlite>=0.20.0
+
+# Database (PostgreSQL for production, SQLite for dev)
+asyncpg>=0.29.0  # PostgreSQL async driver
+pgvector>=0.2.0  # Vector similarity extension for PostgreSQL
+
+# Vector embeddings (for memory system)
+sentence-transformers>=2.2.0  # Local embeddings (no API cost)
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

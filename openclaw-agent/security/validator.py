@@ -1,5 +1,5 @@
 """
-OpenClaw Local Execution Agent — Security Validator
+CHATHAN Worker — Security Validator
 
 Centralises every security gate:
   1. Emergency-stop check.
@@ -44,6 +44,13 @@ _CANONICAL_ROOTS: list[str] = [
 
 # Shell meta-characters that must never appear in a parameter value.
 _SHELL_META = re.compile(r"[;&|`$(){}!<>\"\']")
+
+# Parameters exempt from shell-metacharacter and length checks.
+# "content" carries source code, which naturally contains quotes, braces, etc.
+# "description" carries repo descriptions which may contain special chars.
+# "message" carries commit messages which may contain quotes.
+# "messages", "system", "tools" carry AI prompts for ollama_chat — never shell-interpolated.
+_SANITISE_EXEMPT_KEYS: set[str] = {"content", "description", "message", "messages", "system", "tools"}
 
 
 # ------------------------------------------------------------------
@@ -120,14 +127,20 @@ def validate_params(params: dict[str, Any] | None) -> None:
     """
     Shallow sanitisation of parameter values.
 
-    * Rejects shell metacharacters in string values.
-    * Rejects excessively long values (> 4 096 chars).
+    * Rejects shell metacharacters in string values (except exempt keys).
+    * Rejects excessively long values (> 4 096 chars, except exempt keys).
+    * Exempt keys (``content``, ``description``, ``message``) bypass these
+      checks because they carry source code or free-text that naturally
+      contains quotes, braces, and other special characters.  They are
+      never interpolated into shell commands.
     """
     if not params:
         return
 
     for key, value in params.items():
         if not isinstance(value, str):
+            continue
+        if key in _SANITISE_EXEMPT_KEYS:
             continue
         if len(value) > 4096:
             raise SecurityViolation(

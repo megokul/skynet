@@ -1,6 +1,25 @@
-# OpenClaw Gateway Server — Python dependencies
+# OpenClaw Gateway Server v2 — Python dependencies
 #
 # Install:  pip install -r requirements.txt
 
+# Core networking
 websockets>=14.0,<15.0
 aiohttp>=3.10,<4.0
+
+# Telegram bot
+python-telegram-bot>=21.0,<22.0
+
+# Database
+aiosqlite>=0.20.0,<1.0
+
+# AI providers
+google-genai>=1.0
+groq>=0.8.0
+openai>=1.0
+anthropic>=0.30.0
+
+# HTTP client (web search, API calls)
+httpx>=0.27.0
+
+# AWS S3 (artifact storage)
+boto3>=1.34.0

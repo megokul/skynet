@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  # SKYNET Control Plane API
+  skynet-api:
+    build:
+      context: .
+      dockerfile: docker/skynet/Dockerfile
+    container_name: skynet-api
+    ports:
+      - "8000:8000"
+    environment:
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - SKYNET_DB_PATH=/app/data/skynet.db
+    volumes:
+      - skynet-data:/app/data
+      - ./skynet:/app/skynet:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - skynet-network
+
+  openclaw-gateway:
+    build:
+      context: ./openclaw-gateway
+      dockerfile: Dockerfile
+    container_name: openclaw-gateway
+    ports:
+      - "8765:8765"  # WebSocket
+      - "8766:8766"  # HTTP API
+    environment:
+      - SKYNET_AUTH_TOKEN=${SKYNET_AUTH_TOKEN}
+      - SKYNET_ORCHESTRATOR_URL=http://skynet-api:8000
+      - OPENCLAW_GATEWAY_URL=http://openclaw-gateway:8766
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_ALLOWED_USER_ID=${TELEGRAM_ALLOWED_USER_ID}
+      - DISABLE_TELEGRAM_BOT=${DISABLE_TELEGRAM_BOT:-0}
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+      - OPENCLAW_LOG_LEVEL=${OPENCLAW_LOG_LEVEL:-INFO}
+    volumes:
+      - openclaw-data:/app/data
+    depends_on:
+      skynet-api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - skynet-network
+
+volumes:
+  skynet-data:
+    driver: local
+  openclaw-data:
+    driver: local
+
+networks:
+  skynet-network:
+    driver: bridge

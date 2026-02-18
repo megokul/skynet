@@ -1,15 +1,15 @@
 """
-OpenClaw Gateway Server — HTTP API
+SKYNET Gateway — HTTP API
 
-Lightweight HTTP server on loopback (127.0.0.1:8766) that lets you
-submit action requests to the connected laptop agent.
+Lightweight HTTP server on loopback (127.0.0.1:8766) that dispatches
+action requests to the connected CHATHAN worker.
 
 Endpoints:
 
-    POST /action        Submit an action request, wait for result.
-    POST /emergency-stop   Trigger emergency stop on agent.
-    POST /resume           Resume agent after emergency stop.
-    GET  /status           Check if an agent is connected.
+    POST /action           Submit an action request, wait for result.
+    POST /emergency-stop   Trigger emergency stop on CHATHAN worker.
+    POST /resume           Resume worker after emergency stop.
+    GET  /status           Check if a CHATHAN worker is connected.
 
 This API is **only** bound to localhost so it is not reachable from
 the internet.  If you need external access, put it behind an
@@ -32,7 +32,7 @@ from gateway import (
     send_resume,
 )
 
-logger = logging.getLogger("openclaw.api")
+logger = logging.getLogger("skynet.api")
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +64,7 @@ async def handle_action(request: web.Request) -> web.Response:
         )
 
     params = body.get("params", {})
+    confirmed = body.get("confirmed", False) is True
 
     if not is_agent_connected():
         return web.json_response(
@@ -71,7 +72,7 @@ async def handle_action(request: web.Request) -> web.Response:
         )
 
     try:
-        result = await send_action(action, params)
+        result = await send_action(action, params, confirmed=confirmed)
         return web.json_response(result)
     except asyncio.TimeoutError:
         return web.json_response(

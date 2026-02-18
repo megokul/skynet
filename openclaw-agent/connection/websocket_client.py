@@ -1,8 +1,8 @@
 """
-OpenClaw Local Execution Agent — WebSocket Connection Layer
+CHATHAN Worker — WebSocket Connection Layer
 
 Maintains a persistent, outbound-only WebSocket connection to the
-AWS OpenClaw gateway.  Handles:
+SKYNET Gateway.  Handles:
 
   - Token-based authentication via the ``Authorization`` header on connect.
   - Automatic reconnection with exponential back-off.
@@ -29,7 +29,7 @@ from websockets.asyncio.client import ClientConnection
 import config
 from router.action_router import route
 
-logger = logging.getLogger("openclaw.connection")
+logger = logging.getLogger("chathan.connection")
 
 
 async def run_agent() -> None:
@@ -63,7 +63,7 @@ async def _connect_and_listen() -> None:
     """Establish one WebSocket session and process messages until it closes."""
     if not config.AUTH_TOKEN:
         raise RuntimeError(
-            "OPENCLAW_AUTH_TOKEN is not set. "
+            "SKYNET_AUTH_TOKEN is not set. "
             "Export it as an environment variable before starting the agent."
         )
 

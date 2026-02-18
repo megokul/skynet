@@ -1,5 +1,5 @@
 """
-OpenClaw Local Execution Agent — Audit Logger
+CHATHAN Worker — Audit Logger
 
 Append-only JSONL audit trail.  Every inbound request and its outcome
 are recorded with a UTC timestamp, the resolved tier, and the result
@@ -20,7 +20,7 @@ from typing import Any
 
 from config import AUDIT_LOG_DIR, AUDIT_LOG_FILE
 
-logger = logging.getLogger("openclaw.audit")
+logger = logging.getLogger("chathan.audit")
 
 _log_path: str | None = None
 _write_lock = asyncio.Lock()

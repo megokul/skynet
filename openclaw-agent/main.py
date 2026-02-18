@@ -1,15 +1,18 @@
 """
-OpenClaw Local Execution Agent — Entry Point
+CHATHAN Worker — Entry Point
+
+SKYNET execution node. Connects to SKYNET Gateway via WebSocket
+and executes actions in a secure sandbox.
 
 Usage:
     python main.py
 
 Environment variables (required):
-    OPENCLAW_AUTH_TOKEN     Pre-shared bearer token.
-    OPENCLAW_GATEWAY_URL   WebSocket URL of the AWS OpenClaw gateway.
+    SKYNET_AUTH_TOKEN       Pre-shared bearer token.
+    SKYNET_GATEWAY_URL     WebSocket URL of the SKYNET Gateway.
 
 Optional:
-    OPENCLAW_LOG_LEVEL     DEBUG | INFO | WARNING | ERROR (default: INFO)
+    SKYNET_LOG_LEVEL       DEBUG | INFO | WARNING | ERROR (default: INFO)
 """
 
 from __future__ import annotations
@@ -42,12 +45,12 @@ def _configure_logging() -> None:
 def _print_banner() -> None:
     print(
         r"""
-  ___                    ____ _
- / _ \ _ __   ___ _ __  / ___| | __ ___      __
-| | | | '_ \ / _ \ '_ \| |   | |/ _` \ \ /\ / /
-| |_| | |_) |  __/ | | | |___| | (_| |\ V  V /
- \___/| .__/ \___|_| |_|\____|_|\__,_| \_/\_/
-      |_|   Local Execution Agent v1.0.0
+   ____ _   _    _  _____ _   _    _    _   _
+  / ___| | | |  / \|_   _| | | |  / \  | \ | |
+ | |   | |_| | / _ \ | | | |_| | / _ \ |  \| |
+ | |___|  _  |/ ___ \| | |  _  |/ ___ \| |\  |
+  \____|_| |_/_/   \_|_| |_| |_/_/   \_|_| \_|
+       SKYNET Execution Worker
 
   Gateway : {gateway}
   Roots   : {roots}
@@ -65,7 +68,7 @@ def _print_banner() -> None:
 def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
     """Graceful shutdown on Ctrl+C / SIGTERM."""
     def _shutdown(sig: signal.Signals) -> None:
-        logging.getLogger("openclaw").info("Received %s — shutting down.", sig.name)
+        logging.getLogger("chathan").info("Received %s — shutting down.", sig.name)
         for task in asyncio.all_tasks(loop):
             task.cancel()
 
@@ -82,14 +85,14 @@ async def _main() -> None:
     _configure_logging()
     _print_banner()
 
-    logger = logging.getLogger("openclaw")
+    logger = logging.getLogger("chathan")
 
     # Pre-flight checks.
     if not config.AUTH_TOKEN:
         logger.error(
-            "OPENCLAW_AUTH_TOKEN is not set. "
+            "SKYNET_AUTH_TOKEN is not set. "
             "Export it before starting:\n"
-            "  set OPENCLAW_AUTH_TOKEN=<your-token>"
+            "  set SKYNET_AUTH_TOKEN=<your-token>"
         )
         sys.exit(1)
 

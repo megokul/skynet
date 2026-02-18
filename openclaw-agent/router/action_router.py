@@ -1,5 +1,5 @@
 """
-OpenClaw Local Execution Agent — Action Router
+CHATHAN Worker — Action Router
 
 Orchestrates the full lifecycle of an inbound action request:
 
@@ -23,6 +23,7 @@ from typing import Any
 from audit.logger import log_event
 from config import Tier
 from executor.actions import ACTION_REGISTRY
+from executor.locks import acquire_lock, release_lock
 from security.rate_limiter import RateLimitExceeded, SlidingWindowRateLimiter
 from security.validator import (
     SecurityViolation,
@@ -32,7 +33,7 @@ from security.validator import (
 )
 from utils.prompt import ask_confirmation
 
-logger = logging.getLogger("openclaw.router")
+logger = logging.getLogger("chathan.router")
 
 # Module-level rate limiter — shared across the agent lifetime.
 _rate_limiter = SlidingWindowRateLimiter()
@@ -113,23 +114,33 @@ async def route(message: dict[str, Any]) -> dict[str, Any]:
 
         # ---- Gate 4: Tier dispatch ----
         if tier is Tier.CONFIRM:
-            approved = await ask_confirmation(action, params, request_id)
-            if not approved:
-                await log_event(
-                    request_id=request_id,
-                    action=action,
-                    tier=tier_label,
-                    params=params,
-                    outcome="DENIED_BY_OPERATOR",
-                    duration_ms=_elapsed_ms(start),
-                )
-                return _error_response(
-                    request_id, action, "Operator denied the action."
-                )
+            # If the gateway already collected approval (e.g. via Telegram
+            # inline buttons), the message includes "confirmed": true and
+            # we skip the local terminal prompt.
+            already_confirmed = message.get("confirmed", False) is True
 
-        # ---- Execute ----
+            if not already_confirmed:
+                approved = await ask_confirmation(action, params, request_id)
+                if not approved:
+                    await log_event(
+                        request_id=request_id,
+                        action=action,
+                        tier=tier_label,
+                        params=params,
+                        outcome="DENIED_BY_OPERATOR",
+                        duration_ms=_elapsed_ms(start),
+                    )
+                    return _error_response(
+                        request_id, action, "Operator denied the action."
+                    )
+
+        # ---- Execute (with resource lock) ----
         logger.info("Executing %s (tier=%s, req=%s)", action, tier_label, request_id)
-        result = await executor_fn(params or {})
+        lock = await acquire_lock(action, params or {})
+        try:
+            result = await executor_fn(params or {})
+        finally:
+            release_lock(lock)
 
         await log_event(
             request_id=request_id,

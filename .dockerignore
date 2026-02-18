@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!README.md
+CLAUDE.md
+TODO.md
+SESSION_NOTES.md
+AGENT_GUIDE.md
+DEVELOPMENT.md
+
+# Tests
+test_*.py
+tests/
+pytest_cache/
+.pytest_cache/
+
+# Data
+data/
+*.db
+*.db-journal
+logs/
+*.log
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Temporary
+tmp/
+temp/
+*.tmp
+
+# OpenClaw (separate service)
+openclaw-agent/
+openclaw-gateway/

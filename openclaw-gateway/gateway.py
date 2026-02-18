@@ -1,11 +1,11 @@
 """
-OpenClaw Gateway Server — WebSocket Core
+SKYNET Gateway — WebSocket Core
 
-Accepts exactly one agent connection at a time (your laptop).
-Provides an internal API for other components (HTTP API, CLI) to
+Accepts exactly one CHATHAN worker connection at a time.
+Provides an internal API for other components (HTTP API, Telegram) to
 enqueue action requests and await responses.
 
-Authentication: The agent must send ``Authorization: Bearer <token>``
+Authentication: The CHATHAN worker must send ``Authorization: Bearer <token>``
 in the WebSocket upgrade headers.  Connections without a valid token
 are rejected immediately.
 """
@@ -25,7 +25,7 @@ from websockets.asyncio.server import ServerConnection
 
 import gateway_config as cfg
 
-logger = logging.getLogger("openclaw.gateway")
+logger = logging.getLogger("skynet.gateway")
 
 # ---------------------------------------------------------------------------
 # Agent connection state
@@ -51,9 +51,13 @@ async def send_action(
     action: str,
     params: dict[str, Any] | None = None,
     timeout: int = cfg.ACTION_TIMEOUT_SECONDS,
+    confirmed: bool = False,
 ) -> dict[str, Any]:
     """
     Send an action request to the connected agent and wait for the response.
+
+    If *confirmed* is True, the agent skips its local terminal prompt
+    (approval was already collected remotely, e.g. via Telegram).
 
     Raises ``RuntimeError`` if no agent is connected.
     Raises ``asyncio.TimeoutError`` if the agent doesn't reply in time.
@@ -67,6 +71,7 @@ async def send_action(
         "request_id": request_id,
         "action": action,
         "params": params or {},
+        "confirmed": confirmed,
     }
 
     # Create a future for the response.

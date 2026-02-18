@@ -1,5 +1,5 @@
 """
-OpenClaw Gateway Server — Interactive CLI
+SKYNET Gateway — Interactive CLI
 
 Run from the EC2 instance to manually dispatch actions to the
 connected laptop agent.
@@ -72,7 +72,7 @@ def _print_menu() -> None:
     print(
         """
 ============================================================
-  OpenClaw Gateway — Action Dispatcher CLI
+  SKYNET Gateway — Action Dispatcher CLI
 ============================================================
   AUTO tier (executes immediately on laptop):
     1) git_status           2) run_tests

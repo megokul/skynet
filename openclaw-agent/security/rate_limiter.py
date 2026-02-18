@@ -1,5 +1,5 @@
 """
-OpenClaw Local Execution Agent — Rate Limiter
+CHATHAN Worker — Rate Limiter
 
 Sliding-window rate limiter using an in-memory deque of timestamps.
 Thread-safe via an asyncio lock.

@@ -1,5 +1,5 @@
 """
-OpenClaw Local Execution Agent — Action Executors
+CHATHAN Worker — Action Executors
 
 Each public function in this module corresponds to exactly one permitted
 action.  Functions receive validated, sanitised parameters and return a
@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import logging
 from typing import Any
 
-logger = logging.getLogger("openclaw.executor")
+logger = logging.getLogger("chathan.executor")
 
 # Upper bound on how long any single subprocess may run (seconds).
 _SUBPROCESS_TIMEOUT = 120
@@ -169,6 +170,60 @@ async def build_project(params: dict[str, Any]) -> dict[str, Any]:
         return {"returncode": 1, "stdout": "", "stderr": f"Unknown build tool: {tool}"}
 
 
+async def file_read(params: dict[str, Any]) -> dict[str, Any]:
+    """Read the contents of a file (path-jailed, 64 KB cap)."""
+    filepath = _require_param(params, "file")
+    loop = asyncio.get_running_loop()
+    try:
+        content = await loop.run_in_executor(None, _read_file_sync, filepath)
+        return {"returncode": 0, "stdout": content, "stderr": ""}
+    except OSError as exc:
+        return {"returncode": 1, "stdout": "", "stderr": str(exc)}
+
+
+def _read_file_sync(filepath: str) -> str:
+    with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+        content = fh.read()
+    if len(content) > 65536:
+        return content[:65536] + "\n... (truncated at 64 KB)"
+    return content
+
+
+async def list_directory(params: dict[str, Any]) -> dict[str, Any]:
+    """List files and subdirectories (path-jailed)."""
+    directory = _require_param(params, "directory")
+    recursive = params.get("recursive", False) is True
+    loop = asyncio.get_running_loop()
+    try:
+        listing = await loop.run_in_executor(
+            None, _list_dir_sync, directory, recursive, 0,
+        )
+        return {"returncode": 0, "stdout": listing, "stderr": ""}
+    except OSError as exc:
+        return {"returncode": 1, "stdout": "", "stderr": str(exc)}
+
+
+def _list_dir_sync(directory: str, recursive: bool, depth: int) -> str:
+    MAX_DEPTH = 3
+    MAX_ENTRIES = 500
+    entries: list[str] = []
+    count = 0
+    for entry in sorted(os.scandir(directory), key=lambda e: e.name):
+        if count >= MAX_ENTRIES:
+            entries.append("... (truncated)")
+            break
+        prefix = "  " * depth
+        if entry.is_dir():
+            entries.append(f"{prefix}[DIR] {entry.name}/")
+            if recursive and depth < MAX_DEPTH:
+                entries.append(_list_dir_sync(entry.path, True, depth + 1))
+        else:
+            size = entry.stat().st_size
+            entries.append(f"{prefix}{entry.name}  ({size} bytes)")
+        count += 1
+    return "\n".join(entries)
+
+
 # ------------------------------------------------------------------
 # CONFIRM-tier actions
 # ------------------------------------------------------------------
@@ -239,13 +294,69 @@ def _write_file_sync(filepath: str, content: str) -> None:
         fh.write(content)
 
 
+async def create_directory(params: dict[str, Any]) -> dict[str, Any]:
+    """Create a directory (and any missing parents)."""
+    directory = _require_param(params, "directory")
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, os.makedirs, directory, 0o755, True)
+        return {"returncode": 0, "stdout": f"Created {directory}", "stderr": ""}
+    except OSError as exc:
+        return {"returncode": 1, "stdout": "", "stderr": str(exc)}
+
+
+async def git_init(params: dict[str, Any]) -> dict[str, Any]:
+    """Initialize a new git repository and set default branch to main."""
+    cwd = _require_param(params, "working_dir")
+    result = await _run(["git", "init"], cwd=cwd)
+    if result["returncode"] == 0:
+        await _run(["git", "checkout", "-b", "main"], cwd=cwd)
+    return result
+
+
+async def git_add_all(params: dict[str, Any]) -> dict[str, Any]:
+    """Stage all changes including untracked files."""
+    cwd = _require_param(params, "working_dir")
+    return await _run(["git", "add", "-A"], cwd=cwd)
+
+
+async def git_push(params: dict[str, Any]) -> dict[str, Any]:
+    """Push to remote repository."""
+    cwd = _require_param(params, "working_dir")
+    remote = params.get("remote", "origin")
+    branch = params.get("branch", "main")
+    return await _run(["git", "push", "-u", remote, branch], cwd=cwd)
+
+
+async def gh_create_repo(params: dict[str, Any]) -> dict[str, Any]:
+    """Create a GitHub repository and set it as remote origin."""
+    cwd = _require_param(params, "working_dir")
+    repo_name = _require_param(params, "repo_name")
+    description = params.get("description", "")
+    private = params.get("private", False) is True
+
+    if not re.match(r"^[a-zA-Z0-9._-]+$", repo_name):
+        return {"returncode": 1, "stdout": "", "stderr": "Invalid repo name characters."}
+
+    visibility = "--private" if private else "--public"
+    args = ["gh", "repo", "create", repo_name, visibility, "--source=.", "--push"]
+    if description:
+        args.extend(["--description", description])
+
+    return await _run(args, cwd=cwd, timeout=60)
+
+
+async def open_in_vscode(params: dict[str, Any]) -> dict[str, Any]:
+    """Open a path in VS Code."""
+    path = _require_param(params, "path")
+    return await _run(["code", path])
+
+
 async def docker_build(params: dict[str, Any]) -> dict[str, Any]:
     """Build a Docker image from the project directory."""
     cwd = _require_param(params, "working_dir")
-    tag = params.get("tag", "openclaw-build:latest")
+    tag = params.get("tag", "chathan-build:latest")
 
-    # Restrict tag to alphanumeric, dashes, underscores, dots, colons, slashes.
-    import re
     if not re.match(r"^[a-zA-Z0-9._/:@-]+$", tag):
         return {"returncode": 1, "stdout": "", "stderr": "Invalid Docker tag characters."}
 
@@ -258,11 +369,95 @@ async def docker_compose_up(params: dict[str, Any]) -> dict[str, Any]:
     return await _run(["docker", "compose", "up", "-d"], cwd=cwd, timeout=300)
 
 
+async def close_app(params: dict[str, Any]) -> dict[str, Any]:
+    """
+    Close an application by its friendly name.
+
+    Only applications in config.CLOSEABLE_APPS can be terminated.
+    Uses ``taskkill /F /IM <process.exe>`` with a fixed argument list.
+    """
+    from config import CLOSEABLE_APPS
+
+    app_name = _require_param(params, "app").lower()
+
+    if app_name not in CLOSEABLE_APPS:
+        allowed = ", ".join(sorted(CLOSEABLE_APPS.keys()))
+        return {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": f"'{app_name}' is not in the allowed list. Allowed: {allowed}",
+        }
+
+    exe_name = CLOSEABLE_APPS[app_name]
+    return await _run(["taskkill", "/F", "/IM", exe_name])
+
+
+async def zip_project(params: dict[str, Any]) -> dict[str, Any]:
+    """
+    Create a zip archive of a project directory and return as base64.
+
+    Excludes heavy/generated directories: node_modules, __pycache__,
+    .git, venv, .venv, dist, build.
+    Cap: 10 MB after compression.
+    """
+    import base64
+    import io
+    import zipfile
+
+    working_dir = _require_param(params, "working_dir")
+
+    if not os.path.isdir(working_dir):
+        return {"returncode": 1, "stdout": "", "stderr": f"Not a directory: {working_dir}"}
+
+    EXCLUDE_DIRS = {"node_modules", "__pycache__", ".git", "venv", ".venv", "dist", "build", ".next"}
+    MAX_ZIP_SIZE = 10 * 1024 * 1024  # 10 MB
+
+    buf = io.BytesIO()
+    file_count = 0
+
+    try:
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, dirs, files in os.walk(working_dir):
+                # Skip excluded directories.
+                dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    arcname = os.path.relpath(fpath, working_dir)
+                    try:
+                        zf.write(fpath, arcname)
+                        file_count += 1
+                    except (PermissionError, OSError):
+                        continue  # Skip unreadable files.
+
+                    # Check size periodically.
+                    if buf.tell() > MAX_ZIP_SIZE:
+                        return {
+                            "returncode": 1,
+                            "stdout": "",
+                            "stderr": f"Zip exceeds {MAX_ZIP_SIZE // (1024*1024)} MB limit.",
+                        }
+    except Exception as exc:
+        return {"returncode": 1, "stdout": "", "stderr": f"Zip error: {exc}"}
+
+    zip_bytes = buf.getvalue()
+    encoded = base64.b64encode(zip_bytes).decode("ascii")
+
+    return {
+        "returncode": 0,
+        "stdout": encoded,
+        "stderr": f"Zipped {file_count} files ({len(zip_bytes)} bytes)",
+    }
+
+
 # ------------------------------------------------------------------
 # Action registry — maps action name → executor function.
 # The router uses this to dispatch; if an action is not in this dict
 # it cannot be executed regardless of tier.
 # ------------------------------------------------------------------
+
+# Import Ollama handler from its own module.
+from executor.ollama import ollama_chat
+
 
 ACTION_REGISTRY: dict[str, Any] = {
     # AUTO
@@ -271,10 +466,21 @@ ACTION_REGISTRY: dict[str, Any] = {
     "lint_project": lint_project,
     "start_dev_server": start_dev_server,
     "build_project": build_project,
+    "file_read": file_read,
+    "list_directory": list_directory,
+    "ollama_chat": ollama_chat,
     # CONFIRM
     "git_commit": git_commit,
     "install_dependencies": install_dependencies,
     "file_write": file_write,
+    "create_directory": create_directory,
+    "git_init": git_init,
+    "git_add_all": git_add_all,
+    "git_push": git_push,
+    "gh_create_repo": gh_create_repo,
+    "open_in_vscode": open_in_vscode,
     "docker_build": docker_build,
     "docker_compose_up": docker_compose_up,
+    "close_app": close_app,
+    "zip_project": zip_project,
 }

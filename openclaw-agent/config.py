@@ -1,5 +1,5 @@
 """
-OpenClaw Local Execution Agent — Configuration
+CHATHAN Worker — Configuration
 
 Central configuration for security policy, connection settings,
 allowed actions, path restrictions, and rate limiting.
@@ -16,13 +16,15 @@ from enum import Enum
 # Connection
 # ---------------------------------------------------------------------------
 GATEWAY_URL: str = os.environ.get(
-    "OPENCLAW_GATEWAY_URL",
-    "wss://100.50.2.232:8765/agent/ws",
+    "SKYNET_GATEWAY_URL",
+    os.environ.get("OPENCLAW_GATEWAY_URL", "wss://100.50.2.232:8765/agent/ws"),
 )
 
 # Pre-shared bearer token for WebSocket authentication.
 # Generate with: python -c "import secrets; print(secrets.token_urlsafe(48))"
-AUTH_TOKEN: str = os.environ.get("OPENCLAW_AUTH_TOKEN", "")
+AUTH_TOKEN: str = os.environ.get(
+    "SKYNET_AUTH_TOKEN", os.environ.get("OPENCLAW_AUTH_TOKEN", ""),
+)
 
 # Seconds between reconnection attempts after a drop.
 RECONNECT_DELAY_SECONDS: int = 5
@@ -52,14 +54,40 @@ AUTO_ACTIONS: set[str] = {
     "lint_project",
     "start_dev_server",
     "build_project",
+    "file_read",
+    "list_directory",
+    "ollama_chat",
 }
 
 CONFIRM_ACTIONS: set[str] = {
     "git_commit",
     "install_dependencies",
     "file_write",
+    "create_directory",
+    "git_init",
+    "git_add_all",
+    "git_push",
+    "gh_create_repo",
+    "open_in_vscode",
     "docker_build",
     "docker_compose_up",
+    "close_app",
+    "zip_project",
+}
+
+# Hardcoded allowlist of process names that close_app can terminate.
+# Only these executables can be closed — anything else is rejected.
+CLOSEABLE_APPS: dict[str, str] = {
+    "chrome": "chrome.exe",
+    "firefox": "firefox.exe",
+    "edge": "msedge.exe",
+    "notepad": "notepad.exe",
+    "code": "Code.exe",
+    "explorer": "explorer.exe",
+    "slack": "slack.exe",
+    "discord": "Discord.exe",
+    "spotify": "Spotify.exe",
+    "teams": "Teams.exe",
 }
 
 # Explicitly listed so the validator can log attempts against known-bad ops.
@@ -78,14 +106,15 @@ BLOCKED_ACTIONS: set[str] = {
 # Path restrictions
 # ---------------------------------------------------------------------------
 ALLOWED_ROOTS: list[str] = [
-    r"C:\Users\Gokul\Projects",
+    r"E:\MyProjects",
+    r"E:\OpenClaw\projects",
 ]
 
 
 # ---------------------------------------------------------------------------
 # Rate limiting
 # ---------------------------------------------------------------------------
-RATE_LIMIT_PER_MINUTE: int = 30
+RATE_LIMIT_PER_MINUTE: int = 120
 
 
 # ---------------------------------------------------------------------------
@@ -104,4 +133,6 @@ AUDIT_LOG_DIR: str = os.path.join(
     "logs",
 )
 AUDIT_LOG_FILE: str = "audit.jsonl"
-LOG_LEVEL: str = os.environ.get("OPENCLAW_LOG_LEVEL", "INFO")
+LOG_LEVEL: str = os.environ.get(
+    "SKYNET_LOG_LEVEL", os.environ.get("OPENCLAW_LOG_LEVEL", "INFO"),
+)

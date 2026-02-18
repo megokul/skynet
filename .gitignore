@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Databases
+*.db
+*.sqlite3
+
+# Data and logs
+data/
+certs/
+logs/
+*.jsonl
+*.log
+
+# Environment
+.env
+.env.*
+venv/
+.venv/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Temporary files
+nul
+*.tmp
+*.temp
+
+# Node (if needed)
+node_modules/

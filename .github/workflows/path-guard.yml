@@ -1,0 +1,20 @@
+name: Path Guard
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  stale-path-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check stale paths
+        run: python scripts/ci/check_stale_paths.py
