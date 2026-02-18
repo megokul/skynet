@@ -18,3 +18,6 @@ jobs:
 
       - name: Check stale paths
         run: python scripts/ci/check_stale_paths.py
+
+      - name: Check control-plane boundary
+        run: python scripts/ci/check_control_plane_boundary.py

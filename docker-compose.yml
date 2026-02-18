@@ -10,9 +10,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
       - SKYNET_DB_PATH=/app/data/skynet.db
+      - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL:-http://openclaw-gateway:8766}
+      - OPENCLAW_GATEWAY_URLS=${OPENCLAW_GATEWAY_URLS:-}
+      - SKYNET_API_KEY=${SKYNET_API_KEY:-}
     volumes:
       - skynet-data:/app/data
       - ./skynet:/app/skynet:ro
@@ -41,7 +43,6 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_ALLOWED_USER_ID=${TELEGRAM_ALLOWED_USER_ID}
       - DISABLE_TELEGRAM_BOT=${DISABLE_TELEGRAM_BOT:-0}
-      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
       - OPENCLAW_LOG_LEVEL=${OPENCLAW_LOG_LEVEL:-INFO}
     volumes:
       - openclaw-data:/app/data

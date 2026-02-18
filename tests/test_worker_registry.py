@@ -4,23 +4,25 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from skynet.ledger.schema import init_db
 from skynet.ledger.worker_registry import WorkerRegistry
 
 
-async def main() -> None:
+@pytest.mark.asyncio
+async def test_worker_registry_flow() -> None:
     db = await init_db(":memory:")
     registry = WorkerRegistry(db, heartbeat_timeout_seconds=1)
 
     worker = await registry.register_worker(
         worker_id="worker-1",
-        provider_name="local",
-        capabilities=["shell", "git"],
-        metadata={"host": "devbox"},
+        provider_name="openclaw",
+        capabilities=["route-task"],
+        metadata={"host": "gateway-a"},
     )
     assert worker is not None
     assert worker["status"] == "online"
-    assert "git" in worker["capabilities"]
 
     online = await registry.get_online_workers()
     assert len(online) == 1
@@ -31,7 +33,7 @@ async def main() -> None:
     online = await registry.get_online_workers()
     assert len(online) == 0
 
-    await registry.register_worker("worker-2", "mock")
+    await registry.register_worker("worker-2", "openclaw")
     await asyncio.sleep(1.2)
     cleaned = await registry.cleanup_stale_workers()
     assert cleaned >= 1
@@ -39,8 +41,3 @@ async def main() -> None:
     assert len(online) == 0
 
     await db.close()
-    print("[SUCCESS] WorkerRegistry tests passed")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

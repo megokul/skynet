@@ -1,21 +1,28 @@
-"""Test SKYNET FastAPI service."""
+"""Manual checks for SKYNET control-plane API."""
 
 import asyncio
 import json
+import os
 import sys
 from uuid import uuid4
 
 import httpx
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
 API_BASE = "http://localhost:8000"
+API_KEY = os.getenv("SKYNET_API_KEY", "").strip()
 
 
-async def test_health():
-    """Test health endpoint."""
+def _headers() -> dict[str, str]:
+    headers = {}
+    if API_KEY:
+        headers["X-API-Key"] = API_KEY
+    return headers
+
+
+async def test_health() -> bool:
     print("\n=== Testing /v1/health ===")
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{API_BASE}/v1/health")
@@ -24,139 +31,100 @@ async def test_health():
         return response.status_code == 200
 
 
-async def test_plan():
-    """Test plan generation endpoint."""
-    print("\n=== Testing /v1/plan ===")
-
-    request_data = {
-        "request_id": str(uuid4()),
-        "user_message": "Check git status and list all modified files",
-        "context": {
-            "repo": "https://github.com/user/repo",
-            "branch": "main",
-            "environment": "dev",
-            "recent_actions": [],
-        },
-        "constraints": {
-            "max_cost_usd": 1.50,
-            "time_budget_min": 30,
-            "allowed_targets": ["laptop"],
-            "requires_approval_for": ["deploy_prod", "send_email"],
-        },
+async def test_register_gateway() -> bool:
+    print("\n=== Testing /v1/register-gateway ===")
+    payload = {
+        "gateway_id": "manual-gw-1",
+        "host": "http://127.0.0.1:8766",
+        "capabilities": ["execute_task", "get_gateway_status", "list_sessions"],
+        "status": "online",
+        "metadata": {"source": "manual-check"},
     }
-
-    print("Request:")
-    print(json.dumps(request_data, indent=2))
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            response = await client.post(
-                f"{API_BASE}/v1/plan",
-                json=request_data,
-            )
-            print(f"\nStatus: {response.status_code}")
-
-            if response.status_code == 200:
-                result = response.json()
-                print("\nResponse:")
-                print(json.dumps(result, indent=2))
-                return True
-            else:
-                print(f"Error: {response.text}")
-                return False
-
-        except Exception as e:
-            print(f"Error: {e}")
-            return False
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{API_BASE}/v1/register-gateway",
+            json=payload,
+            headers=_headers(),
+        )
+        print(f"Status: {response.status_code}")
+        print(json.dumps(response.json(), indent=2))
+        return response.status_code == 200
 
 
-async def test_policy_check():
-    """Test policy check endpoint."""
-    print("\n=== Testing /v1/policy/check ===")
+async def test_register_worker() -> bool:
+    print("\n=== Testing /v1/register-worker ===")
+    payload = {
+        "worker_id": "manual-worker-1",
+        "gateway_id": "manual-gw-1",
+        "capabilities": ["shell", "filesystem"],
+        "status": "online",
+        "capacity": {"cpu": 4, "memory_mb": 8192},
+        "metadata": {"source": "manual-check"},
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{API_BASE}/v1/register-worker",
+            json=payload,
+            headers=_headers(),
+        )
+        print(f"Status: {response.status_code}")
+        print(json.dumps(response.json(), indent=2))
+        return response.status_code == 200
 
-    request_data = {
+
+async def test_route_task() -> bool:
+    print("\n=== Testing /v1/route-task ===")
+    payload = {
+        "task_id": str(uuid4()),
         "action": "git_status",
-        "target": "laptop",
-        "context": {},
+        "params": {"working_dir": "."},
+        "gateway_id": "manual-gw-1",
+        "confirmed": True,
     }
-
-    print("Request:")
-    print(json.dumps(request_data, indent=2))
-
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=45.0) as client:
         response = await client.post(
-            f"{API_BASE}/v1/policy/check",
-            json=request_data,
+            f"{API_BASE}/v1/route-task",
+            json=payload,
+            headers=_headers(),
         )
-        print(f"\nStatus: {response.status_code}")
+        print(f"Status: {response.status_code}")
+        if response.status_code == 200:
+            print(json.dumps(response.json(), indent=2))
+        else:
+            print(response.text)
+        return response.status_code == 200
+
+
+async def test_system_state() -> bool:
+    print("\n=== Testing /v1/system-state ===")
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{API_BASE}/v1/system-state", headers=_headers())
+        print(f"Status: {response.status_code}")
         print(json.dumps(response.json(), indent=2))
         return response.status_code == 200
 
 
-async def test_report():
-    """Test report endpoint."""
-    print("\n=== Testing /v1/report ===")
-
-    request_data = {
-        "request_id": str(uuid4()),
-        "step_reports": [
-            {
-                "step": 1,
-                "status": "completed",
-                "started_at": "2026-02-16T10:00:00Z",
-                "completed_at": "2026-02-16T10:05:00Z",
-                "output": "Git status executed successfully",
-                "error": None,
-                "artifacts_uploaded": ["s3://bucket/runs/123/git_status.txt"],
-            }
-        ],
-        "overall_status": "completed",
-        "metadata": {},
-    }
-
-    print("Request:")
-    print(json.dumps(request_data, indent=2))
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{API_BASE}/v1/report",
-            json=request_data,
-        )
-        print(f"\nStatus: {response.status_code}")
-        print(json.dumps(response.json(), indent=2))
-        return response.status_code == 200
-
-
-async def main():
-    """Run all tests."""
+async def main() -> int:
     print("=" * 70)
-    print("SKYNET FastAPI Service Tests")
+    print("SKYNET Control Plane API Manual Checks")
     print("=" * 70)
 
-    results = []
+    results = [
+        ("Health", await test_health()),
+        ("Register Gateway", await test_register_gateway()),
+        ("Register Worker", await test_register_worker()),
+        ("System State", await test_system_state()),
+        ("Route Task", await test_route_task()),
+    ]
 
-    # Test health
-    results.append(("Health Check", await test_health()))
-
-    # Test policy check
-    results.append(("Policy Check", await test_policy_check()))
-
-    # Test report
-    results.append(("Report", await test_report()))
-
-    # Test plan (this requires Planner to be initialized)
-    results.append(("Plan Generation", await test_plan()))
-
-    # Summary
     print("\n" + "=" * 70)
-    print("Test Summary")
+    print("Summary")
     print("=" * 70)
     for name, passed in results:
-        status = "[PASS]" if passed else "[FAIL]"
-        print(f"{status} - {name}")
+        print(f"{'[PASS]' if passed else '[FAIL]'} - {name}")
 
     all_passed = all(passed for _, passed in results)
-    print("\n" + ("All tests passed!" if all_passed else "Some tests failed"))
+    print("\n" + ("All checks passed!" if all_passed else "Some checks failed"))
     return 0 if all_passed else 1
 
 

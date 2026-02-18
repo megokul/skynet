@@ -1,4 +1,4 @@
-.PHONY: help install test test-all clean run-tests run-api run-bot run-worker run-demo dev-setup manual-check-api manual-check-e2e manual-check-delegate check-stale-paths smoke
+.PHONY: help install test test-all test-unit clean clean-data run-api run-bot dev-setup manual-check-api manual-check-e2e manual-check-delegate check-stale-paths check-control-boundary smoke format lint check
 
 # Default target
 help:
@@ -10,16 +10,13 @@ help:
 	@echo "  make dev-setup    - Complete development setup"
 	@echo ""
 	@echo "Testing:"
-	@echo "  make test         - Run core tests (fast)"
-	@echo "  make test-all     - Run all tests including integration"
-	@echo "  make test-unit    - Run unit tests only"
-	@echo "  make test-e2e     - Run end-to-end tests"
+	@echo "  make test         - Run control-plane tests (fast)"
+	@echo "  make test-all     - Run all remaining tests"
+	@echo "  make test-unit    - Alias of control-plane tests"
 	@echo ""
 	@echo "Running:"
 	@echo "  make run-api      - Start FastAPI service (dev)"
-	@echo "  make run-bot      - Start Telegram bot"
-	@echo "  make run-worker   - Start Celery worker"
-	@echo "  make run-demo     - Run interactive demo"
+	@echo "  make run-bot      - Start OpenClaw Telegram bot runtime"
 	@echo ""
 	@echo "Manual Checks:"
 	@echo "  make manual-check-api       - Hit running API endpoints"
@@ -33,7 +30,8 @@ help:
 	@echo "Development:"
 	@echo "  make format       - Format code (black)"
 	@echo "  make lint         - Run linters"
-	@echo "  make check-stale-paths - Fail on deprecated root path references"
+	@echo "  make check-stale-paths - Fail on stale root path references"
+	@echo "  make check-control-boundary - Enforce SKYNET control-plane boundaries"
 	@echo "  make smoke        - Quick repo health checks"
 	@echo "  make check        - Run all checks"
 
@@ -46,43 +44,24 @@ dev-setup: install
 	@echo "Development setup complete!"
 
 test:
-	@echo "Running core tests..."
-	python tests/test_planner_simple.py
-	python tests/test_dispatcher.py
-	python tests/test_orchestrator.py
-	python tests/test_worker.py
+	@echo "Running control-plane tests..."
+	python -m pytest tests/test_api_lifespan.py tests/test_api_provider_config.py tests/test_api_control_plane.py tests/test_job_locking.py tests/test_worker_registry.py -q
 
 test-all:
-	@echo "Running all tests..."
+	@echo "Running all remaining tests..."
 	python -m pytest tests/ -v
 
 test-unit:
-	@echo "Running unit tests..."
-	python tests/test_planner.py
-	python tests/test_dispatcher.py
-	python tests/test_orchestrator.py
-	python tests/test_local_provider.py
-
-test-e2e:
-	@echo "Running end-to-end tests..."
-	python tests/test_e2e.py
-	python tests/test_worker.py
+	@echo "Running control-plane unit tests..."
+	python -m pytest tests/test_api_lifespan.py tests/test_api_provider_config.py tests/test_api_control_plane.py -q
 
 run-api:
 	@echo "Starting SKYNET FastAPI service..."
 	python scripts/dev/run_api.py
 
 run-bot:
-	@echo "Starting Telegram bot..."
-	python scripts/run_telegram.py
-
-run-worker:
-	@echo "Starting Celery worker..."
-	celery -A skynet.queue.worker worker --loglevel=info
-
-run-demo:
-	@echo "Starting interactive demo..."
-	python scripts/run_demo.py
+	@echo "Starting OpenClaw Telegram bot runtime..."
+	python openclaw-gateway/main.py
 
 manual-check-api:
 	@echo "Running manual API checks against http://localhost:8000..."
@@ -100,7 +79,11 @@ check-stale-paths:
 	@echo "Checking for stale path references..."
 	python scripts/ci/check_stale_paths.py
 
-smoke: check-stale-paths
+check-control-boundary:
+	@echo "Checking SKYNET control-plane boundaries..."
+	python scripts/ci/check_control_plane_boundary.py
+
+smoke: check-stale-paths check-control-boundary
 	@echo "Running smoke checks..."
 	python scripts/dev/smoke.py
 

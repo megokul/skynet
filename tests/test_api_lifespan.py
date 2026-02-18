@@ -13,27 +13,24 @@ from skynet.api.main import app
 from skynet.api.routes import app_state
 
 
-def test_api_lifespan_initializes_shared_runtime(monkeypatch) -> None:
-    # Keep startup deterministic and avoid external AI dependency during this test.
-    monkeypatch.delenv("GOOGLE_AI_API_KEY", raising=False)
-    monkeypatch.setenv("EMBEDDING_PROVIDER", "mock")
-    monkeypatch.setenv("SKYNET_EXECUTION_PROVIDER", "local")
+def test_api_lifespan_initializes_control_plane(monkeypatch) -> None:
+    monkeypatch.delenv("OPENCLAW_GATEWAY_URLS", raising=False)
+    monkeypatch.setenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:8766")
 
     with TestClient(app) as client:
         response = client.get("/v1/health")
         assert response.status_code == 200
         payload = response.json()
-        assert payload["components"]["policy_engine"] == "ok"
+        assert payload["components"]["control_registry"] == "ok"
+        assert payload["components"]["gateway_client"] == "ok"
 
-        assert app_state.provider_monitor is not None
-        assert app_state.scheduler is not None
-        assert app_state.execution_router is not None
+        assert app_state.control_registry is not None
+        assert app_state.gateway_client is not None
         assert app_state.worker_registry is not None
         assert app_state.ledger_db is not None
 
     # Lifespan shutdown should clear app_state references.
-    assert app_state.provider_monitor is None
-    assert app_state.scheduler is None
-    assert app_state.execution_router is None
+    assert app_state.control_registry is None
+    assert app_state.gateway_client is None
     assert app_state.worker_registry is None
     assert app_state.ledger_db is None

@@ -1,10 +1,5 @@
 """
-SKYNET API Routes - FastAPI endpoint handlers.
-
-Implements the SKYNET control plane API:
-- POST /v1/plan - Generate execution plan
-- POST /v1/report - Receive progress updates
-- POST /v1/policy/check - Policy validation
+SKYNET API Routes - control-plane endpoint handlers.
 """
 
 from __future__ import annotations
@@ -12,99 +7,46 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime, timezone
-from typing import Any, TYPE_CHECKING
-from uuid import UUID
+from dataclasses import dataclass
+from typing import Any
+from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from skynet.api import schemas
-from skynet.api.schemas import (
-    PlanRequest,
-    PlanResponse,
-    ReportRequest,
-    ReportResponse,
-    PolicyCheckRequest,
-    PolicyCheckResponse,
-    HealthResponse,
-    ExecutionDecision,
-    ExecutionMode,
-    RiskLevel,
-    ModelPolicy,
-    ProviderType,
-    ExecutionStep,
-    ApprovalGate,
-    ArtifactConfig,
-    WorkerTarget,
-)
-from skynet.policy.engine import PolicyEngine
-
-if TYPE_CHECKING:
-    from skynet.core.planner import Planner
+from skynet.control_plane import ControlPlaneRegistry, GatewayClient
 
 logger = logging.getLogger("skynet.api")
 
 router = APIRouter(prefix="/v1", tags=["skynet"])
 
 
-# ============================================================================
-# Dependencies
-# ============================================================================
-
-
+@dataclass
 class AppState:
     """Application state container."""
 
-    planner: Planner | None = None
-    policy_engine: PolicyEngine | None = None
-    memory_manager: Any | None = None  # MemoryManager from skynet.memory
-    vector_indexer: Any | None = None  # VectorIndexer from skynet.memory
-    event_engine: Any | None = None  # EventEngine from skynet.events
-    provider_monitor: Any | None = None
-    scheduler: Any | None = None
-    execution_router: Any | None = None
+    control_registry: ControlPlaneRegistry | None = None
+    gateway_client: GatewayClient | None = None
     ledger_db: Any | None = None
     worker_registry: Any | None = None
-    report_store: dict[UUID, list[dict]] = {}  # Simple in-memory store
 
 
 app_state = AppState()
 _rate_limit_buckets: dict[str, tuple[float, int]] = {}
 
 
-def get_planner():
-    """Dependency: Get Planner instance."""
-    if app_state.planner is None:
-        raise HTTPException(status_code=503, detail="Planner not initialized")
-    return app_state.planner
+def get_control_registry() -> ControlPlaneRegistry:
+    """Dependency: Get shared control-plane registry."""
+    if app_state.control_registry is None:
+        raise HTTPException(status_code=503, detail="Control-plane registry not initialized")
+    return app_state.control_registry
 
 
-def get_policy_engine() -> PolicyEngine:
-    """Dependency: Get PolicyEngine instance."""
-    if app_state.policy_engine is None:
-        raise HTTPException(status_code=503, detail="PolicyEngine not initialized")
-    return app_state.policy_engine
-
-
-def get_execution_router():
-    """Dependency: Get shared ExecutionRouter instance."""
-    if app_state.execution_router is None:
-        raise HTTPException(status_code=503, detail="Execution router not initialized")
-    return app_state.execution_router
-
-
-def get_scheduler():
-    """Dependency: Get shared ProviderScheduler instance."""
-    if app_state.scheduler is None:
-        raise HTTPException(status_code=503, detail="Scheduler not initialized")
-    return app_state.scheduler
-
-
-def get_provider_monitor():
-    """Dependency: Get shared ProviderMonitor instance."""
-    if app_state.provider_monitor is None:
-        raise HTTPException(status_code=503, detail="Provider monitor not initialized")
-    return app_state.provider_monitor
+def get_gateway_client() -> GatewayClient:
+    """Dependency: Get shared OpenClaw gateway client."""
+    if app_state.gateway_client is None:
+        raise HTTPException(status_code=503, detail="Gateway client not initialized")
+    return app_state.gateway_client
 
 
 def _is_auth_required() -> bool:
@@ -171,623 +113,152 @@ def require_protected_route_access(
     return True
 
 
-def _redact_provider_dashboard(data: dict[str, Any]) -> dict[str, Any]:
-    """
-    Remove potentially sensitive provider error details from public responses.
-    """
-    redacted = dict(data)
-    providers = redacted.get("providers", {})
-    sanitized_providers: dict[str, dict[str, Any]] = {}
-    for name, details in providers.items():
-        details_copy = dict(details)
-        if details_copy.get("status") == "unhealthy":
-            details_copy["message"] = "Provider unhealthy (details redacted)"
-            details_copy["details"] = {}
-        sanitized_providers[name] = details_copy
-    redacted["providers"] = sanitized_providers
-
-    history = redacted.get("history", [])
-    sanitized_history = []
-    for snapshot in history:
-        snapshot_copy = dict(snapshot)
-        snap_providers = snapshot_copy.get("providers")
-        if isinstance(snap_providers, dict):
-            clean_snap_providers: dict[str, dict[str, Any]] = {}
-            for provider_name, provider_details in snap_providers.items():
-                pd = dict(provider_details)
-                if pd.get("status") == "unhealthy":
-                    pd["message"] = "Provider unhealthy (details redacted)"
-                    pd["details"] = {}
-                clean_snap_providers[provider_name] = pd
-            snapshot_copy["providers"] = clean_snap_providers
-        sanitized_history.append(snapshot_copy)
-    redacted["history"] = sanitized_history
-    return redacted
-
-
-# ============================================================================
-# POST /v1/plan - Generate Execution Plan
-# ============================================================================
-
-
-@router.post("/plan", response_model=PlanResponse)
-async def create_plan(
-    request: PlanRequest,
-    planner=Depends(get_planner),
-    policy: PolicyEngine = Depends(get_policy_engine),
-) -> PlanResponse:
-    """
-    Generate an execution plan from user intent.
-
-    This endpoint:
-    1. Uses AI (Gemini) to decompose the task into steps
-    2. Classifies risk level (LOW/MEDIUM/HIGH)
-    3. Determines approval gates
-    4. Returns structured execution plan
-    """
-    logger.info(f"Plan request {request.request_id}: {request.user_message[:50]}...")
-
-    try:
-        # Build context for planner
-        planner_context = {
-            "repo": request.context.repo,
-            "branch": request.context.branch,
-            "environment": request.context.environment.value,
-            "recent_actions": request.context.recent_actions,
-            "constraints": {
-                "max_cost_usd": request.constraints.max_cost_usd,
-                "time_budget_min": request.constraints.time_budget_min,
-                "allowed_targets": [t.value for t in request.constraints.allowed_targets],
-            },
-        }
-
-        # Generate plan using AI
-        plan_data = await planner.generate_plan(
-            job_id=str(request.request_id),
-            user_intent=request.user_message,
-            context=planner_context,
-        )
-
-        # For MVP: Skip PlanSpec creation due to structure mismatch
-        # Just get risk level directly from planner output
-        max_risk_level = plan_data.get("max_risk_level", "WRITE")
-
-        # Simple policy validation based on risk level
-        requires_approval = max_risk_level in ("WRITE", "ADMIN")
-
-        # Map risk level
-        risk_level_map = {
-            "READ_ONLY": RiskLevel.LOW,
-            "WRITE": RiskLevel.MEDIUM,
-            "ADMIN": RiskLevel.HIGH,
-        }
-        risk_level = risk_level_map.get(max_risk_level, RiskLevel.MEDIUM)
-
-        # Determine execution mode
-        execution_mode = ExecutionMode.EXECUTE
-        if requires_approval:
-            reason = "Requires approval before execution"
-        else:
-            reason = "Auto-approved (low risk)"
-
-        # Build execution steps
-        execution_steps = []
-        for idx, step in enumerate(plan_data.get("steps", []), start=1):
-            # Determine target based on step type
-            target = _determine_target(step, request.constraints.allowed_targets)
-
-            # Determine agent type based on step description
-            agent = _determine_agent(step)
-
-            execution_steps.append(
-                ExecutionStep(
-                    step=idx,
-                    agent=agent,
-                    action=step.get("command", step.get("description", "unknown")),
-                    target=target,
-                    description=step.get("description"),
-                    estimated_time_min=step.get("estimated_time_minutes"),
-                )
-            )
-
-        # Build approval gates
-        approval_gates = []
-        for idx, step in enumerate(plan_data.get("steps", []), start=1):
-            step_desc = step.get("description", "").lower()
-            step_command = step.get("command", "").lower()
-
-            # Check if step matches approval requirements
-            for approval_action in request.constraints.requires_approval_for:
-                if approval_action.lower() in step_desc or approval_action.lower() in step_command:
-                    approval_gates.append(
-                        ApprovalGate(
-                            gate=approval_action,
-                            required=True,
-                            when_step=idx,
-                            reason=f"Step involves {approval_action}",
-                        )
-                    )
-
-        # Build model policy (cost optimization)
-        model_policy = ModelPolicy(
-            default=ProviderType.LOCAL,
-            escalation=[ProviderType.FREE_API, ProviderType.PAID_API],
-        )
-
-        # Build decision
-        decision = ExecutionDecision(
-            mode=execution_mode,
-            risk_level=risk_level,
-            model_policy=model_policy,
-            reason=reason,
-        )
-
-        # Build artifact config
-        artifacts = ArtifactConfig(
-            s3_prefix=f"s3://skynet-artifacts/runs/{request.request_id}/",
-            retention_days=30,
-        )
-
-        # Build response
-        response = PlanResponse(
-            request_id=request.request_id,
-            decision=decision,
-            execution_plan=execution_steps,
-            approval_gates=approval_gates,
-            artifacts=artifacts,
-        )
-
-        logger.info(
-            f"Plan generated: {len(execution_steps)} steps, "
-            f"risk={risk_level.value}, mode={execution_mode.value}"
-        )
-
-        return response
-
-    except Exception as e:
-        logger.error(f"Plan generation failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Plan generation failed: {str(e)}")
-
-
-# ============================================================================
-# POST /v1/report - Receive Progress Updates
-# ============================================================================
-
-
-@router.post("/report", response_model=ReportResponse)
-async def receive_report(request: ReportRequest) -> ReportResponse:
-    """
-    Receive progress report from OpenClaw.
-
-    Stores execution progress and provides feedback.
-    """
-    logger.info(
-        f"Report received for {request.request_id}: "
-        f"{len(request.step_reports)} steps, status={request.overall_status.value}"
-    )
-
-    # Store report (simple in-memory for now, will use DB later)
-    if request.request_id not in app_state.report_store:
-        app_state.report_store[request.request_id] = []
-
-    app_state.report_store[request.request_id].append(
-        {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "step_reports": [report.dict() for report in request.step_reports],
-            "overall_status": request.overall_status.value,
-            "metadata": request.metadata,
-        }
-    )
-
-    # Determine next action based on status
-    next_action = None
-    if request.overall_status.value == "failed":
-        next_action = "Review error logs and retry failed steps"
-    elif request.overall_status.value == "completed":
-        next_action = "Task completed successfully"
-
-    return ReportResponse(
-        request_id=request.request_id,
-        received=True,
-        next_action=next_action,
-    )
-
-
-# ============================================================================
-# POST /v1/policy/check - Policy Validation
-# ============================================================================
-
-
-@router.post("/policy/check", response_model=PolicyCheckResponse)
-async def check_policy(
-    request: PolicyCheckRequest,
-    policy: PolicyEngine = Depends(get_policy_engine),
-) -> PolicyCheckResponse:
-    """
-    Check if an action is allowed by policy.
-
-    Used by OpenClaw to validate individual actions before execution.
-    """
-    logger.info(f"Policy check: action={request.action}, target={request.target}")
-
-    # Import here to avoid circular dependencies
-    from skynet.policy.rules import classify_action_risk, BLOCKED_ACTIONS
-
-    # Check if action is blocked
-    action_lower = request.action.lower()
-    if any(blocked in action_lower for blocked in BLOCKED_ACTIONS):
-        return PolicyCheckResponse(
-            allowed=False,
-            reason=f"Action '{request.action}' is blocked by policy",
-            requires_approval=False,
-            risk_level=RiskLevel.HIGH,
-        )
-
-    # Classify risk
-    risk_level_str = classify_action_risk(request.action)
-    risk_level_map = {
-        "READ_ONLY": RiskLevel.LOW,
-        "WRITE": RiskLevel.MEDIUM,
-        "ADMIN": RiskLevel.HIGH,
-    }
-    risk_level = risk_level_map.get(risk_level_str, RiskLevel.MEDIUM)
-
-    # Determine if approval required
-    requires_approval = policy.requires_approval(risk_level_str)
-
-    return PolicyCheckResponse(
-        allowed=True,
-        reason=f"Action classified as {risk_level_str}",
-        requires_approval=requires_approval,
-        risk_level=risk_level,
-    )
-
-
-# ============================================================================
-# POST /execute - Direct Synchronous Execution (SKYNET 2.0 - Phase 4)
-# ============================================================================
-
-
-@router.post("/execute", response_model=schemas.ExecuteResponse)
-async def execute_direct(
-    request: schemas.ExecuteRequest,
-    execution_router=Depends(get_execution_router),
+@router.post("/register-gateway", response_model=schemas.RegisterGatewayResponse)
+async def register_gateway(
+    request: schemas.RegisterGatewayRequest,
+    registry: ControlPlaneRegistry = Depends(get_control_registry),
+    gateway_client: GatewayClient = Depends(get_gateway_client),
     _authorized=Depends(require_protected_route_access),
-):
-    """
-    Execute task directly without queue (synchronous).
-
-    Bypasses Celery queue for immediate execution. Useful for:
-    - Interactive commands
-    - Health checks
-    - Quick queries
-    - Testing
-
-    Maximum timeout: 30 minutes (1800 seconds)
-    """
-    logger.info(f"Direct execution request received (timeout={request.timeout})")
-
-    # Execute directly
+) -> schemas.RegisterGatewayResponse:
+    """Register an OpenClaw gateway in SKYNET's control-plane registry."""
+    resolved_status = request.status
     try:
-        result = await execution_router.execute_plan(
-            execution_spec=request.execution_spec,
-            total_timeout=request.timeout,
-        )
+        status_data = await gateway_client.get_gateway_status(request.host)
+        if not status_data.get("agent_connected", False):
+            resolved_status = "degraded"
+    except Exception as exc:
+        logger.warning(f"Gateway status probe failed for {request.gateway_id}: {exc}")
+        resolved_status = "offline"
 
-        # Convert to response schema
-        step_results = [
-            schemas.ExecuteStepResult(
-                action=step.get("action", ""),
-                status=step.get("status", "unknown"),
-                output=step.get("output", ""),
-                stdout=step.get("stdout", ""),
-                stderr=step.get("stderr", ""),
-                error=step.get("error"),
+    record = registry.register_gateway(
+        gateway_id=request.gateway_id,
+        host=request.host,
+        capabilities=request.capabilities,
+        status=resolved_status,
+        metadata=request.metadata,
+    )
+    return schemas.RegisterGatewayResponse(**record)
+
+
+@router.post("/register-worker", response_model=schemas.RegisterWorkerResponse)
+async def register_worker(
+    request: schemas.RegisterWorkerRequest,
+    registry: ControlPlaneRegistry = Depends(get_control_registry),
+    _authorized=Depends(require_protected_route_access),
+) -> schemas.RegisterWorkerResponse:
+    """
+    Register worker metadata in SKYNET.
+
+    This stores infrastructure-level worker metadata only.
+    """
+    record = registry.register_worker(
+        worker_id=request.worker_id,
+        gateway_id=request.gateway_id,
+        capabilities=request.capabilities,
+        status=request.status,
+        capacity=request.capacity,
+        metadata=request.metadata,
+    )
+
+    if app_state.worker_registry is not None:
+        metadata = dict(request.metadata)
+        metadata["gateway_id"] = request.gateway_id
+        metadata["capacity"] = request.capacity
+        try:
+            await app_state.worker_registry.register_worker(
+                worker_id=request.worker_id,
+                provider_name="openclaw",
+                capabilities=request.capabilities,
+                metadata=metadata,
             )
-            for step in result.get("results", [])
-        ]
+        except Exception as exc:
+            logger.warning(f"Failed to mirror worker registration to ledger: {exc}")
 
-        return schemas.ExecuteResponse(
-            job_id=result.get("job_id", "unknown"),
-            status=result.get("status", "unknown"),
-            provider=result.get("provider", "unknown"),
-            results=step_results,
-            steps_completed=result.get("steps_completed", 0),
-            steps_total=result.get("steps_total", 0),
-            elapsed_seconds=result.get("elapsed_seconds", 0.0),
-            error=result.get("error"),
-            timeout_seconds=result.get("timeout_seconds"),
-        )
+    return schemas.RegisterWorkerResponse(**record)
 
-    except Exception as e:
-        logger.exception("Direct execution failed")
+
+@router.post("/route-task", response_model=schemas.RouteTaskResponse)
+async def route_task(
+    request: schemas.RouteTaskRequest,
+    registry: ControlPlaneRegistry = Depends(get_control_registry),
+    gateway_client: GatewayClient = Depends(get_gateway_client),
+    _authorized=Depends(require_protected_route_access),
+) -> schemas.RouteTaskResponse:
+    """
+    Route a task action to a selected OpenClaw gateway.
+
+    SKYNET does not execute the action directly.
+    """
+    gateway = registry.select_gateway(preferred_gateway_id=request.gateway_id)
+    if gateway is None:
+        raise HTTPException(status_code=503, detail="No healthy gateway available")
+
+    gateway_id = gateway["gateway_id"]
+    gateway_host = gateway["host"]
+
+    try:
+        status_data = await gateway_client.get_gateway_status(gateway_host)
+    except Exception as exc:
+        registry.heartbeat_gateway(gateway_id, status="offline")
         raise HTTPException(
-            status_code=500,
-            detail=f"Execution failed: {str(e)}",
+            status_code=503,
+            detail=f"Gateway {gateway_id} unreachable: {exc}",
+        ) from exc
+
+    if not status_data.get("agent_connected", False):
+        registry.heartbeat_gateway(gateway_id, status="degraded")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Gateway {gateway_id} is online but has no connected agent",
         )
 
+    try:
+        result = await gateway_client.execute_task(
+            host=gateway_host,
+            action=request.action,
+            params=request.params,
+            confirmed=request.confirmed,
+        )
+        registry.heartbeat_gateway(gateway_id, status="online")
+    except Exception as exc:
+        registry.heartbeat_gateway(gateway_id, status="degraded")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Gateway {gateway_id} execution failed: {exc}",
+        ) from exc
 
-@router.post("/scheduler/diagnose", response_model=schemas.SchedulerDiagnoseResponse)
-async def diagnose_scheduler(
-    request: schemas.SchedulerDiagnoseRequest,
-    scheduler=Depends(get_scheduler),
+    task_id = request.task_id or f"task-{uuid4().hex[:12]}"
+    route_status = result.get("status", "unknown")
+    return schemas.RouteTaskResponse(
+        task_id=task_id,
+        gateway_id=gateway_id,
+        gateway_host=gateway_host,
+        status=route_status,
+        result=result,
+    )
+
+
+@router.get("/system-state", response_model=schemas.SystemStateResponse)
+async def get_system_state(
+    registry: ControlPlaneRegistry = Depends(get_control_registry),
     _authorized=Depends(require_protected_route_access),
-):
-    """
-    Diagnose scheduler provider selection for a given execution spec.
-
-    Returns candidate providers, score breakdown, and final selection.
-    """
-    try:
-        result = await scheduler.diagnose_selection(
-            execution_spec=request.execution_spec,
-            fallback=request.fallback,
-        )
-        return schemas.SchedulerDiagnoseResponse(**result)
-    except Exception as e:
-        logger.exception("Scheduler diagnostics failed")
-        raise HTTPException(status_code=500, detail=f"Scheduler diagnostics failed: {e}")
+) -> schemas.SystemStateResponse:
+    """Return current topology state (gateways + workers)."""
+    state = registry.get_system_state()
+    return schemas.SystemStateResponse(**state)
 
 
-@router.get("/providers/health", response_model=schemas.ProviderHealthDashboardResponse)
-async def provider_health_dashboard(
-    provider_monitor=Depends(get_provider_monitor),
-    authorized=Depends(require_protected_route_access),
-):
-    """
-    Get provider health dashboard data from ProviderMonitor.
-    """
-    try:
-        data = provider_monitor.get_dashboard_data()
-        if not authorized and os.getenv("SKYNET_REDACT_PROVIDER_ERRORS", "true").lower() == "true":
-            data = _redact_provider_dashboard(data)
-        return schemas.ProviderHealthDashboardResponse(**data)
-    except Exception as e:
-        logger.exception("Provider health dashboard retrieval failed")
-        raise HTTPException(status_code=500, detail=f"Provider health dashboard failed: {e}")
-
-
-# ============================================================================
-# GET /health - Health Check
-# ============================================================================
-
-
-@router.get("/health", response_model=HealthResponse)
-async def health_check() -> HealthResponse:
+@router.get("/health", response_model=schemas.HealthResponse)
+async def health_check() -> schemas.HealthResponse:
     """Service health check."""
     components = {
-        "planner": "ok" if app_state.planner else "not_initialized",
-        "policy_engine": "ok" if app_state.policy_engine else "not_initialized",
+        "control_registry": "ok" if app_state.control_registry else "not_initialized",
+        "gateway_client": "ok" if app_state.gateway_client else "not_initialized",
     }
 
     status = "ok" if all(v == "ok" for v in components.values()) else "degraded"
-
-    return HealthResponse(
+    return schemas.HealthResponse(
         status=status,
         version="1.0.0",
         components=components,
     )
-
-
-# ============================================================================
-# Memory API (SKYNET 2.0)
-# ============================================================================
-
-
-@router.post("/memory/store", response_model=schemas.StoreMemoryResponse)
-async def store_memory(request: schemas.StoreMemoryRequest):
-    """
-    Manually store a memory.
-
-    Allows external systems to add memories to SKYNET's knowledge base.
-    """
-    from datetime import datetime
-
-    from skynet.memory.models import MemoryRecord, MemoryType
-
-    if not app_state.memory_manager:
-        raise HTTPException(
-            status_code=503, detail="Memory system not available"
-        )
-
-    # Create memory record
-    memory = MemoryRecord(
-        memory_type=MemoryType(request.memory_type.value),
-        content=request.content,
-        metadata=request.metadata,
-    )
-
-    # Store in memory system
-    memory_id = await app_state.memory_manager.storage.store_memory(memory)
-
-    logger.info(f"Stored memory: {memory_id} (type={request.memory_type.value})")
-
-    return schemas.StoreMemoryResponse(
-        memory_id=memory_id,
-        stored_at=datetime.utcnow().isoformat(),
-    )
-
-
-@router.post("/memory/search", response_model=schemas.SearchMemoryResponse)
-async def search_memory(request: schemas.SearchMemoryRequest):
-    """
-    Search memories by filters.
-
-    Returns memories matching query and filters, sorted by importance.
-    """
-    from skynet.memory.models import MemoryType
-
-    if not app_state.memory_manager:
-        raise HTTPException(
-            status_code=503, detail="Memory system not available"
-        )
-
-    memory_type = MemoryType(request.memory_type.value) if request.memory_type else None
-
-    # Search memories
-    memories = await app_state.memory_manager.storage.search_memories(
-        memory_type=memory_type,
-        limit=request.limit,
-    )
-
-    # Convert to response format
-    results = []
-    for mem in memories:
-        result = schemas.MemoryRecordResponse(
-            id=mem.id,
-            timestamp=mem.timestamp.isoformat(),
-            memory_type=mem.memory_type.value,
-            content=mem.content,
-            metadata=mem.metadata,
-            retrieval_count=mem.retrieval_count,
-            importance_score=mem.importance_score,
-            embedding=mem.embedding if request.include_embeddings else None,
-        )
-        results.append(result)
-
-    logger.info(f"Memory search: found {len(results)} memories")
-
-    return schemas.SearchMemoryResponse(
-        results=results,
-        count=len(results),
-        query=request.query,
-    )
-
-
-@router.post("/memory/similar", response_model=schemas.SimilarMemoryResponse)
-async def search_similar(request: schemas.SimilarMemoryRequest):
-    """
-    Find semantically similar memories.
-
-    Uses vector embeddings to find memories similar to the query text.
-    """
-    from skynet.memory.models import MemoryType
-
-    if not app_state.memory_manager:
-        raise HTTPException(
-            status_code=503, detail="Memory system not available"
-        )
-
-    # Generate embedding for query
-    if not app_state.memory_manager.vector_indexer:
-        raise HTTPException(
-            status_code=503, detail="Vector search not available (no embedding provider)"
-        )
-
-    try:
-        embedding = await app_state.memory_manager.vector_indexer.generate_embedding(
-            request.query_text
-        )
-    except Exception as e:
-        logger.error(f"Failed to generate embedding: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Embedding generation failed: {e}"
-        )
-
-    # Search similar memories
-    memory_type = MemoryType(request.memory_type.value) if request.memory_type else None
-
-    memories = await app_state.memory_manager.storage.search_similar(
-        embedding=embedding,
-        limit=request.limit,
-        memory_type=memory_type,
-    )
-
-    # Convert to response format
-    results = []
-    for mem in memories:
-        result = schemas.MemoryRecordResponse(
-            id=mem.id,
-            timestamp=mem.timestamp.isoformat(),
-            memory_type=mem.memory_type.value,
-            content=mem.content,
-            metadata=mem.metadata,
-            retrieval_count=mem.retrieval_count,
-            importance_score=mem.importance_score,
-        )
-        results.append(result)
-
-    logger.info(f"Similarity search: found {len(results)} memories for '{request.query_text[:50]}'")
-
-    return schemas.SimilarMemoryResponse(
-        results=results,
-        count=len(results),
-        query_text=request.query_text,
-    )
-
-
-@router.get("/memory/stats", response_model=schemas.MemoryStatsResponse)
-async def memory_stats():
-    """
-    Get memory system statistics.
-
-    Returns counts by type and system information.
-    """
-    if not app_state.memory_manager:
-        raise HTTPException(
-            status_code=503, detail="Memory system not available"
-        )
-
-    # Get stats
-    stats = await app_state.memory_manager.get_memory_stats()
-
-    # Determine backend
-    storage_class = app_state.memory_manager.storage.__class__.__name__
-    storage_backend = "postgresql" if "PostgreSQL" in storage_class else "sqlite"
-
-    # Embedding provider
-    embedding_provider = None
-    if app_state.memory_manager.vector_indexer:
-        embedding_provider = app_state.memory_manager.vector_indexer.__class__.__name__
-
-    total = sum(stats.values())
-
-    return schemas.MemoryStatsResponse(
-        total_memories=total,
-        by_type=stats,
-        storage_backend=storage_backend,
-        embedding_provider=embedding_provider,
-    )
-
-
-# ============================================================================
-# Helper Functions
-# ============================================================================
-
-
-def _determine_target(step: dict, allowed_targets: list[WorkerTarget]) -> WorkerTarget:
-    """Determine execution target for a step."""
-    step_desc = step.get("description", "").lower()
-    step_command = step.get("command", "").lower()
-
-    # Deploy/production → EC2
-    if "deploy" in step_desc or "production" in step_desc or "ec2" in step_command:
-        if WorkerTarget.EC2 in allowed_targets:
-            return WorkerTarget.EC2
-
-    # Docker operations → Docker target if available
-    if "docker" in step_desc or "docker" in step_command:
-        if WorkerTarget.DOCKER in allowed_targets:
-            return WorkerTarget.DOCKER
-
-    # Default to laptop (local development)
-    return WorkerTarget.LAPTOP if WorkerTarget.LAPTOP in allowed_targets else allowed_targets[0]
-
-
-def _determine_agent(step: dict) -> str:
-    """Determine agent type based on step description."""
-    desc = step.get("description", "").lower()
-    command = step.get("command", "").lower()
-
-    if any(kw in desc or kw in command for kw in ["test", "pytest", "jest"]):
-        return "tester"
-    elif any(kw in desc or kw in command for kw in ["build", "compile", "docker build"]):
-        return "builder"
-    elif any(kw in desc or kw in command for kw in ["deploy", "push", "release"]):
-        return "deployer"
-    elif any(kw in desc or kw in command for kw in ["code", "modify", "edit", "implement"]):
-        return "coder"
-    elif any(kw in desc or kw in command for kw in ["git", "commit", "branch"]):
-        return "git"
-    else:
-        return "executor"

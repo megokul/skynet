@@ -1,4 +1,4 @@
-"""Fail if operational docs/configs reference deprecated root script paths."""
+"""Fail if operational docs/configs reference stale root script paths."""
 
 from __future__ import annotations
 
@@ -13,12 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 FILES_TO_CHECK = [
     "README.md",
     "AGENT_GUIDE.md",
-    "QUICK_START.md",
     "Makefile",
-    "docs/guides/AGENT_GUIDE.md",
+    "scripts/manual/README.md",
 ]
 
-DEPRECATED_PATTERNS = [
+STALE_PATTERNS = [
     r"python\s+run_api\.py\b",
     r"`run_api\.py`",
     r"python\s+test_api\.py\b",
@@ -42,7 +41,7 @@ ALLOWLIST_SNIPPETS = [
 
 def main() -> int:
     violations: list[tuple[str, int, str]] = []
-    combined = re.compile("|".join(f"(?:{p})" for p in DEPRECATED_PATTERNS))
+    combined = re.compile("|".join(f"(?:{p})" for p in STALE_PATTERNS))
 
     for rel_path in FILES_TO_CHECK:
         path = ROOT / rel_path
@@ -57,10 +56,10 @@ def main() -> int:
             violations.append((rel_path, lineno, line.strip()))
 
     if not violations:
-        print("No deprecated path references found.")
+        print("No stale path references found.")
         return 0
 
-    print("Deprecated path references detected:")
+    print("Stale path references detected:")
     for rel_path, lineno, line in violations:
         safe_line = line.encode("ascii", errors="replace").decode("ascii")
         print(f"- {rel_path}:{lineno}: {safe_line}")

@@ -47,3 +47,5 @@ nul
 
 # Node (if needed)
 node_modules/
+
+ec2_userdata.txt

@@ -1,136 +1,109 @@
 """
-E2E Integration Test - OpenClaw Gateway → SKYNET API.
+E2E integration check - OpenClaw Gateway <-> SKYNET control plane.
 
-Tests the complete chain without Telegram:
-1. Call OpenClaw HTTP API with a task
-2. OpenClaw uses skynet_delegate skill
-3. Skill calls SKYNET /v1/plan
-4. SKYNET returns execution plan
-5. Verify the complete flow works
+Checks:
+1. SKYNET health endpoint
+2. OpenClaw gateway status endpoint
+3. SKYNET route-task call (which forwards to OpenClaw gateway API)
 """
 
 import asyncio
+import os
 import sys
 
 import httpx
 
-# Test configuration
 OPENCLAW_API = "http://localhost:8766"
 SKYNET_API = "http://localhost:8000"
+SKYNET_API_KEY = os.getenv("SKYNET_API_KEY", "").strip()
 
 
-async def test_openclaw_skynet_integration():
-    """Test OpenClaw → SKYNET integration."""
+def _skynet_headers() -> dict[str, str]:
+    headers = {}
+    if SKYNET_API_KEY:
+        headers["X-API-Key"] = SKYNET_API_KEY
+    return headers
+
+
+async def test_openclaw_skynet_integration() -> bool:
     print("=" * 70)
-    print("E2E Integration Test: OpenClaw -> SKYNET")
+    print("E2E Integration Test: OpenClaw <-> SKYNET")
     print("=" * 70)
-
-    # First, verify both services are running
-    print("\n1. Verifying services...")
-
-    async with httpx.AsyncClient() as client:
-        # Check SKYNET API
-        try:
-            resp = await client.get(f"{SKYNET_API}/v1/health")
-            if resp.status_code == 200:
-                print(f"   [OK] SKYNET API is running: {resp.json()['status']}")
-            else:
-                print(f"   [FAIL] SKYNET API returned {resp.status_code}")
-                return False
-        except Exception as e:
-            print(f"   [FAIL] Cannot reach SKYNET API: {e}")
-            return False
-
-        # Check OpenClaw Gateway
-        try:
-            resp = await client.get(f"{OPENCLAW_API}/status")
-            if resp.status_code == 200:
-                data = resp.json()
-                print(f"   [OK] OpenClaw Gateway is running")
-                print(f"       Skills loaded: {data.get('skills_loaded', 'unknown')}")
-            else:
-                print(f"   [FAIL] OpenClaw Gateway returned {resp.status_code}")
-                return False
-        except Exception as e:
-            print(f"   [FAIL] Cannot reach OpenClaw Gateway: {e}")
-            return False
-
-    # Test the integration by calling SKYNET directly
-    # (simulating what OpenClaw's skill would do)
-    print("\n2. Testing SKYNET plan generation...")
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        plan_request = {
-            "request_id": "test-e2e-001",
-            "user_message": "List all Python files in the current directory",
-            "context": {
-                "repo": None,
-                "branch": "main",
-                "environment": "dev",
-                "recent_actions": []
-            },
-            "constraints": {
-                "max_cost_usd": 1.0,
-                "time_budget_min": 10,
-                "allowed_targets": ["laptop"],
-                "requires_approval_for": []
-            }
-        }
-
+        print("\n1. Verifying services...")
         try:
-            resp = await client.post(
-                f"{SKYNET_API}/v1/plan",
-                json=plan_request,
-            )
-
-            if resp.status_code == 200:
-                result = resp.json()
-                print(f"   [OK] Plan generated successfully!")
-                print(f"       Request ID: {result['request_id']}")
-                print(f"       Decision: {result['decision']['mode']}")
-                print(f"       Risk Level: {result['decision']['risk_level']}")
-                print(f"       Steps: {len(result['execution_plan'])}")
-
-                # Show first few steps
-                if result['execution_plan']:
-                    print(f"\n       Execution Plan:")
-                    for step in result['execution_plan'][:3]:
-                        print(f"         {step['step']}. [{step['agent']}] {step['action'][:60]}...")
-                    if len(result['execution_plan']) > 3:
-                        print(f"         ... and {len(result['execution_plan']) - 3} more steps")
-
-                return True
-            else:
-                print(f"   [FAIL] Plan generation failed: {resp.status_code}")
-                print(f"       Error: {resp.text}")
+            skynet_health = await client.get(f"{SKYNET_API}/v1/health")
+            if skynet_health.status_code != 200:
+                print(f"   [FAIL] SKYNET health returned {skynet_health.status_code}")
                 return False
-
-        except Exception as e:
-            print(f"   [FAIL] Request failed: {e}")
+            print(f"   [OK] SKYNET API is running: {skynet_health.json().get('status')}")
+        except Exception as exc:
+            print(f"   [FAIL] Cannot reach SKYNET API: {exc}")
             return False
 
+        try:
+            gateway_status = await client.get(f"{OPENCLAW_API}/status")
+            if gateway_status.status_code != 200:
+                print(f"   [FAIL] OpenClaw Gateway returned {gateway_status.status_code}")
+                return False
+            print("   [OK] OpenClaw Gateway is running")
+        except Exception as exc:
+            print(f"   [FAIL] Cannot reach OpenClaw Gateway: {exc}")
+            return False
 
-async def main():
-    """Run E2E integration test."""
+        print("\n2. Registering OpenClaw gateway in SKYNET...")
+        register_payload = {
+            "gateway_id": "e2e-gateway",
+            "host": OPENCLAW_API,
+            "capabilities": ["execute_task", "get_gateway_status", "list_sessions"],
+            "status": "online",
+            "metadata": {"source": "manual-e2e"},
+        }
+        register_resp = await client.post(
+            f"{SKYNET_API}/v1/register-gateway",
+            json=register_payload,
+            headers=_skynet_headers(),
+        )
+        if register_resp.status_code != 200:
+            print(f"   [FAIL] register-gateway failed: {register_resp.status_code}")
+            print(f"       Error: {register_resp.text}")
+            return False
+        print("   [OK] Gateway registered")
+
+        print("\n3. Routing task through SKYNET...")
+        route_payload = {
+            "action": "list_directory",
+            "params": {"directory": "."},
+            "gateway_id": "e2e-gateway",
+            "confirmed": True,
+        }
+        route_resp = await client.post(
+            f"{SKYNET_API}/v1/route-task",
+            json=route_payload,
+            headers=_skynet_headers(),
+        )
+        if route_resp.status_code != 200:
+            print(f"   [FAIL] route-task failed: {route_resp.status_code}")
+            print(f"       Error: {route_resp.text}")
+            return False
+
+        route_result = route_resp.json()
+        print("   [OK] route-task succeeded")
+        print(f"       Task ID: {route_result.get('task_id')}")
+        print(f"       Gateway: {route_result.get('gateway_id')}")
+        print(f"       Status: {route_result.get('status')}")
+        return True
+
+
+async def main() -> int:
     success = await test_openclaw_skynet_integration()
-
     print("\n" + "=" * 70)
     if success:
         print("E2E Integration Test: PASSED")
-        print("\nThe integration chain is working:")
-        print("  OpenClaw Gateway (HTTP API)")
-        print("         ↓")
-        print("  SKYNET API (/v1/plan)")
-        print("         ↓")
-        print("  Gemini AI (Planning)")
-        print("         ↓")
-        print("  Execution Plan Generated")
     else:
         print("E2E Integration Test: FAILED")
-        print("Check that both services are running:")
-        print(f"  - SKYNET API: {SKYNET_API}")
-        print(f"  - OpenClaw Gateway: {OPENCLAW_API}")
-
+        print(f"Check SKYNET at {SKYNET_API} and OpenClaw at {OPENCLAW_API}")
     print("=" * 70)
     return 0 if success else 1
 

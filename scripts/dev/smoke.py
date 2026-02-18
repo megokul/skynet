@@ -17,19 +17,34 @@ def run(cmd: list[str]) -> None:
 
 def main() -> int:
     run([sys.executable, "scripts/ci/check_stale_paths.py"])
+    run([sys.executable, "scripts/ci/check_control_plane_boundary.py"])
     run(
         [
             sys.executable,
             "-m",
             "py_compile",
+            "skynet/api/main.py",
+            "skynet/api/routes.py",
+            "skynet/api/schemas.py",
             "scripts/dev/run_api.py",
             "scripts/manual/check_api.py",
             "scripts/manual/check_e2e_integration.py",
             "scripts/manual/check_skynet_delegate.py",
         ]
     )
-    run([sys.executable, "tests/test_dispatcher.py"])
-    run([sys.executable, "-m", "pytest", "tests/test_api_lifespan.py", "-q"])
+    run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/test_api_lifespan.py",
+            "tests/test_api_provider_config.py",
+            "tests/test_api_control_plane.py",
+            "tests/test_job_locking.py",
+            "tests/test_worker_registry.py",
+            "-q",
+        ]
+    )
     print("Smoke checks passed.")
     return 0
 

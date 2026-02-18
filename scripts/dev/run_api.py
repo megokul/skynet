@@ -17,11 +17,10 @@ repo_root = Path(__file__).resolve().parents[2]
 env_path = repo_root / ".env"
 load_dotenv(env_path)
 
-# Verify API key is loaded
-if not os.getenv("GOOGLE_AI_API_KEY"):
-    print("WARNING: GOOGLE_AI_API_KEY not found in .env")
-else:
-    print(f"GOOGLE_AI_API_KEY loaded: {os.getenv('GOOGLE_AI_API_KEY')[:20]}...")
+gateway_urls = os.getenv("OPENCLAW_GATEWAY_URLS", "").strip()
+gateway_url = os.getenv("OPENCLAW_GATEWAY_URL", "").strip()
+if not gateway_urls and not gateway_url:
+    print("WARNING: OPENCLAW_GATEWAY_URL/OPENCLAW_GATEWAY_URLS not set in .env")
 
 # Start uvicorn
 if __name__ == "__main__":

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from skynet.ledger.job_locking import JobLockManager
 from skynet.ledger.schema import init_db
 
 
-async def main() -> None:
+@pytest.mark.asyncio
+async def test_job_lock_manager_flow() -> None:
     db = await init_db(":memory:")
     locks = JobLockManager(db, lock_timeout_seconds=1)
 
@@ -37,8 +40,3 @@ async def main() -> None:
     assert await locks.is_locked("job-2") is False
 
     await db.close()
-    print("[SUCCESS] JobLockManager tests passed")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

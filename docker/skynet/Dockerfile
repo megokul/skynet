@@ -2,7 +2,7 @@
 FROM python:3.13-slim
 
 LABEL maintainer="SKYNET Project"
-LABEL description="SKYNET Control Plane API - AI-powered planning and policy enforcement"
+LABEL description="SKYNET Control Plane API - OpenClaw gateway orchestration"
 
 # Set working directory
 WORKDIR /app
