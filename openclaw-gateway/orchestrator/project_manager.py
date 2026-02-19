@@ -470,10 +470,17 @@ class ProjectManager:
             {"working_dir": path, "message": "chore: initialize project scaffold"},
             confirmed=True,
         )
+        # Git can return non-zero for no-op commits; treat this as non-fatal.
+        if not ok_commit and "nothing to commit" in (msg_commit or "").lower():
+            ok_commit = True
+            msg_commit = "nothing to commit"
         bootstrap_notes.append("git_add: ok" if ok_add else f"git_add: failed ({msg_add})")
-        bootstrap_notes.append(
-            "git_commit: ok" if ok_commit else f"git_commit: failed ({msg_commit})"
-        )
+        if ok_commit and msg_commit == "nothing to commit":
+            bootstrap_notes.append("git_commit: skipped (nothing to commit)")
+        else:
+            bootstrap_notes.append(
+                "git_commit: ok" if ok_commit else f"git_commit: failed ({msg_commit})"
+            )
 
         if cfg.AUTO_CREATE_GITHUB_REPO:
             ok_gh, msg_gh = await self._run_agent_action(
@@ -500,7 +507,8 @@ class ProjectManager:
                 else:
                     bootstrap_notes.append("github: ok")
             else:
-                bootstrap_notes.append(f"github: failed ({msg_gh})")
+                # Repo creation is optional; keep bootstrap successful without it.
+                bootstrap_notes.append(f"github: warning ({msg_gh})")
 
         return "; ".join(bootstrap_notes)
 
