@@ -687,6 +687,70 @@ def _extract_nl_intent(text: str) -> dict[str, str]:
     if match:
         return {"intent": "cancel_project", "project_name": _clean_entity(match.group("project"))}
 
+    # Coding agent checks
+    if (
+        lowered in {
+            "check agents",
+            "check coding agents",
+            "list coding agents",
+            "show coding agents",
+            "which coding agents",
+        }
+        or re.search(
+            r"\b(?:check|list|show|which|verify)\b.*\b(?:coding\s+agents?|codex|claude|cline)\b",
+            lowered,
+        )
+    ):
+        return {"intent": "check_coding_agents"}
+
+    # Open path/project in VS Code
+    for pattern in (
+        r"\b(?:open|launch)\s+(?:(?P<path>.+?)\s+)?in\s+vs\s*code\b",
+        r"\bopen\s+vscode(?:\s+(?P<path>.+))?$",
+        r"\bopen\s+(?P<path>.+?)\s+with\s+vs\s*code\b",
+    ):
+        match = re.search(pattern, raw, flags=re.IGNORECASE)
+        if match:
+            path = _clean_entity(match.groupdict().get("path") or "")
+            if path.lower() in {"this", "it", "project", "current project", "current"}:
+                path = ""
+            out = {"intent": "open_in_vscode"}
+            if path:
+                out["path"] = path
+            return out
+
+    # Run coding agent naturally.
+    match = re.search(
+        r"\b(?:use|run|ask)\s+(?P<agent>codex|claude|cline)\b"
+        r"(?:\s+(?:on|in|at)\s+(?P<path>[^:]+?))?"
+        r"(?:\s*(?::|to)\s*(?P<prompt>.+))?$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        out = {
+            "intent": "run_coding_agent",
+            "agent": _clean_entity(match.group("agent")).lower(),
+        }
+        path = _clean_entity(match.group("path") or "")
+        prompt = _clean_entity(match.group("prompt") or "")
+        if path:
+            out["working_dir"] = path
+        if prompt:
+            out["prompt"] = prompt
+        return out
+    match = re.search(
+        r"\b(?P<agent>codex|claude|cline)\s*:\s*(?P<prompt>.+)$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return {
+            "intent": "run_coding_agent",
+            "agent": _clean_entity(match.group("agent")).lower(),
+            "prompt": _clean_entity(match.group("prompt")),
+        }
+
     if lowered in {"help", "show help", "what can you do"}:
         return {"intent": "help"}
 
@@ -779,8 +843,64 @@ async def _handle_natural_action(update: Update, text: str) -> bool:
             "'create project called API dashboard', "
             "'add idea for API dashboard: support OAuth', "
             "'generate plan for API dashboard', "
-            "'status of API dashboard', 'pause API dashboard'."
+            "'status of API dashboard', 'pause API dashboard', "
+            "'check coding agents', 'open current project in VS Code', "
+            "'use codex to add JWT auth'."
         )
+        return True
+
+    if intent == "check_coding_agents":
+        try:
+            result = await _send_action("check_coding_agents", {}, confirmed=True)
+            await update.message.reply_text(_format_result(result), parse_mode="HTML")
+        except Exception as exc:
+            await update.message.reply_text(f"I couldn't check coding agents: {exc}")
+        return True
+
+    if intent == "open_in_vscode":
+        path = _clean_entity(intent_data.get("path", ""))
+        if not path:
+            project, _ = await _resolve_project()
+            if project and project.get("local_path"):
+                path = str(project["local_path"])
+            else:
+                path = cfg.PROJECT_BASE_DIR or cfg.DEFAULT_WORKING_DIR
+        try:
+            result = await _send_action("open_in_vscode", {"path": path}, confirmed=True)
+            await update.message.reply_text(_format_result(result), parse_mode="HTML")
+        except Exception as exc:
+            await update.message.reply_text(f"I couldn't open VS Code: {exc}")
+        return True
+
+    if intent == "run_coding_agent":
+        agent = _clean_entity(intent_data.get("agent", "")).lower()
+        prompt = _clean_entity(intent_data.get("prompt", ""))
+        working_dir = _clean_entity(intent_data.get("working_dir", ""))
+        if agent not in {"codex", "claude", "cline"}:
+            await update.message.reply_text("Agent must be one of: codex, claude, cline.")
+            return True
+        if not prompt:
+            await update.message.reply_text(f"Tell me what to ask {agent} to do.")
+            return True
+        if not working_dir:
+            project, _ = await _resolve_project()
+            if project and project.get("local_path"):
+                working_dir = str(project["local_path"])
+            else:
+                working_dir = cfg.PROJECT_BASE_DIR or cfg.DEFAULT_WORKING_DIR
+
+        try:
+            await update.message.reply_text(
+                f"Running {agent} in '{working_dir}' now.",
+            )
+            result = await _send_action(
+                "run_coding_agent",
+                {"agent": agent, "prompt": prompt, "working_dir": working_dir},
+                confirmed=True,
+            )
+            await update.message.reply_text(_format_result(result), parse_mode="HTML")
+        except Exception as exc:
+            await update.message.reply_text(f"I couldn't run {agent}: {exc}")
         return True
 
     if intent == "create_project":
