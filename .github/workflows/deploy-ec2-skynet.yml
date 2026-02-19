@@ -84,6 +84,7 @@ jobs:
       OPENCLAW_SSH_CODEX_BIN: ${{ secrets.OPENCLAW_SSH_CODEX_BIN }}
       OPENCLAW_SSH_CLAUDE_BIN: ${{ secrets.OPENCLAW_SSH_CLAUDE_BIN }}
       OPENCLAW_SSH_CLINE_BIN: ${{ secrets.OPENCLAW_SSH_CLINE_BIN }}
+      OPENCLAW_LAPTOP_SSH_PUBLIC_KEY: ${{ secrets.OPENCLAW_LAPTOP_SSH_PUBLIC_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -97,6 +98,24 @@ jobs:
           : "${TELEGRAM_BOT_TOKEN:?Missing TELEGRAM_BOT_TOKEN secret}"
           : "${TELEGRAM_ALLOWED_USER_ID:?Missing TELEGRAM_ALLOWED_USER_ID secret}"
           : "${GOOGLE_AI_API_KEY:?Missing GOOGLE_AI_API_KEY secret}"
+
+      - name: Authorize laptop SSH key for reverse tunnel
+        shell: bash
+        run: |
+          if [ -n "${OPENCLAW_LAPTOP_SSH_PUBLIC_KEY:-}" ]; then
+            mkdir -p "$HOME/.ssh"
+            touch "$HOME/.ssh/authorized_keys"
+            chmod 700 "$HOME/.ssh"
+            chmod 600 "$HOME/.ssh/authorized_keys"
+            if grep -Fqx "${OPENCLAW_LAPTOP_SSH_PUBLIC_KEY}" "$HOME/.ssh/authorized_keys"; then
+              echo "Laptop SSH key already authorized on runner host."
+            else
+              printf '%s\n' "${OPENCLAW_LAPTOP_SSH_PUBLIC_KEY}" >> "$HOME/.ssh/authorized_keys"
+              echo "Authorized laptop SSH key on runner host."
+            fi
+          else
+            echo "OPENCLAW_LAPTOP_SSH_PUBLIC_KEY not set; skipping authorized_keys update."
+          fi
 
       - name: Prepare SSH key material
         shell: bash
