@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import html
+import re
 
 import aiohttp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -36,6 +37,8 @@ _project_manager = None
 _provider_router = None
 _heartbeat = None
 _sentinel = None
+_searcher = None
+_skill_registry = None
 
 # Stores pending CONFIRM actions keyed by a short ID.
 _pending_confirms: dict[str, dict] = {}
@@ -50,22 +53,34 @@ _approval_counter: int = 0
 _bot_app: Application | None = None
 
 # Short rolling chat history for natural Telegram conversation.
-_chat_history: list[dict[str, str]] = []
+_chat_history: list[dict] = []
 _CHAT_HISTORY_MAX: int = 12
 _CHAT_SYSTEM_PROMPT = (
-    "You are SKYNET's Telegram assistant. Reply naturally in plain language. "
-    "Be concise, helpful, and ask clarifying questions when needed. "
-    "Do not output JSON unless the user explicitly asks for it."
+    "You are OpenClaw running through Telegram. "
+    "Converse naturally in plain language and extract key details from user text. "
+    "Use available tools/skills whenever execution, inspection, git, build, docker, or web research is needed. "
+    "Ask concise clarifying questions only when required details are missing. "
+    "Do not output JSON unless the user explicitly asks for JSON."
 )
+_last_project_id: str | None = None
 
 
-def set_dependencies(project_manager, provider_router, heartbeat=None, sentinel=None):
+def set_dependencies(
+    project_manager,
+    provider_router,
+    heartbeat=None,
+    sentinel=None,
+    searcher=None,
+    skill_registry=None,
+):
     """Called by main.py to inject dependencies."""
-    global _project_manager, _provider_router, _heartbeat, _sentinel
+    global _project_manager, _provider_router, _heartbeat, _sentinel, _searcher, _skill_registry
     _project_manager = project_manager
     _provider_router = provider_router
     _heartbeat = heartbeat
     _sentinel = sentinel
+    _searcher = searcher
+    _skill_registry = skill_registry
 
 
 # ------------------------------------------------------------------
@@ -171,10 +186,131 @@ def _trim_chat_history() -> None:
         _chat_history = _chat_history[-max_items:]
 
 
-async def _reply_naturally(update: Update, text: str) -> None:
-    """Reply to plain text as a normal AI conversation."""
+def _build_assistant_content(response) -> object:
+    """Build assistant message content including tool_use blocks."""
+    parts = []
+    if response.text:
+        parts.append({"type": "text", "text": response.text})
+    for tc in response.tool_calls:
+        parts.append({
+            "type": "tool_use",
+            "id": tc.id,
+            "name": tc.name,
+            "input": tc.input,
+        })
+    return parts if parts else response.text
+
+
+async def _reply_with_openclaw_capabilities(update: Update, text: str) -> None:
+    """Route natural conversation through OpenClaw tools + skills."""
     if not _provider_router:
-        await update.message.reply_text("AI providers not configured.")
+        await update.message.reply_text("AI providers are not configured.")
+        return
+    if not _skill_registry:
+        await _reply_naturally_fallback(update, text)
+        return
+
+    history = _chat_history[-(_CHAT_HISTORY_MAX * 2):]
+    messages = [*history, {"role": "user", "content": text}]
+    tools = _skill_registry.get_all_tools()
+
+    project_id = "telegram_chat"
+    project_path = cfg.DEFAULT_WORKING_DIR
+    if _project_manager and _last_project_id:
+        try:
+            from db import store
+            project = await store.get_project(_project_manager.db, _last_project_id)
+            if project:
+                project_id = project["id"]
+                project_path = project.get("local_path") or project_path
+        except Exception:
+            logger.exception("Failed to resolve project context for chat")
+
+    system_prompt = (
+        f"{_CHAT_SYSTEM_PROMPT}\n\n"
+        f"Working directory: {project_path}\n"
+        "If you perform filesystem/git/build actions, prefer this context unless the user specifies another path."
+    )
+
+    rounds = 0
+    final_text = ""
+    try:
+        while rounds < 12:
+            response = await _provider_router.chat(
+                messages,
+                tools=tools,
+                system=system_prompt,
+                max_tokens=1500,
+                require_tools=True,
+                task_type="general",
+            )
+            messages.append({"role": "assistant", "content": _build_assistant_content(response)})
+
+            if not response.tool_calls:
+                final_text = (response.text or "").strip()
+                break
+
+            from skills.base import SkillContext
+
+            context = SkillContext(
+                project_id=project_id,
+                project_path=project_path,
+                gateway_api_url=cfg.GATEWAY_API_URL,
+                searcher=_searcher,
+                request_approval=request_worker_approval,
+            )
+            tool_results = []
+            for tc in response.tool_calls:
+                skill = _skill_registry.get_skill_for_tool(tc.name)
+                if skill is None:
+                    result = f"Unknown tool: {tc.name}"
+                else:
+                    result = await skill.execute(tc.name, tc.input, context)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "name": tc.name,
+                    "content": result,
+                })
+            messages.append({"role": "user", "content": tool_results})
+            rounds += 1
+    except Exception as exc:
+        await update.message.reply_text(f"OpenClaw chat error: {exc}")
+        return
+
+    if not final_text:
+        try:
+            summary = await _provider_router.chat(
+                messages + [{
+                    "role": "user",
+                    "content": "Summarize the result and next step in plain language.",
+                }],
+                system=system_prompt,
+                max_tokens=700,
+                task_type="general",
+            )
+            final_text = (summary.text or "").strip()
+        except Exception:
+            final_text = ""
+
+    reply = final_text
+    if not reply:
+        reply = "I could not generate a reply right now."
+    if len(reply) > 3800:
+        reply = reply[:3800] + "\n\n... (truncated)"
+
+    # Keep chat history in a compact text form.
+    _chat_history.append({"role": "user", "content": text})
+    _chat_history.append({"role": "assistant", "content": reply})
+    _trim_chat_history()
+
+    await update.message.reply_text(reply)
+
+
+async def _reply_naturally_fallback(update: Update, text: str) -> None:
+    """Fallback chat path without tool execution."""
+    if not _provider_router:
+        await update.message.reply_text("AI providers are not configured.")
         return
 
     history = _chat_history[-(_CHAT_HISTORY_MAX * 2):]
@@ -183,23 +319,17 @@ async def _reply_naturally(update: Update, text: str) -> None:
         response = await _provider_router.chat(
             messages,
             system=_CHAT_SYSTEM_PROMPT,
-            max_tokens=600,
+            max_tokens=700,
             task_type="general",
         )
     except Exception as exc:
         await update.message.reply_text(f"AI unavailable: {exc}")
         return
 
-    reply = (response.text or "").strip()
-    if not reply:
-        reply = "I could not generate a reply right now."
-    if len(reply) > 3800:
-        reply = reply[:3800] + "\n\n... (truncated)"
-
+    reply = (response.text or "").strip() or "I could not generate a reply right now."
     _chat_history.append({"role": "user", "content": text})
     _chat_history.append({"role": "assistant", "content": reply})
     _trim_chat_history()
-
     await update.message.reply_text(reply)
 
 
@@ -226,6 +356,385 @@ async def _capture_idea(update: Update, text: str) -> None:
         )
     except Exception as exc:
         await update.message.reply_text(f"Error: {exc}")
+
+
+def _clean_entity(text: str) -> str:
+    """Trim punctuation/quotes from extracted NL entities."""
+    cleaned = (text or "").strip().strip(" \t\r\n.,!?;:")
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"', "`"}:
+        cleaned = cleaned[1:-1].strip()
+    return re.sub(r"\s+", " ", cleaned)
+
+
+def _norm_project(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def _project_display(project: dict) -> str:
+    return str(project.get("display_name") or project.get("name") or "project")
+
+
+def _extract_nl_intent(text: str) -> dict[str, str]:
+    """
+    Extract action intent/entities from natural language.
+
+    Returns {} when input should be handled as normal chat.
+    """
+    raw = text.strip()
+    lowered = raw.lower()
+
+    # Keep greetings/small talk in regular chat flow.
+    if re.fullmatch(r"(hi|hello|hey|yo|sup|thanks|thank you)[.!? ]*", lowered):
+        return {}
+
+    # Create project
+    create_patterns = [
+        r"\b(?:create|start|begin|new)\s+(?:a\s+)?project(?:\s+(?:called|named))?\s+(?P<name>.+)$",
+        r"\bproject\s+(?:called|named)\s+(?P<name>.+)$",
+    ]
+    for pattern in create_patterns:
+        match = re.search(pattern, raw, flags=re.IGNORECASE)
+        if match:
+            name = _clean_entity(match.group("name"))
+            if name:
+                return {"intent": "create_project", "project_name": name}
+
+    # Add idea
+    match = re.search(
+        r"\b(?:add|save|capture|record)\s+(?:this\s+)?idea\s+for\s+(?P<project>[^:]+):\s*(?P<idea>.+)$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return {
+            "intent": "add_idea",
+            "project_name": _clean_entity(match.group("project")),
+            "idea_text": _clean_entity(match.group("idea")),
+        }
+    match = re.search(
+        r"\b(?:add|save|capture|record)\s+(?:this\s+)?idea\s*:\s*(?P<idea>.+)$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return {"intent": "add_idea", "idea_text": _clean_entity(match.group("idea"))}
+
+    # Generate plan
+    match = re.search(
+        r"\b(?:generate|create|make|build)\s+(?:a\s+|the\s+)?plan(?:\s+(?:for|of)\s+(?P<project>.+))?$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        out = {"intent": "generate_plan"}
+        project_name = _clean_entity(match.group("project") or "")
+        if project_name:
+            out["project_name"] = project_name
+        return out
+    match = re.search(r"\bplan\s+(?:for|of)\s+(?P<project>.+)$", raw, flags=re.IGNORECASE)
+    if match:
+        return {"intent": "generate_plan", "project_name": _clean_entity(match.group("project"))}
+
+    # Approve/start plan
+    match = re.search(
+        r"\b(?:approve|accept)\s+(?:the\s+)?plan(?:\s+(?:for|of)\s+(?P<project>.+))?$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        out = {"intent": "approve_and_start"}
+        project_name = _clean_entity(match.group("project") or "")
+        if project_name:
+            out["project_name"] = project_name
+        return out
+    match = re.search(
+        r"\b(?:start|begin|run|kick off)\s+(?:execution|coding|work)(?:\s+(?:for|on)\s+(?P<project>.+))?$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        out = {"intent": "approve_and_start"}
+        project_name = _clean_entity(match.group("project") or "")
+        if project_name:
+            out["project_name"] = project_name
+        return out
+
+    # Status / list
+    if re.search(r"\b(?:list|show|which|what)\b.*\bprojects?\b", lowered) or lowered in {
+        "projects",
+        "list projects",
+        "show projects",
+    }:
+        return {"intent": "list_projects"}
+    if re.search(r"\b(?:status|progress|update)\b", lowered):
+        match = re.search(
+            r"\b(?:status|progress|update)(?:\s+(?:for|of|on))?\s+(?P<project>.+)$",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return {"intent": "project_status", "project_name": _clean_entity(match.group("project"))}
+        return {"intent": "project_status"}
+
+    # Pause / resume / cancel
+    match = re.search(r"\bpause(?:\s+(?:project\s+)?)?(?P<project>.+)$", raw, flags=re.IGNORECASE)
+    if match:
+        return {"intent": "pause_project", "project_name": _clean_entity(match.group("project"))}
+    match = re.search(
+        r"\bresume(?:\s+(?:project\s+)?)?(?P<project>.+)$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return {"intent": "resume_project", "project_name": _clean_entity(match.group("project"))}
+    match = re.search(
+        r"\b(?:cancel|stop)\s+(?:project\s+)?(?P<project>.+)$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return {"intent": "cancel_project", "project_name": _clean_entity(match.group("project"))}
+
+    if lowered in {"help", "show help", "what can you do"}:
+        return {"intent": "help"}
+
+    return {}
+
+
+async def _resolve_project(reference: str | None = None) -> tuple[dict | None, str | None]:
+    """Resolve a natural-language project reference to a concrete project."""
+    global _last_project_id
+    if not _project_manager:
+        return None, "Project manager is not initialized."
+
+    projects = await _project_manager.list_projects()
+    if not projects:
+        return None, "No projects exist yet. Tell me to create one."
+
+    if reference:
+        ref = _clean_entity(reference)
+        ref_norm = _norm_project(ref)
+        if not ref_norm:
+            reference = None
+        else:
+            scored: list[tuple[int, dict]] = []
+            for project in projects:
+                display = _project_display(project)
+                name = str(project.get("name", ""))
+                d_norm = _norm_project(display)
+                n_norm = _norm_project(name)
+                if ref_norm in {d_norm, n_norm}:
+                    scored.append((100, project))
+                elif d_norm.startswith(ref_norm) or n_norm.startswith(ref_norm):
+                    scored.append((80, project))
+                elif ref_norm in d_norm or ref_norm in n_norm:
+                    scored.append((60, project))
+
+            if not scored:
+                return None, f"I couldn't find a project named '{ref}'."
+
+            scored.sort(key=lambda item: item[0], reverse=True)
+            top_score = scored[0][0]
+            top = [p for score, p in scored if score == top_score]
+            if len(top) > 1:
+                choices = ", ".join(_project_display(p) for p in top[:4])
+                return None, f"I found multiple matches: {choices}. Tell me the exact name."
+
+            _last_project_id = top[0]["id"]
+            return top[0], None
+
+    # No explicit reference: use recent context first.
+    if _last_project_id:
+        for project in projects:
+            if project["id"] == _last_project_id:
+                return project, None
+
+    ideation = [p for p in projects if p.get("status") == "ideation"]
+    if len(ideation) == 1:
+        _last_project_id = ideation[0]["id"]
+        return ideation[0], None
+
+    if len(projects) == 1:
+        _last_project_id = projects[0]["id"]
+        return projects[0], None
+
+    active_statuses = {"planning", "approved", "coding", "testing", "paused"}
+    active = [p for p in projects if p.get("status") in active_statuses]
+    if len(active) == 1:
+        _last_project_id = active[0]["id"]
+        return active[0], None
+
+    choices = ", ".join(_project_display(p) for p in projects[:5])
+    return None, f"Which project do you mean? I have: {choices}."
+
+
+async def _handle_natural_action(update: Update, text: str) -> bool:
+    """
+    Execute extracted NL intent when possible.
+
+    Returns True when a structured action was handled.
+    """
+    global _last_project_id
+    intent_data = _extract_nl_intent(text)
+    if not intent_data:
+        return False
+
+    intent = intent_data.get("intent", "")
+
+    if intent == "help":
+        await update.message.reply_text(
+            "You can talk naturally. Example phrases: "
+            "'create project called API dashboard', "
+            "'add idea for API dashboard: support OAuth', "
+            "'generate plan for API dashboard', "
+            "'status of API dashboard', 'pause API dashboard'."
+        )
+        return True
+
+    if intent == "create_project":
+        name = intent_data.get("project_name", "")
+        if not name:
+            await update.message.reply_text("Tell me the project name to create.")
+            return True
+        try:
+            project = await _project_manager.create_project(name)
+            _last_project_id = project["id"]
+            await update.message.reply_text(
+                f"Created project '{_project_display(project)}'. "
+                "Now share ideas in natural language, or say 'generate a plan'."
+            )
+        except Exception as exc:
+            await update.message.reply_text(f"I couldn't create that project: {exc}")
+        return True
+
+    if intent == "list_projects":
+        try:
+            projects = await _project_manager.list_projects()
+            if not projects:
+                await update.message.reply_text("No projects yet.")
+            else:
+                lines = ["Here are your projects:"]
+                for project in projects[:10]:
+                    lines.append(f"- {_project_display(project)} ({project.get('status', 'unknown')})")
+                await update.message.reply_text("\n".join(lines))
+        except Exception as exc:
+            await update.message.reply_text(f"I couldn't list projects: {exc}")
+        return True
+
+    if intent == "add_idea":
+        idea_text = intent_data.get("idea_text", "")
+        project, error = await _resolve_project(intent_data.get("project_name"))
+        if error:
+            await update.message.reply_text(error)
+            return True
+        if not idea_text:
+            await update.message.reply_text("Tell me the idea text to add.")
+            return True
+        try:
+            count = await _project_manager.add_idea(project["id"], idea_text)
+            _last_project_id = project["id"]
+            await update.message.reply_text(
+                f"Added that as idea #{count} for '{_project_display(project)}'."
+            )
+        except Exception as exc:
+            await update.message.reply_text(f"I couldn't add the idea: {exc}")
+        return True
+
+    if intent == "generate_plan":
+        project, error = await _resolve_project(intent_data.get("project_name"))
+        if error:
+            await update.message.reply_text(error)
+            return True
+        try:
+            await update.message.reply_text(
+                f"Generating a plan for '{_project_display(project)}' now."
+            )
+            plan = await _project_manager.generate_plan(project["id"])
+            _last_project_id = project["id"]
+            summary = (plan.get("summary") or "Plan generated.").strip()
+            milestones = plan.get("milestones", []) or []
+            top = [m.get("name", "").strip() for m in milestones if m.get("name")]
+            top_text = ", ".join(top[:3]) if top else "No milestones listed."
+            if len(top) > 3:
+                top_text += f", and {len(top) - 3} more"
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("Approve", callback_data=f"approve_plan:{project['id']}"),
+                InlineKeyboardButton("Cancel", callback_data=f"cancel_plan:{project['id']}"),
+            ]])
+            await update.message.reply_text(
+                f"Plan ready for '{_project_display(project)}'.\n"
+                f"{summary}\n\n"
+                f"Top milestones: {top_text}",
+                reply_markup=keyboard,
+            )
+        except Exception as exc:
+            await update.message.reply_text(f"I couldn't generate the plan: {exc}")
+        return True
+
+    if intent in {"approve_and_start", "pause_project", "resume_project", "cancel_project", "project_status"}:
+        project, error = await _resolve_project(intent_data.get("project_name"))
+        if error:
+            await update.message.reply_text(error)
+            return True
+        _last_project_id = project["id"]
+
+        if intent == "approve_and_start":
+            try:
+                if project.get("status") in {"ideation", "planning"}:
+                    await _project_manager.approve_plan(project["id"])
+                if project.get("status") in {"planning", "approved", "ideation"}:
+                    await _project_manager.start_execution(project["id"])
+                    await update.message.reply_text(
+                        f"Started execution for '{_project_display(project)}'."
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"'{_project_display(project)}' is currently {project.get('status')}."
+                    )
+            except Exception as exc:
+                await update.message.reply_text(f"I couldn't start execution: {exc}")
+            return True
+
+        if intent == "pause_project":
+            try:
+                await _project_manager.pause_project(project["id"])
+                await update.message.reply_text(f"Paused '{_project_display(project)}'.")
+            except Exception as exc:
+                await update.message.reply_text(f"I couldn't pause it: {exc}")
+            return True
+
+        if intent == "resume_project":
+            try:
+                await _project_manager.resume_project(project["id"])
+                await update.message.reply_text(f"Resumed '{_project_display(project)}'.")
+            except Exception as exc:
+                await update.message.reply_text(f"I couldn't resume it: {exc}")
+            return True
+
+        if intent == "cancel_project":
+            try:
+                await _project_manager.cancel_project(project["id"])
+                await update.message.reply_text(f"Cancelled '{_project_display(project)}'.")
+            except Exception as exc:
+                await update.message.reply_text(f"I couldn't cancel it: {exc}")
+            return True
+
+        if intent == "project_status":
+            try:
+                status = await _project_manager.get_status(project["id"])
+                current = status.get("current_task")
+                sentence = (
+                    f"'{_project_display(project)}' is {status['project']['status']} "
+                    f"with progress {status['progress']} ({status['percent']}%)."
+                )
+                if current:
+                    sentence += f" Current task: {current}."
+                await update.message.reply_text(sentence)
+            except Exception as exc:
+                await update.message.reply_text(f"I couldn't fetch status: {exc}")
+            return True
+
+    return False
 
 
 # ------------------------------------------------------------------
@@ -841,7 +1350,7 @@ async def cmd_skills(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 # ------------------------------------------------------------------
-# Plain text handler — captures ideas for projects in ideation
+# Plain text handler — natural conversation + intent extraction
 # ------------------------------------------------------------------
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -860,11 +1369,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _capture_idea(update, idea_text)
         return
 
-    if cfg.TELEGRAM_TEXT_MODE == "idea":
-        await _capture_idea(update, text)
+    if await _handle_natural_action(update, text):
         return
 
-    await _reply_naturally(update, text)
+    await _reply_with_openclaw_capabilities(update, text)
 
 
 # ------------------------------------------------------------------

@@ -236,7 +236,12 @@ async def _main() -> None:
 
     # ---- Inject dependencies into Telegram bot ----
     telegram_bot.set_dependencies(
-        project_manager, router, heartbeat, sentinel,
+        project_manager,
+        router,
+        heartbeat=heartbeat,
+        sentinel=sentinel,
+        searcher=searcher,
+        skill_registry=skill_registry,
     )
 
     # ---- Start core servers ----
