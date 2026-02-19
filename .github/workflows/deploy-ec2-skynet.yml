@@ -1,4 +1,4 @@
-name: Deploy SKYNET on EC2
+name: SKYNET CI/CD
 
 on:
   workflow_dispatch:
@@ -7,12 +7,33 @@ on:
       - main
 
 concurrency:
-  group: skynet-ec2-deploy
+  group: skynet-ci-cd
   cancel-in-progress: true
 
 jobs:
+  guard:
+    name: Path Guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check stale paths
+        run: python scripts/ci/check_stale_paths.py
+
+      - name: Check control-plane boundary
+        run: python scripts/ci/check_control_plane_boundary.py
+
   deploy:
     name: Deploy on self-hosted runner
+    needs: guard
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 20
     permissions:
@@ -41,36 +62,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Detect gateway changes
-        id: changes
-        shell: bash
-        run: |
-          BEFORE="${{ github.event.before }}"
-          AFTER="${{ github.sha }}"
-          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            echo "gateway_changed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          CHANGED="$(git diff --name-only "$BEFORE" "$AFTER")"
-          echo "Changed files:"
-          echo "$CHANGED"
-          if echo "$CHANGED" | grep -Eq '^(openclaw-gateway/|docker-compose\.yml|\.github/workflows/deploy-ec2-skynet\.yml$)'; then
-            echo "gateway_changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "gateway_changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Validate required secrets
         shell: bash
         run: |
           : "${OPENCLAW_GATEWAY_URL:?Missing OPENCLAW_GATEWAY_URL secret}"
           : "${SKYNET_API_KEY:?Missing SKYNET_API_KEY secret}"
-          if [ "${{ steps.changes.outputs.gateway_changed }}" = "true" ]; then
-            : "${SKYNET_AUTH_TOKEN:?Missing SKYNET_AUTH_TOKEN secret}"
-            : "${TELEGRAM_BOT_TOKEN:?Missing TELEGRAM_BOT_TOKEN secret}"
-            : "${TELEGRAM_ALLOWED_USER_ID:?Missing TELEGRAM_ALLOWED_USER_ID secret}"
-            : "${GOOGLE_AI_API_KEY:?Missing GOOGLE_AI_API_KEY secret}"
-          fi
+          : "${SKYNET_AUTH_TOKEN:?Missing SKYNET_AUTH_TOKEN secret}"
+          : "${TELEGRAM_BOT_TOKEN:?Missing TELEGRAM_BOT_TOKEN secret}"
+          : "${TELEGRAM_ALLOWED_USER_ID:?Missing TELEGRAM_ALLOWED_USER_ID secret}"
+          : "${GOOGLE_AI_API_KEY:?Missing GOOGLE_AI_API_KEY secret}"
 
       - name: Build deployment env file
         shell: bash
@@ -98,43 +98,35 @@ jobs:
           } > .env.ci
           chmod 600 .env.ci
 
-      - name: Deploy SKYNET API only (leave OpenClaw containers untouched)
-        shell: bash
-        run: |
-          docker compose --env-file .env.ci -f docker-compose.skynet-only.yml \
-            up -d --build --no-deps skynet-api
-
-      - name: Deploy OpenClaw gateway when gateway files changed
-        if: steps.changes.outputs.gateway_changed == 'true'
+      - name: Remove stale OpenClaw gateway container if present
         shell: bash
         run: |
           if docker ps -a --format '{{.Names}}' | grep -qx 'openclaw-gateway'; then
             echo "Removing existing openclaw-gateway container to avoid name conflict"
             docker rm -f openclaw-gateway
           fi
-          docker compose --env-file .env.ci \
-            up -d --build --no-deps openclaw-gateway
+
+      - name: Deploy full stack
+        shell: bash
+        run: |
+          docker compose --env-file .env.ci up -d --build skynet-api openclaw-gateway
 
       - name: Verify deployment
         shell: bash
         run: |
-          docker compose --env-file .env.ci -f docker-compose.skynet-only.yml ps
+          docker compose --env-file .env.ci ps
           for i in {1..20}; do
             if curl -fsS http://127.0.0.1:8000/v1/health > /dev/null; then
               echo "Health check passed"
-              exit 0
+              break
             fi
             sleep 3
           done
-          echo "Health check failed"
-          docker compose --env-file .env.ci -f docker-compose.skynet-only.yml \
-            logs --tail=100 skynet-api
-          exit 1
-
-      - name: Verify OpenClaw gateway deployment
-        if: steps.changes.outputs.gateway_changed == 'true'
-        shell: bash
-        run: |
+          if ! curl -fsS http://127.0.0.1:8000/v1/health > /dev/null; then
+            echo "Health check failed"
+            docker compose --env-file .env.ci logs --tail=120 skynet-api
+            exit 1
+          fi
           docker compose --env-file .env.ci ps openclaw-gateway
           if ! docker compose --env-file .env.ci ps --status running openclaw-gateway | grep -q openclaw-gateway; then
             echo "OpenClaw gateway is not running"
@@ -143,7 +135,6 @@ jobs:
           fi
 
       - name: Verify OpenClaw provider wiring
-        if: steps.changes.outputs.gateway_changed == 'true'
         shell: bash
         run: |
           GEMINI_ONLY_MODE_NORMALIZED="$(printf '%s' "${GEMINI_ONLY_MODE:-1}" | tr '[:upper:]' '[:lower:]')"
