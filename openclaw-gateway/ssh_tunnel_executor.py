@@ -415,10 +415,9 @@ class SSHTunnelExecutor:
             if self.remote_os == "windows":
                 lines = []
                 for name, binary in self._coding_bins.items():
-                    r = self._run_command(client, ["where", binary], cwd=None)
-                    resolved = (r.get("stdout") or "").strip().splitlines()
-                    if r.get("returncode", 1) == 0 and resolved:
-                        lines.append(f"{name}: available ({resolved[0].strip()})")
+                    resolved_bin, available = self._resolve_windows_binary(client, binary)
+                    if available:
+                        lines.append(f"{name}: available ({resolved_bin})")
                     else:
                         lines.append(f"{name}: unavailable (expected binary: {binary})")
                 out = "\n".join(lines)
@@ -447,7 +446,19 @@ class SSHTunnelExecutor:
                 return {"returncode": 1, "stdout": "", "stderr": "working_dir must be a string path."}
             if not isinstance(timeout, int) or timeout < 30 or timeout > 3600:
                 return {"returncode": 1, "stdout": "", "stderr": "timeout_seconds must be an integer between 30 and 3600."}
-            args = [self._coding_bins[agent], *self._coding_prefix[agent], prompt]
+            binary = self._coding_bins[agent]
+            if self.remote_os == "windows":
+                binary, available = self._resolve_windows_binary(client, binary)
+                if not available:
+                    return {
+                        "returncode": 1,
+                        "stdout": "",
+                        "stderr": (
+                            f"'{agent}' CLI is not installed or not on PATH. "
+                            f"Expected binary: {self._coding_bins[agent]}"
+                        ),
+                    }
+            args = [binary, *self._coding_prefix[agent], prompt]
             return self._run_command(client, args, cwd=cwd, timeout=timeout)
 
         if action == "docker_build":
@@ -472,6 +483,46 @@ class SSHTunnelExecutor:
             return {"returncode": 1, "stdout": "", "stderr": "close_app currently supports Windows remote hosts only."}
 
         return {"returncode": 1, "stdout": "", "stderr": f"Action '{action}' is not supported in SSH tunnel mode."}
+
+    def _resolve_windows_binary(self, client: paramiko.SSHClient, binary: str) -> tuple[str, bool]:
+        b = (binary or "").strip()
+        if not b:
+            return binary, False
+
+        # Explicit path already provided.
+        if any(ch in b for ch in ("\\", "/", ":")):
+            return b, self._remote_path_exists(client, b)
+
+        # PATH lookup first.
+        where_result = self._run_command(client, ["where", b], cwd=None)
+        if where_result.get("returncode", 1) == 0:
+            lines = [ln.strip() for ln in (where_result.get("stdout") or "").splitlines() if ln.strip()]
+            if lines:
+                return lines[0], True
+
+        # Fallback: npm global bin for current user.
+        npm_bin = rf"C:\Users\{self.username}\AppData\Roaming\npm"
+        candidates = [
+            rf"{npm_bin}\{b}.cmd",
+            rf"{npm_bin}\{b}.exe",
+            rf"{npm_bin}\{b}",
+        ]
+        for cand in candidates:
+            if self._remote_path_exists(client, cand):
+                return cand, True
+
+        return b, False
+
+    @staticmethod
+    def _remote_path_exists(client: paramiko.SSHClient, path: str) -> bool:
+        sftp = client.open_sftp()
+        try:
+            sftp.stat(path)
+            return True
+        except OSError:
+            return False
+        finally:
+            sftp.close()
 
     def _norm_join(self, parent: str | None, child: str) -> str:
         if not parent:
