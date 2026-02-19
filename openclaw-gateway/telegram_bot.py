@@ -158,7 +158,7 @@ def _format_result(result: dict) -> str:
 def _parse_path(args: list[str], index: int = 0) -> str:
     if args and len(args) > index:
         return args[index]
-    return cfg.DEFAULT_WORKING_DIR
+    return cfg.PROJECT_BASE_DIR or cfg.DEFAULT_WORKING_DIR
 
 
 def _store_pending(action: str, params: dict) -> str:
@@ -316,7 +316,7 @@ async def _reply_with_openclaw_capabilities(update: Update, text: str) -> None:
     tools = _skill_registry.get_all_tools()
 
     project_id = "telegram_chat"
-    project_path = cfg.DEFAULT_WORKING_DIR
+    project_path = cfg.PROJECT_BASE_DIR or cfg.DEFAULT_WORKING_DIR
     if _project_manager and _last_project_id:
         try:
             from db import store
@@ -574,8 +574,9 @@ def _extract_nl_intent(text: str) -> dict[str, str]:
 
     # Create project
     create_patterns = [
-        r"\b(?:create|start|begin|new)\s+(?:a\s+)?project(?:\s+(?:called|named))?\s+(?P<name>.+)$",
-        r"\bproject\s+(?:called|named)\s+(?P<name>.+)$",
+        r"\b(?:create|start|begin|new)\s+(?:a\s+)?(?:project|proj)(?:\s+(?:directory|dir|folder))?(?:\s+(?:called|named))?\s+(?P<name>.+)$",
+        r"\b(?:project|proj)\s+(?:called|named)\s+(?P<name>.+)$",
+        r"\bnew\s+(?:project|proj)\s+(?:directory|dir|folder)\s+(?P<name>.+)$",
     ]
     for pattern in create_patterns:
         match = re.search(pattern, raw, flags=re.IGNORECASE)
@@ -583,6 +584,12 @@ def _extract_nl_intent(text: str) -> dict[str, str]:
             name = _clean_entity(match.group("name"))
             if name:
                 return {"intent": "create_project", "project_name": name}
+    if re.search(
+        r"\b(?:create|start|begin|new)\s+(?:a\s+)?(?:project|proj)(?:\s+(?:directory|dir|folder))?\b",
+        raw,
+        flags=re.IGNORECASE,
+    ):
+        return {"intent": "create_project"}
 
     # Add idea
     match = re.search(
@@ -1507,7 +1514,7 @@ async def cmd_run_agent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("Agent must be one of: codex, claude, cline")
         return
 
-    working_dir = cfg.DEFAULT_WORKING_DIR
+    working_dir = cfg.PROJECT_BASE_DIR or cfg.DEFAULT_WORKING_DIR
     prompt_start_index = 1
     if len(context.args) >= 3 and context.args[1].startswith("path="):
         working_dir = context.args[1][len("path="):].strip() or working_dir
