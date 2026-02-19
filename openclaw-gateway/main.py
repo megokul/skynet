@@ -145,6 +145,8 @@ async def _main() -> None:
     skill_registry = build_default_registry(
         external_skills_dir=bot_config.EXTERNAL_SKILLS_DIR,
         external_skill_urls=bot_config.EXTERNAL_SKILL_URLS,
+        always_on_prompt_skills=bot_config.ALWAYS_ON_PROMPT_SKILLS,
+        always_on_prompt_snippet_chars=bot_config.ALWAYS_ON_PROMPT_SNIPPET_CHARS,
     )
     logger.info(
         "Skill registry loaded (%d total; %d prompt-only).",

@@ -66,6 +66,7 @@ _CHAT_SYSTEM_PROMPT = (
     "Use available tools/skills whenever execution, inspection, git, build, docker, or web research is needed. "
     "When asked to use coding agents, use check_coding_agents and run_coding_agent tools (codex/claude/cline CLIs). "
     "Ask concise clarifying questions only when required details are missing. "
+    "Never ask the user to switch to slash commands; infer intent from natural language and run the matching action. "
     "Do not return numbered option menus unless the user explicitly asks for options. "
     "If a tool fails, explain it in one short sentence and continue with the best possible answer. "
     "Do not output JSON unless the user explicitly asks for JSON."
@@ -478,8 +479,8 @@ async def _capture_idea(update: Update, text: str) -> None:
     project = await _project_manager.get_ideation_project()
     if not project:
         await update.message.reply_text(
-            "No project in ideation mode.\n"
-            "Use /newproject <name> first, then send ideas or use /idea.",
+            "I do not have an ideation project open right now. "
+            "Tell me the project name and I will create one first.",
         )
         return
 
@@ -498,7 +499,7 @@ async def _capture_idea(update: Update, text: str) -> None:
 
         await update.message.reply_text(
             f"Added idea #{count} to <b>{html.escape(project['display_name'])}</b>.\n"
-            f"Send more or use /plan to generate the plan.",
+            "Share more details naturally, or say 'generate the plan' when ready.",
             parse_mode="HTML",
         )
     except Exception as exc:
@@ -532,10 +533,22 @@ async def _auto_plan_and_start(update: Update, project_id: str, display_name: st
 
 def _clean_entity(text: str) -> str:
     """Trim punctuation/quotes from extracted NL entities."""
-    cleaned = (text or "").strip().strip(" \t\r\n.,!?;:")
+    cleaned = (text or "").strip().strip(" \t\r\n.,!?;:-")
+    cleaned = re.sub(r"^(?:called|named|is)\s+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^[-:]+\s*", "", cleaned)
     if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"', "`"}:
         cleaned = cleaned[1:-1].strip()
     return re.sub(r"\s+", " ", cleaned)
+
+
+def _is_smalltalk_or_ack(text: str) -> bool:
+    lowered = (text or "").strip().lower()
+    return bool(
+        re.fullmatch(
+            r"(hi|hello|hey|yo|sup|thanks|thank you|ok|okay|cool|great|nice|got it|understood)[.!? ]*",
+            lowered,
+        ),
+    )
 
 
 def _norm_project(text: str) -> str:
@@ -569,14 +582,23 @@ def _extract_nl_intent(text: str) -> dict[str, str]:
     lowered = raw.lower()
 
     # Keep greetings/small talk in regular chat flow.
-    if re.fullmatch(r"(hi|hello|hey|yo|sup|thanks|thank you)[.!? ]*", lowered):
+    if _is_smalltalk_or_ack(raw):
         return {}
 
     # Create project
     create_patterns = [
-        r"\b(?:create|start|begin|new)\s+(?:a\s+)?(?:project|proj)(?:\s+(?:directory|dir|folder))?(?:\s+(?:called|named))?\s+(?P<name>.+)$",
-        r"\b(?:project|proj)\s+(?:called|named)\s+(?P<name>.+)$",
-        r"\bnew\s+(?:project|proj)\s+(?:directory|dir|folder)\s+(?P<name>.+)$",
+        r"\b(?:create|start|begin|kick\s*off|make|spin\s*up)\s+"
+        r"(?:a\s+|an\s+|the\s+|my\s+)?(?:new\s+|demo\s+|sample\s+|test\s+)?"
+        r"(?:project|application|repo|proj|app)\b"
+        r"(?:\s+(?:directory|dir|folder))?(?:\s+(?:called|named|for|with\s+name))?"
+        r"\s*(?:-|:)?\s*(?P<name>.+)$",
+        r"\b(?:i\s+want\s+to|let'?s|can\s+we|can\s+i)\s+"
+        r"(?:create|start|begin|kick\s*off|make)\s+"
+        r"(?:a\s+|an\s+|the\s+|my\s+)?(?:new\s+|demo\s+|sample\s+|test\s+)?"
+        r"(?:project|application|repo|proj|app)\b"
+        r"(?:\s+(?:called|named|for|with\s+name))?\s*(?:-|:)?\s*(?P<name>.+)$",
+        r"\b(?:project|application|repo|proj|app)\b\s+(?:called|named)\s+(?P<name>.+)$",
+        r"\bnew\s+(?:project|application|repo|proj|app)\b\s+(?:directory|dir|folder)?\s*(?:called|named)?\s*(?P<name>.+)$",
     ]
     for pattern in create_patterns:
         match = re.search(pattern, raw, flags=re.IGNORECASE)
@@ -585,10 +607,10 @@ def _extract_nl_intent(text: str) -> dict[str, str]:
             if name:
                 return {"intent": "create_project", "project_name": name}
     if re.search(
-        r"\b(?:create|start|begin|new)\s+(?:a\s+)?(?:project|proj)(?:\s+(?:directory|dir|folder))?\b",
+        r"\b(?:create|start|begin|kick\s*off|make|spin\s*up|new)\b.*\b(?:project|proj|app|application|repo)\b",
         raw,
         flags=re.IGNORECASE,
-    ):
+    ) and not re.search(r"\b(?:execution|coding|work)\b", lowered):
         return {"intent": "create_project"}
 
     # Add idea
@@ -790,7 +812,7 @@ async def _resolve_project(reference: str | None = None) -> tuple[dict | None, s
 
     projects = await _project_manager.list_projects()
     if not projects:
-        return None, "No projects exist yet. Tell me to create one."
+        return None, "No projects exist yet. Tell me the project name and I will create it."
 
     if reference:
         ref = _clean_entity(reference)
@@ -847,6 +869,59 @@ async def _resolve_project(reference: str | None = None) -> tuple[dict | None, s
 
     choices = ", ".join(_project_display(p) for p in projects[:5])
     return None, f"Which project do you mean? I have: {choices}."
+
+
+def _looks_like_implicit_idea(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if len(cleaned) < 8:
+        return False
+    if _is_smalltalk_or_ack(cleaned):
+        return False
+    lowered = cleaned.lower()
+    if cleaned.endswith("?"):
+        return False
+    if lowered.startswith("/"):
+        return False
+    return True
+
+
+async def _maybe_capture_implicit_idea(update: Update, text: str) -> bool:
+    """Treat freeform follow-up text as an idea when a project is in ideation."""
+    global _last_project_id
+    if not _project_manager:
+        return False
+    if not _looks_like_implicit_idea(text):
+        return False
+
+    project = await _project_manager.get_ideation_project()
+    if not project:
+        return False
+
+    try:
+        count = await _project_manager.add_idea(project["id"], text)
+        _last_project_id = project["id"]
+        if cfg.AUTO_APPROVE_AND_START and count >= max(cfg.AUTO_PLAN_MIN_IDEAS, 1):
+            await update.message.reply_text(
+                (
+                    f"Added that as idea #{count} for <b>{html.escape(_project_display(project))}</b>.\n"
+                    "Enough detail captured. Auto-generating the plan and starting execution."
+                ),
+                parse_mode="HTML",
+            )
+            await _auto_plan_and_start(update, project["id"], _project_display(project))
+            return True
+
+        await update.message.reply_text(
+            (
+                f"Added that as idea #{count} for <b>{html.escape(_project_display(project))}</b>.\n"
+                "Share more details naturally, or say 'generate the plan' when ready."
+            ),
+            parse_mode="HTML",
+        )
+        return True
+    except Exception:
+        logger.exception("Failed implicit idea capture")
+        return False
 
 
 async def _handle_natural_action(update: Update, text: str) -> bool:
@@ -1941,6 +2016,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if await _handle_natural_action(update, text):
+        return
+
+    if await _maybe_capture_implicit_idea(update, text):
         return
 
     await _reply_with_openclaw_capabilities(update, text)

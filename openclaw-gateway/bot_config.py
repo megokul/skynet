@@ -156,3 +156,26 @@ EXTERNAL_SKILL_URLS: list[str] = [
     for u in _raw_external_skill_urls.replace("\n", ",").split(",")
     if u.strip()
 ]
+
+_default_always_on_prompt_skills = (
+    "memory-governance,"
+    "agent-memory,"
+    "self-improvement,"
+    "memory-management,"
+    "claude-reflection"
+)
+_raw_always_on_prompt_skills = os.environ.get(
+    "SKYNET_ALWAYS_ON_PROMPT_SKILLS",
+    os.environ.get("OPENCLAW_ALWAYS_ON_PROMPT_SKILLS", _default_always_on_prompt_skills),
+)
+ALWAYS_ON_PROMPT_SKILLS: list[str] = [
+    s.strip()
+    for s in _raw_always_on_prompt_skills.replace("\n", ",").split(",")
+    if s.strip()
+]
+ALWAYS_ON_PROMPT_SNIPPET_CHARS: int = int(
+    os.environ.get(
+        "SKYNET_ALWAYS_ON_PROMPT_SNIPPET_CHARS",
+        os.environ.get("OPENCLAW_ALWAYS_ON_PROMPT_SNIPPET_CHARS", "1200"),
+    ),
+)
