@@ -104,7 +104,7 @@ async def _main() -> None:
     logger.info("Database initialized at %s", bot_config.DB_PATH)
 
     # ---- Build AI provider router ----
-    from ai.provider_router import ProviderRouter, build_providers
+    from ai.provider_router import ProviderRouter, build_providers, parse_provider_priority
 
     provider_config = {
         "OLLAMA_DEFAULT_MODEL": bot_config.OLLAMA_DEFAULT_MODEL,
@@ -120,7 +120,11 @@ async def _main() -> None:
         "ANTHROPIC_API_KEY": bot_config.ANTHROPIC_API_KEY,
     }
     providers = build_providers(provider_config)
-    router = ProviderRouter(providers, db)
+    router = ProviderRouter(
+        providers,
+        db,
+        provider_priority=parse_provider_priority(bot_config.AI_PROVIDER_PRIORITY),
+    )
     await router.restore_usage()
     logger.info("AI router ready with %d provider(s).", len(providers))
 

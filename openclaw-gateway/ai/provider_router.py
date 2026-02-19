@@ -26,14 +26,41 @@ from db import store
 
 logger = logging.getLogger("skynet.ai.router")
 
+OPENROUTER_FREE_MODEL_PRIORITY: list[str] = [
+    "qwen/qwen3-next-80b-a3b-instruct:free",
+    "qwen/qwen3-vl-235b-a22b-thinking",
+    "openai/gpt-oss-120b:free",
+    "qwen/qwen3-coder:free",
+    "google/gemma-3n-e2b-it:free",
+    "deepseek/deepseek-r1-0528:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+]
+
 
 class ProviderRouter:
     """Routes AI requests to the best available free-tier provider."""
 
-    def __init__(self, providers: list[BaseProvider], db: aiosqlite.Connection):
+    def __init__(
+        self,
+        providers: list[BaseProvider],
+        db: aiosqlite.Connection,
+        provider_priority: list[str] | None = None,
+    ):
         self.providers = providers
         self.db = db
         self._error_counts: dict[str, int] = {}
+        self._provider_priority = provider_priority or [
+            "gemini",
+            "groq",
+            "openrouter",
+            "deepseek",
+            "openai",
+            "claude",
+            "ollama",
+        ]
+        self._provider_rank = {
+            name: idx for idx, name in enumerate(self._provider_priority)
+        }
 
     async def restore_usage(self) -> None:
         """Load today's usage counters from the database."""
@@ -104,10 +131,11 @@ class ProviderRouter:
                 score = -1  # Highest priority.
             elif p.name in preferences:
                 score = preferences.index(p.name)
-            elif p.is_deprioritized():
-                score = 100 + p.cost_rank
             else:
-                score = 50 + p.cost_rank
+                rank = self._provider_rank.get(p.name, 999)
+                score = 50 + (rank * 10) + p.cost_rank
+                if p.is_deprioritized():
+                    score += 1_000
 
             scored.append((p, score))
 
@@ -218,6 +246,21 @@ def _is_truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def parse_provider_priority(value: str | None) -> list[str]:
+    if not value:
+        return []
+    parsed = [
+        item.strip().lower()
+        for item in value.replace(";", ",").split(",")
+        if item.strip()
+    ]
+    deduped: list[str] = []
+    for item in parsed:
+        if item not in deduped:
+            deduped.append(item)
+    return deduped
+
+
 def build_providers(config: dict[str, str]) -> list[BaseProvider]:
     """
     Instantiate all available providers from config/env vars.
@@ -264,43 +307,48 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
         providers.append(GroqProvider(config["GROQ_API_KEY"]))
         logger.info("Registered provider: Groq")
 
-    # 3. OpenRouter — free models
+    # 3. OpenRouter — free model priority chain
     if config.get("OPENROUTER_API_KEY"):
         deprecated_openrouter_models = {
             "google/gemini-2.0-flash-exp:free",
         }
-        openrouter_model = (config.get("OPENROUTER_MODEL") or "").strip()
-        if not openrouter_model:
-            openrouter_model = "openrouter/auto"
-        elif openrouter_model in deprecated_openrouter_models:
-            logger.warning(
-                "OPENROUTER_MODEL '%s' is deprecated; falling back to 'openrouter/auto'",
-                openrouter_model,
-            )
-            openrouter_model = "openrouter/auto"
 
         raw_fallback_models = config.get("OPENROUTER_FALLBACK_MODELS", "")
-        fallback_models = [
+        configured_priority_models = [
             m.strip()
             for m in raw_fallback_models.replace(";", ",").split(",")
             if m.strip()
         ]
+        if not configured_priority_models:
+            configured_priority_models = list(OPENROUTER_FREE_MODEL_PRIORITY)
 
         # Normalize deprecated fallback entries.
         normalized: list[str] = []
-        for model in fallback_models:
+        for model in configured_priority_models:
             if model in deprecated_openrouter_models:
                 model = "google/gemini-2.0-flash"
             if model and model not in normalized:
                 normalized.append(model)
-        fallback_models = normalized
+        configured_priority_models = normalized
 
-        if not fallback_models:
-            # Keep a short compatibility list for older/deprecated defaults.
-            fallback_models = [
-                "google/gemini-2.0-flash",
-                "meta-llama/llama-3.3-70b-instruct:free",
-            ]
+        openrouter_model = (config.get("OPENROUTER_MODEL") or "").strip()
+        if openrouter_model in deprecated_openrouter_models:
+            logger.warning(
+                "OPENROUTER_MODEL '%s' is deprecated; selecting from priority chain",
+                openrouter_model,
+            )
+            openrouter_model = ""
+
+        if not openrouter_model or openrouter_model == "openrouter/auto":
+            if configured_priority_models:
+                openrouter_model = configured_priority_models[0]
+                fallback_models = configured_priority_models[1:]
+            else:
+                openrouter_model = "openrouter/auto"
+                fallback_models = []
+        else:
+            fallback_models = [m for m in configured_priority_models if m != openrouter_model]
+
         providers.append(OpenAICompatProvider(
             api_key=config["OPENROUTER_API_KEY"],
             model=openrouter_model,
@@ -317,6 +365,11 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
             openrouter_model,
             len(fallback_models),
         )
+        if fallback_models:
+            logger.info(
+                "OpenRouter model priority: %s",
+                " -> ".join([openrouter_model, *fallback_models]),
+            )
 
     # 4. DeepSeek — near-free
     if config.get("DEEPSEEK_API_KEY"):

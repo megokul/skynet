@@ -46,14 +46,28 @@ GEMINI_ONLY_MODE: bool = os.environ.get(
 ).strip().lower() in {"1", "true", "yes", "on"}
 GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY", "")
 OPENROUTER_API_KEY: str = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL: str = os.environ.get("OPENROUTER_MODEL", "openrouter/auto")
+OPENROUTER_MODEL: str = os.environ.get(
+    "OPENROUTER_MODEL",
+    "qwen/qwen3-next-80b-a3b-instruct:free",
+)
 OPENROUTER_FALLBACK_MODELS: str = os.environ.get(
     "OPENROUTER_FALLBACK_MODELS",
-    "google/gemini-2.0-flash,meta-llama/llama-3.3-70b-instruct:free",
+    (
+        "qwen/qwen3-vl-235b-a22b-thinking,"
+        "openai/gpt-oss-120b:free,"
+        "qwen/qwen3-coder:free,"
+        "google/gemma-3n-e2b-it:free,"
+        "deepseek/deepseek-r1-0528:free,"
+        "meta-llama/llama-3.3-70b-instruct:free"
+    ),
 )
 DEEPSEEK_API_KEY: str = os.environ.get("DEEPSEEK_API_KEY", "")
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
+AI_PROVIDER_PRIORITY: str = os.environ.get(
+    "AI_PROVIDER_PRIORITY",
+    "gemini,groq,openrouter,deepseek,openai,claude,ollama",
+)
 
 # ---------------------------------------------------------------------------
 # Ollama (local laptop LLM)

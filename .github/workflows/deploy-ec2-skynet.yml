@@ -56,6 +56,7 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      AI_PROVIDER_PRIORITY: ${{ secrets.AI_PROVIDER_PRIORITY }}
       SKYNET_EXTERNAL_SKILL_URLS: ${{ secrets.SKYNET_EXTERNAL_SKILL_URLS }}
       SKYNET_EXTERNAL_SKILLS_DIR: ${{ secrets.SKYNET_EXTERNAL_SKILLS_DIR }}
     steps:
@@ -85,14 +86,15 @@ jobs:
             printf 'TELEGRAM_ALLOWED_USER_ID=%s\n' "${TELEGRAM_ALLOWED_USER_ID}"
             printf 'GOOGLE_AI_API_KEY=%s\n' "${GOOGLE_AI_API_KEY}"
             printf 'GEMINI_MODEL=%s\n' "${GEMINI_MODEL:-gemini-2.0-flash}"
-            printf 'GEMINI_ONLY_MODE=%s\n' "${GEMINI_ONLY_MODE:-1}"
+            printf 'GEMINI_ONLY_MODE=%s\n' "${GEMINI_ONLY_MODE:-0}"
             printf 'GROQ_API_KEY=%s\n' "${GROQ_API_KEY}"
             printf 'OPENROUTER_API_KEY=%s\n' "${OPENROUTER_API_KEY}"
-            printf 'OPENROUTER_MODEL=%s\n' "${OPENROUTER_MODEL}"
-            printf 'OPENROUTER_FALLBACK_MODELS=%s\n' "${OPENROUTER_FALLBACK_MODELS}"
+            printf 'OPENROUTER_MODEL=%s\n' "${OPENROUTER_MODEL:-qwen/qwen3-next-80b-a3b-instruct:free}"
+            printf 'OPENROUTER_FALLBACK_MODELS=%s\n' "${OPENROUTER_FALLBACK_MODELS:-qwen/qwen3-vl-235b-a22b-thinking,openai/gpt-oss-120b:free,qwen/qwen3-coder:free,google/gemma-3n-e2b-it:free,deepseek/deepseek-r1-0528:free,meta-llama/llama-3.3-70b-instruct:free}"
             printf 'DEEPSEEK_API_KEY=%s\n' "${DEEPSEEK_API_KEY}"
             printf 'OPENAI_API_KEY=%s\n' "${OPENAI_API_KEY}"
             printf 'ANTHROPIC_API_KEY=%s\n' "${ANTHROPIC_API_KEY}"
+            printf 'AI_PROVIDER_PRIORITY=%s\n' "${AI_PROVIDER_PRIORITY:-gemini,groq,openrouter,deepseek,openai,claude,ollama}"
             printf 'SKYNET_EXTERNAL_SKILL_URLS=%s\n' "${SKYNET_EXTERNAL_SKILL_URLS}"
             printf 'SKYNET_EXTERNAL_SKILLS_DIR=%s\n' "${SKYNET_EXTERNAL_SKILLS_DIR}"
           } > .env.ci
@@ -137,7 +139,7 @@ jobs:
       - name: Verify OpenClaw provider wiring
         shell: bash
         run: |
-          GEMINI_ONLY_MODE_NORMALIZED="$(printf '%s' "${GEMINI_ONLY_MODE:-1}" | tr '[:upper:]' '[:lower:]')"
+          GEMINI_ONLY_MODE_NORMALIZED="$(printf '%s' "${GEMINI_ONLY_MODE:-0}" | tr '[:upper:]' '[:lower:]')"
           if [ "$GEMINI_ONLY_MODE_NORMALIZED" = "true" ] || [ "$GEMINI_ONLY_MODE_NORMALIZED" = "yes" ] || [ "$GEMINI_ONLY_MODE_NORMALIZED" = "on" ]; then
             GEMINI_ONLY_MODE_NORMALIZED="1"
           fi

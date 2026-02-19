@@ -65,6 +65,7 @@ _CHAT_SYSTEM_PROMPT = (
     "Do not output JSON unless the user explicitly asks for JSON."
 )
 _last_project_id: str | None = None
+_last_model_signature: str | None = None
 _CHAT_PROVIDER_ALLOWLIST = (
     ["gemini"]
     if cfg.GEMINI_ONLY_MODE
@@ -208,6 +209,22 @@ def _build_assistant_content(response) -> object:
     return parts if parts else response.text
 
 
+async def _maybe_notify_model_switch(update: Update, response) -> None:
+    """Send a compact notice when provider/model changes."""
+    global _last_model_signature
+    provider = (getattr(response, "provider_name", "") or "").strip()
+    model = (getattr(response, "model", "") or "").strip()
+    if not provider and not model:
+        return
+
+    signature = f"{provider}:{model}"
+    if _last_model_signature and signature != _last_model_signature:
+        await update.message.reply_text(
+            f"Note: switched model to {model} ({provider}) based on availability.",
+        )
+    _last_model_signature = signature
+
+
 def _friendly_ai_error(exc: Exception) -> str:
     """Convert provider stack errors into a concise user-facing message."""
     text = str(exc)
@@ -281,9 +298,9 @@ async def _reply_with_openclaw_capabilities(update: Update, text: str) -> None:
                 max_tokens=1500,
                 require_tools=True,
                 task_type="general",
-                preferred_provider="gemini",
                 allowed_providers=_CHAT_PROVIDER_ALLOWLIST,
             )
+            await _maybe_notify_model_switch(update, response)
             messages.append({"role": "assistant", "content": _build_assistant_content(response)})
 
             if not response.tool_calls:
@@ -328,9 +345,9 @@ async def _reply_with_openclaw_capabilities(update: Update, text: str) -> None:
                 system=system_prompt,
                 max_tokens=700,
                 task_type="general",
-                preferred_provider="gemini",
                 allowed_providers=_CHAT_PROVIDER_ALLOWLIST,
             )
+            await _maybe_notify_model_switch(update, summary)
             final_text = (summary.text or "").strip()
         except Exception:
             final_text = ""
@@ -376,9 +393,9 @@ async def _reply_naturally_fallback(update: Update, text: str) -> None:
             system=system_prompt,
             max_tokens=700,
             task_type="general",
-            preferred_provider="gemini",
             allowed_providers=_CHAT_PROVIDER_ALLOWLIST,
         )
+        await _maybe_notify_model_switch(update, response)
     except Exception as exc:
         await update.message.reply_text(_friendly_ai_error(exc))
         return

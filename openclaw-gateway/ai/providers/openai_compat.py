@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -97,6 +98,7 @@ class OpenAICompatProvider(BaseProvider):
         if cost_rank_override is not None:
             self.cost_rank = cost_rank_override
         self._model_candidates = [m.strip() for m in (model_candidates or []) if m and m.strip()]
+        self._model_cooldown_until: dict[str, float] = {}
         if model and model not in self._model_candidates:
             self._model_candidates.insert(0, model)
         super().__init__(api_key, model)
@@ -118,10 +120,7 @@ class OpenAICompatProvider(BaseProvider):
         max_tokens: int = 4096,
     ) -> ProviderResponse:
         oai_messages = _convert_messages(messages, system)
-        models_to_try: list[str] = [self.model_name]
-        for candidate in self._model_candidates:
-            if candidate not in models_to_try:
-                models_to_try.append(candidate)
+        models_to_try = self._ordered_models_to_try()
 
         last_error: Exception | None = None
         response = None
@@ -149,10 +148,18 @@ class OpenAICompatProvider(BaseProvider):
             except Exception as exc:
                 last_error = exc
                 if self._is_model_not_found_error(exc):
-                    logger.warning(
-                        "[%s] model unavailable: %s (trying next candidate if any)",
-                        self.name,
-                        model_name,
+                    self._enter_model_cooldown(
+                        model_name, seconds=21_600, reason="model unavailable"
+                    )
+                    continue
+                if self._is_rate_limited_error(exc):
+                    self._enter_model_cooldown(
+                        model_name, seconds=180, reason="rate limited"
+                    )
+                    continue
+                if self._is_quota_exhausted_error(exc):
+                    self._enter_model_cooldown(
+                        model_name, seconds=3_600, reason="quota exhausted"
                     )
                     continue
                 raise
@@ -196,4 +203,59 @@ class OpenAICompatProvider(BaseProvider):
             or "model_not_found" in text
             or "does not exist" in text
             or ("404" in text and "model" in text)
+        )
+
+    @staticmethod
+    def _is_rate_limited_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return (
+            "429" in text
+            or "rate limit" in text
+            or "too many requests" in text
+            or "requests per minute" in text
+            or "retry in" in text
+        )
+
+    @staticmethod
+    def _is_quota_exhausted_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return (
+            "insufficient_quota" in text
+            or "quota exhausted" in text
+            or "quota exceeded" in text
+            or "exceeded your current quota" in text
+            or "credit" in text and "low" in text
+            or "resource_exhausted" in text
+        )
+
+    def _ordered_models_to_try(self) -> list[str]:
+        models: list[str] = [self.model_name]
+        for candidate in self._model_candidates:
+            if candidate not in models:
+                models.append(candidate)
+
+        now = time.monotonic()
+        ready: list[str] = []
+        cooling: list[tuple[str, float]] = []
+        for model_name in models:
+            cooldown_until = self._model_cooldown_until.get(model_name, 0.0)
+            if cooldown_until <= now:
+                ready.append(model_name)
+            else:
+                cooling.append((model_name, cooldown_until))
+
+        if ready:
+            return ready + [m for m, _ in sorted(cooling, key=lambda item: item[1])]
+        if cooling:
+            return [m for m, _ in sorted(cooling, key=lambda item: item[1])]
+        return models
+
+    def _enter_model_cooldown(self, model_name: str, *, seconds: int, reason: str) -> None:
+        self._model_cooldown_until[model_name] = time.monotonic() + max(seconds, 1)
+        logger.warning(
+            "[%s] model '%s' in cooldown (%ds) due to %s; trying next candidate",
+            self.name,
+            model_name,
+            seconds,
+            reason,
         )
