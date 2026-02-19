@@ -214,12 +214,16 @@ class ProviderRouter:
         return summary
 
 
+def _is_truthy(value: Any) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def build_providers(config: dict[str, str]) -> list[BaseProvider]:
     """
     Instantiate all available providers from config/env vars.
 
     Only providers with valid API keys are included.
-    Ollama is always registered (availability depends on agent connection).
+    If GEMINI_ONLY_MODE is enabled, only Gemini is registered.
     """
     from .providers.gemini import GeminiProvider
     from .providers.groq import GroqProvider
@@ -227,6 +231,22 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
     from .providers.ollama_proxy import OllamaProxyProvider
 
     providers: list[BaseProvider] = []
+    gemini_only_mode = _is_truthy(config.get("GEMINI_ONLY_MODE", "0"))
+
+    # Strict Gemini-only runtime (no Ollama/fallback providers).
+    if gemini_only_mode:
+        if config.get("GOOGLE_AI_API_KEY"):
+            gemini_model = config.get("GEMINI_MODEL", "gemini-2.0-flash")
+            providers.append(GeminiProvider(config["GOOGLE_AI_API_KEY"], model=gemini_model))
+            logger.info(
+                "Registered provider: Gemini Flash (model=%s, gemini_only_mode=true)",
+                gemini_model,
+            )
+        else:
+            logger.error(
+                "GEMINI_ONLY_MODE is enabled but GOOGLE_AI_API_KEY is missing."
+            )
+        return providers
 
     # 0. Ollama — primary (zero cost, runs on laptop)
     ollama_model = config.get("OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:7b")

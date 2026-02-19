@@ -66,7 +66,11 @@ _CHAT_SYSTEM_PROMPT = (
     "Do not output JSON unless the user explicitly asks for JSON."
 )
 _last_project_id: str | None = None
-_CHAT_PROVIDER_ALLOWLIST = ["gemini", "groq", "openrouter", "deepseek", "openai", "claude"]
+_CHAT_PROVIDER_ALLOWLIST = (
+    ["gemini"]
+    if cfg.GEMINI_ONLY_MODE
+    else ["gemini", "groq", "openrouter", "deepseek", "openai", "claude"]
+)
 
 
 def set_dependencies(
@@ -216,11 +220,18 @@ def _friendly_ai_error(exc: Exception) -> str:
     text = str(exc)
     lower = text.lower()
     if "resource_exhausted" in lower or "quota" in lower or "429" in lower or "rate" in lower:
+        if cfg.GEMINI_ONLY_MODE:
+            return (
+                "Gemini quota/rate limit reached. "
+                "Please retry shortly or increase Gemini API quota."
+            )
         return (
             "AI quota/rate limit reached for the current provider. "
             "I will use fallback cloud providers if available; otherwise add/refresh provider keys."
         )
     if "no ai providers available" in lower:
+        if cfg.GEMINI_ONLY_MODE:
+            return "Gemini provider is not available. Check GOOGLE_AI_API_KEY and GEMINI_MODEL."
         return "No cloud AI providers are currently available. Add at least one active API key."
     return f"OpenClaw chat error: {text}"
 

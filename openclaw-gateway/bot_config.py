@@ -40,6 +40,10 @@ DEFAULT_WORKING_DIR: str = os.environ.get(
 # ---------------------------------------------------------------------------
 GOOGLE_AI_API_KEY: str = os.environ.get("GOOGLE_AI_API_KEY", "")
 GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_ONLY_MODE: bool = os.environ.get(
+    "GEMINI_ONLY_MODE",
+    os.environ.get("OPENCLAW_GEMINI_ONLY_MODE", "0"),
+).strip().lower() in {"1", "true", "yes", "on"}
 GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY", "")
 OPENROUTER_API_KEY: str = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL: str = os.environ.get("OPENROUTER_MODEL", "openrouter/auto")

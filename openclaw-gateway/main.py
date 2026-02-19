@@ -110,6 +110,7 @@ async def _main() -> None:
         "OLLAMA_DEFAULT_MODEL": bot_config.OLLAMA_DEFAULT_MODEL,
         "GOOGLE_AI_API_KEY": bot_config.GOOGLE_AI_API_KEY,
         "GEMINI_MODEL": bot_config.GEMINI_MODEL,
+        "GEMINI_ONLY_MODE": "1" if bot_config.GEMINI_ONLY_MODE else "0",
         "GROQ_API_KEY": bot_config.GROQ_API_KEY,
         "OPENROUTER_API_KEY": bot_config.OPENROUTER_API_KEY,
         "OPENROUTER_MODEL": bot_config.OPENROUTER_MODEL,

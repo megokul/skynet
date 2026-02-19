@@ -27,6 +27,7 @@ jobs:
       TELEGRAM_ALLOWED_USER_ID: ${{ secrets.TELEGRAM_ALLOWED_USER_ID }}
       GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
       GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+      GEMINI_ONLY_MODE: ${{ secrets.GEMINI_ONLY_MODE }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENROUTER_MODEL: ${{ secrets.OPENROUTER_MODEL }}
@@ -69,10 +70,6 @@ jobs:
             : "${TELEGRAM_BOT_TOKEN:?Missing TELEGRAM_BOT_TOKEN secret}"
             : "${TELEGRAM_ALLOWED_USER_ID:?Missing TELEGRAM_ALLOWED_USER_ID secret}"
             : "${GOOGLE_AI_API_KEY:?Missing GOOGLE_AI_API_KEY secret}"
-            if [ -z "${GROQ_API_KEY}" ] && [ -z "${OPENROUTER_API_KEY}" ] && [ -z "${DEEPSEEK_API_KEY}" ] && [ -z "${OPENAI_API_KEY}" ] && [ -z "${ANTHROPIC_API_KEY}" ]; then
-              echo "At least one fallback provider key is required (GROQ/OPENROUTER/DEEPSEEK/OPENAI/ANTHROPIC)."
-              exit 1
-            fi
           fi
 
       - name: Build deployment env file
@@ -88,6 +85,7 @@ jobs:
             printf 'TELEGRAM_ALLOWED_USER_ID=%s\n' "${TELEGRAM_ALLOWED_USER_ID}"
             printf 'GOOGLE_AI_API_KEY=%s\n' "${GOOGLE_AI_API_KEY}"
             printf 'GEMINI_MODEL=%s\n' "${GEMINI_MODEL:-gemini-2.0-flash}"
+            printf 'GEMINI_ONLY_MODE=%s\n' "${GEMINI_ONLY_MODE:-1}"
             printf 'GROQ_API_KEY=%s\n' "${GROQ_API_KEY}"
             printf 'OPENROUTER_API_KEY=%s\n' "${OPENROUTER_API_KEY}"
             printf 'OPENROUTER_MODEL=%s\n' "${OPENROUTER_MODEL}"
@@ -148,13 +146,18 @@ jobs:
         if: steps.changes.outputs.gateway_changed == 'true'
         shell: bash
         run: |
+          GEMINI_ONLY_MODE_NORMALIZED="$(printf '%s' "${GEMINI_ONLY_MODE:-1}" | tr '[:upper:]' '[:lower:]')"
+          if [ "$GEMINI_ONLY_MODE_NORMALIZED" = "true" ] || [ "$GEMINI_ONLY_MODE_NORMALIZED" = "yes" ] || [ "$GEMINI_ONLY_MODE_NORMALIZED" = "on" ]; then
+            GEMINI_ONLY_MODE_NORMALIZED="1"
+          fi
+
           # Ensure env vars were injected into the running container.
           if ! docker inspect openclaw-gateway --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -q '^GOOGLE_AI_API_KEY=.'; then
             echo "GOOGLE_AI_API_KEY is not present in openclaw-gateway container env."
             exit 1
           fi
-          if ! docker inspect openclaw-gateway --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Eq '^(GROQ_API_KEY|OPENROUTER_API_KEY|DEEPSEEK_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY)=.'; then
-            echo "No fallback provider key present in openclaw-gateway container env."
+          if ! docker inspect openclaw-gateway --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -q '^GEMINI_ONLY_MODE=.'; then
+            echo "GEMINI_ONLY_MODE is not present in openclaw-gateway container env."
             exit 1
           fi
 
@@ -166,10 +169,19 @@ jobs:
             echo "$LOGS"
             exit 1
           fi
-          if ! echo "$LOGS" | grep -Eq 'Registered provider: (Groq|OpenRouter|DeepSeek|OpenAI|Claude)'; then
-            echo "No fallback cloud provider was registered at startup."
-            echo "$LOGS"
-            exit 1
+
+          if [ "$GEMINI_ONLY_MODE_NORMALIZED" = "1" ]; then
+            if echo "$LOGS" | grep -Eq 'Registered provider: (Ollama|Groq|OpenRouter|DeepSeek|OpenAI|Claude)'; then
+              echo "Gemini-only mode is enabled, but non-Gemini providers were registered."
+              echo "$LOGS"
+              exit 1
+            fi
+          else
+            if ! echo "$LOGS" | grep -Eq 'Registered provider: (Groq|OpenRouter|DeepSeek|OpenAI|Claude)'; then
+              echo "No fallback cloud provider was registered at startup."
+              echo "$LOGS"
+              exit 1
+            fi
           fi
 
       - name: Cleanup env file
