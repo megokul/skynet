@@ -134,6 +134,34 @@ jobs:
             exit 1
           fi
 
+      - name: Verify OpenClaw provider wiring
+        if: steps.changes.outputs.gateway_changed == 'true'
+        shell: bash
+        run: |
+          # Ensure env vars were injected into the running container.
+          if ! docker inspect openclaw-gateway --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -q '^GOOGLE_AI_API_KEY=.'; then
+            echo "GOOGLE_AI_API_KEY is not present in openclaw-gateway container env."
+            exit 1
+          fi
+          if ! docker inspect openclaw-gateway --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Eq '^(GROQ_API_KEY|OPENROUTER_API_KEY|DEEPSEEK_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY)=.'; then
+            echo "No fallback provider key present in openclaw-gateway container env."
+            exit 1
+          fi
+
+          # Give gateway a moment to log provider registration.
+          sleep 5
+          LOGS="$(docker logs --tail=200 openclaw-gateway 2>&1 || true)"
+          if ! echo "$LOGS" | grep -q 'Registered provider: Gemini Flash'; then
+            echo "Gemini provider was not registered at startup."
+            echo "$LOGS"
+            exit 1
+          fi
+          if ! echo "$LOGS" | grep -Eq 'Registered provider: (Groq|OpenRouter|DeepSeek|OpenAI|Claude)'; then
+            echo "No fallback cloud provider was registered at startup."
+            echo "$LOGS"
+            exit 1
+          fi
+
       - name: Cleanup env file
         if: always()
         shell: bash
