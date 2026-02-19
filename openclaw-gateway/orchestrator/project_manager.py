@@ -82,7 +82,15 @@ class ProjectManager:
         project = await store.create_project(
             self.db, name=slug, display_name=name, local_path=local_path,
         )
-        bootstrap_summary = await self._bootstrap_project_workspace(project)
+        bootstrap_summary, bootstrap_ok = await self._bootstrap_project_workspace(project)
+        if not bootstrap_ok:
+            # Keep creation atomic: do not retain a project row if required
+            # workspace bootstrap steps failed.
+            await self.db.execute("DELETE FROM projects WHERE id = ?", (project["id"],))
+            await self.db.commit()
+            raise ValueError(
+                f"Project bootstrap failed and creation was rolled back. {bootstrap_summary}"
+            )
         await store.add_event(
             self.db, project["id"], "created",
             f"Project '{name}' created at {local_path}",
@@ -92,7 +100,7 @@ class ProjectManager:
         if out is None:
             raise ValueError("Project was created but could not be loaded.")
         out["bootstrap_summary"] = bootstrap_summary
-        out["bootstrap_ok"] = "failed" not in bootstrap_summary.lower()
+        out["bootstrap_ok"] = bootstrap_ok
         return out
 
     async def add_idea(self, project_id: str, text: str) -> int:
@@ -412,15 +420,17 @@ class ProjectManager:
     # Project bootstrap
     # ------------------------------------------------------------------
 
-    async def _bootstrap_project_workspace(self, project: dict[str, Any]) -> str:
+    async def _bootstrap_project_workspace(self, project: dict[str, Any]) -> tuple[str, bool]:
         """
         Initialize project workspace and repository via the connected agent.
 
-        This method is best-effort: project creation should still succeed even
-        if agent bootstrap steps fail.
+        Returns:
+            (summary, ok)
+            ok=False means required bootstrap steps failed and project creation
+            should be rolled back.
         """
         if not cfg.AUTO_BOOTSTRAP_PROJECT:
-            return "Bootstrap skipped (AUTO_BOOTSTRAP_PROJECT disabled)."
+            return "Bootstrap skipped (AUTO_BOOTSTRAP_PROJECT disabled).", True
 
         path = project["local_path"]
         slug = project["name"]
@@ -436,7 +446,7 @@ class ProjectManager:
             "directory: ok" if ok else f"directory: failed ({msg})"
         )
         if not ok:
-            return "; ".join(bootstrap_notes)
+            return "; ".join(bootstrap_notes), False
 
         readme = (
             f"# {project['display_name']}\n\n"
@@ -452,6 +462,8 @@ class ProjectManager:
             confirmed=True,
         )
         bootstrap_notes.append("readme: ok" if ok else f"readme: failed ({msg})")
+        if not ok:
+            return "; ".join(bootstrap_notes), False
 
         ok, msg = await self._run_agent_action(
             "git_init",
@@ -459,6 +471,8 @@ class ProjectManager:
             confirmed=True,
         )
         bootstrap_notes.append("git_init: ok" if ok else f"git_init: failed ({msg})")
+        if not ok:
+            return "; ".join(bootstrap_notes), False
 
         ok_add, msg_add = await self._run_agent_action(
             "git_add_all",
@@ -481,6 +495,8 @@ class ProjectManager:
             bootstrap_notes.append(
                 "git_commit: ok" if ok_commit else f"git_commit: failed ({msg_commit})"
             )
+        if not ok_add:
+            return "; ".join(bootstrap_notes), False
 
         if cfg.AUTO_CREATE_GITHUB_REPO:
             ok_gh, msg_gh = await self._run_agent_action(
@@ -510,7 +526,7 @@ class ProjectManager:
                 # Repo creation is optional; keep bootstrap successful without it.
                 bootstrap_notes.append(f"github: warning ({msg_gh})")
 
-        return "; ".join(bootstrap_notes)
+        return "; ".join(bootstrap_notes), True
 
     async def _run_agent_action(
         self,
