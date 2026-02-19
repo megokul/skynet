@@ -79,6 +79,7 @@ class OpenAICompatProvider(BaseProvider):
         api_key: str,
         model: str | None = None,
         *,
+        model_candidates: list[str] | None = None,
         base_url: str | None = None,
         provider_name: str = "openai",
         daily_limit_override: int | None = None,
@@ -95,6 +96,9 @@ class OpenAICompatProvider(BaseProvider):
             self.context_limit = context_limit_override
         if cost_rank_override is not None:
             self.cost_rank = cost_rank_override
+        self._model_candidates = [m.strip() for m in (model_candidates or []) if m and m.strip()]
+        if model and model not in self._model_candidates:
+            self._model_candidates.insert(0, model)
         super().__init__(api_key, model)
         kwargs: dict[str, Any] = {"api_key": api_key}
         if base_url:
@@ -114,17 +118,47 @@ class OpenAICompatProvider(BaseProvider):
         max_tokens: int = 4096,
     ) -> ProviderResponse:
         oai_messages = _convert_messages(messages, system)
-        kwargs: dict[str, Any] = {
-            "model": self.model_name,
-            "messages": oai_messages,
-            "max_tokens": max_tokens,
-            "temperature": 0.2,
-        }
-        if tools:
-            kwargs["tools"] = _convert_tools(tools)
-            kwargs["tool_choice"] = "auto"
+        models_to_try: list[str] = [self.model_name]
+        for candidate in self._model_candidates:
+            if candidate not in models_to_try:
+                models_to_try.append(candidate)
 
-        response = await self._client.chat.completions.create(**kwargs)
+        last_error: Exception | None = None
+        response = None
+        for model_name in models_to_try:
+            kwargs: dict[str, Any] = {
+                "model": model_name,
+                "messages": oai_messages,
+                "max_tokens": max_tokens,
+                "temperature": 0.2,
+            }
+            if tools:
+                kwargs["tools"] = _convert_tools(tools)
+                kwargs["tool_choice"] = "auto"
+            try:
+                response = await self._client.chat.completions.create(**kwargs)
+                if model_name != self.model_name:
+                    logger.warning(
+                        "[%s] switching model from '%s' to '%s' after fallback",
+                        self.name,
+                        self.model_name,
+                        model_name,
+                    )
+                    self.model_name = model_name
+                break
+            except Exception as exc:
+                last_error = exc
+                if self._is_model_not_found_error(exc):
+                    logger.warning(
+                        "[%s] model unavailable: %s (trying next candidate if any)",
+                        self.name,
+                        model_name,
+                    )
+                    continue
+                raise
+
+        if response is None:
+            raise last_error if last_error else RuntimeError("Provider request failed with no response.")
         choice = response.choices[0] if response.choices else None
         text = ""
         tool_calls = []
@@ -152,4 +186,14 @@ class OpenAICompatProvider(BaseProvider):
             provider_name=self.name,
             model=self.model_name,
             raw=response,
+        )
+
+    @staticmethod
+    def _is_model_not_found_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return (
+            "no endpoints found" in text
+            or "model_not_found" in text
+            or "does not exist" in text
+            or ("404" in text and "model" in text)
         )

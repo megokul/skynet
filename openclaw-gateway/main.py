@@ -111,6 +111,8 @@ async def _main() -> None:
         "GOOGLE_AI_API_KEY": bot_config.GOOGLE_AI_API_KEY,
         "GROQ_API_KEY": bot_config.GROQ_API_KEY,
         "OPENROUTER_API_KEY": bot_config.OPENROUTER_API_KEY,
+        "OPENROUTER_MODEL": bot_config.OPENROUTER_MODEL,
+        "OPENROUTER_FALLBACK_MODELS": bot_config.OPENROUTER_FALLBACK_MODELS,
         "DEEPSEEK_API_KEY": bot_config.DEEPSEEK_API_KEY,
         "OPENAI_API_KEY": bot_config.OPENAI_API_KEY,
         "ANTHROPIC_API_KEY": bot_config.ANTHROPIC_API_KEY,

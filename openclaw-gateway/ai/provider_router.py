@@ -245,9 +245,23 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
 
     # 3. OpenRouter — free models
     if config.get("OPENROUTER_API_KEY"):
+        openrouter_model = config.get("OPENROUTER_MODEL", "openrouter/auto")
+        raw_fallback_models = config.get("OPENROUTER_FALLBACK_MODELS", "")
+        fallback_models = [
+            m.strip()
+            for m in raw_fallback_models.replace(";", ",").split(",")
+            if m.strip()
+        ]
+        if not fallback_models:
+            # Keep a short compatibility list for older/deprecated defaults.
+            fallback_models = [
+                "google/gemini-2.0-flash-exp:free",
+                "meta-llama/llama-3.3-70b-instruct:free",
+            ]
         providers.append(OpenAICompatProvider(
             api_key=config["OPENROUTER_API_KEY"],
-            model="google/gemini-2.0-flash-exp:free",
+            model=openrouter_model,
+            model_candidates=fallback_models,
             base_url="https://openrouter.ai/api/v1",
             provider_name="openrouter",
             daily_limit_override=200,
@@ -255,7 +269,11 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
             context_limit_override=1_000_000,
             cost_rank_override=2,
         ))
-        logger.info("Registered provider: OpenRouter")
+        logger.info(
+            "Registered provider: OpenRouter (model=%s, fallback_candidates=%d)",
+            openrouter_model,
+            len(fallback_models),
+        )
 
     # 4. DeepSeek — near-free
     if config.get("DEEPSEEK_API_KEY"):
