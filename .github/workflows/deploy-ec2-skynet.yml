@@ -36,6 +36,9 @@ jobs:
     needs: guard
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: repo
     permissions:
       contents: read
     env:
@@ -90,6 +93,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           clean: false
+          path: repo
 
       - name: Repair workspace permissions
         shell: bash
@@ -97,10 +101,10 @@ jobs:
           # Self-hosted runs can leave root-owned bind-mount artifacts (for example .remote-cache).
           # Normalize ownership so git clean/reset and subsequent checkout operations stay reliable.
           if command -v sudo >/dev/null 2>&1; then
-            sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" || true
+            sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE/repo" || true
           fi
-          chmod -R u+rwX "$GITHUB_WORKSPACE" || true
-          rm -rf "$GITHUB_WORKSPACE/openclaw-gateway/external-skills/.remote-cache" || true
+          chmod -R u+rwX "$GITHUB_WORKSPACE/repo" || true
+          rm -rf "$GITHUB_WORKSPACE/repo/openclaw-gateway/external-skills/.remote-cache" || true
           git reset --hard
           git clean -ffdx
 
