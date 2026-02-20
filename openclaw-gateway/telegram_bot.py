@@ -1499,6 +1499,52 @@ def _doc_intake_opt_out_requested(text: str) -> bool:
     return False
 
 
+async def _doc_intake_opt_out_requested_semantic(
+    text: str,
+    project_name: str,
+    answers: dict[str, str],
+) -> bool:
+    """
+    LLM-based intent check: does the user want to stop/skip documentation intake?
+    """
+    if _provider_router is None:
+        return False
+
+    raw = (text or "").strip()
+    if not raw:
+        return False
+
+    payload = {
+        "message": raw,
+        "project_name": project_name,
+        "current_answers": answers,
+        "task": "Classify whether the user intends to stop/skip/minimize documentation intake.",
+    }
+    system = (
+        "You classify a user's intent in a project-intake chat.\n"
+        "Return ONLY JSON: {\"opt_out\": true|false, \"confidence\": 0..1}.\n"
+        "Set opt_out=true when user meaning implies: no docs, minimal docs, stop asking doc questions, "
+        "or focus only on building now.\n"
+        "Do not require exact words.\n"
+    )
+    try:
+        response = await _provider_router.chat(
+            [{"role": "user", "content": json.dumps(payload)}],
+            system=system,
+            max_tokens=120,
+            task_type="general",
+            preferred_provider="groq",
+            allowed_providers=_CHAT_PROVIDER_ALLOWLIST,
+        )
+    except Exception:
+        return False
+
+    obj = _extract_json_object(response.text or "")
+    if not isinstance(obj, dict):
+        return False
+    return bool(obj.get("opt_out", False))
+
+
 async def _capture_minimal_intake_idea_snapshot(state: dict[str, Any], note: str = "") -> None:
     if _project_manager is None:
         return
@@ -2292,8 +2338,13 @@ async def _maybe_handle_project_doc_intake(update: Update, text: str) -> bool:
         _pending_project_doc_intake.pop(key, None)
         return False
 
-    if _doc_intake_opt_out_requested(text):
-        answers_snapshot = dict(state.get("answers") or {})
+    answers_snapshot = dict(state.get("answers") or {})
+    project_name = str(state.get("project_name") or "project")
+    opt_out = _doc_intake_opt_out_requested(text)
+    if not opt_out:
+        opt_out = await _doc_intake_opt_out_requested_semantic(text, project_name, answers_snapshot)
+
+    if opt_out:
         state["answers"] = answers_snapshot
         _pending_project_doc_intake.pop(key, None)
         _spawn_background_task(
@@ -2307,10 +2358,11 @@ async def _maybe_handle_project_doc_intake(update: Update, text: str) -> bool:
                 "We can continue building."
             )
         )
+        # Continue processing this same message as project detail input.
+        await _maybe_capture_implicit_idea(update, text)
         return True
 
-    answers = dict(state.get("answers") or {})
-    project_name = str(state.get("project_name") or "project")
+    answers = answers_snapshot
     extracted = await _extract_intake_signals(project_name, text, answers)
     for field in _DOC_INTAKE_FIELDS:
         if field not in extracted:
