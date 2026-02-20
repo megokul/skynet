@@ -344,6 +344,7 @@ class SSHTunnelExecutor:
     def _run_command_action(self, client: paramiko.SSHClient, action: str, params: dict[str, Any]) -> dict[str, Any]:
         if action == "git_status":
             cwd = self._require_str(params, "working_dir")
+            self._ensure_git_safe_directory(client, cwd)
             return self._run_command(client, ["git", "status", "--porcelain"], cwd=cwd)
 
         if action == "run_tests":
@@ -387,6 +388,7 @@ class SSHTunnelExecutor:
 
         if action == "git_init":
             cwd = self._require_str(params, "working_dir")
+            self._ensure_git_safe_directory(client, cwd)
             result = self._run_command(client, ["git", "init"], cwd=cwd)
             if result["returncode"] == 0:
                 _ = self._run_command(client, ["git", "checkout", "-b", "main"], cwd=cwd)
@@ -394,11 +396,13 @@ class SSHTunnelExecutor:
 
         if action == "git_add_all":
             cwd = self._require_str(params, "working_dir")
+            self._ensure_git_safe_directory(client, cwd)
             return self._run_command(client, ["git", "add", "-A"], cwd=cwd)
 
         if action == "git_commit":
             cwd = self._require_str(params, "working_dir")
             message = self._require_str(params, "message")
+            self._ensure_git_safe_directory(client, cwd)
             stage = self._run_command(client, ["git", "add", "-u"], cwd=cwd)
             if stage["returncode"] != 0:
                 return stage
@@ -408,6 +412,7 @@ class SSHTunnelExecutor:
             cwd = self._require_str(params, "working_dir")
             remote = str(params.get("remote", "origin"))
             branch = str(params.get("branch", "main"))
+            self._ensure_git_safe_directory(client, cwd)
             return self._run_command(client, ["git", "push", "-u", remote, branch], cwd=cwd)
 
         if action == "gh_create_repo":
@@ -587,6 +592,33 @@ class SSHTunnelExecutor:
             return {"returncode": 1, "stdout": "", "stderr": "close_app currently supports Windows remote hosts only."}
 
         return {"returncode": 1, "stdout": "", "stderr": f"Action '{action}' is not supported in SSH tunnel mode."}
+
+    def _ensure_git_safe_directory(self, client: paramiko.SSHClient, cwd: str) -> None:
+        """
+        Avoid Git's "dubious ownership" protection on Windows SSH-created folders.
+        """
+        safe_path = _norm_remote_path(cwd, self.remote_os)
+        check = self._run_command(
+            client,
+            ["git", "config", "--global", "--get-all", "safe.directory"],
+            cwd=None,
+            timeout=30,
+        )
+        if check["returncode"] == 0:
+            lines = [
+                line.strip().lower()
+                for line in (check.get("stdout") or "").splitlines()
+                if line.strip()
+            ]
+            if safe_path.lower() in lines:
+                return
+
+        _ = self._run_command(
+            client,
+            ["git", "config", "--global", "--add", "safe.directory", safe_path],
+            cwd=None,
+            timeout=30,
+        )
 
     @staticmethod
     def _default_api_key_for_provider(provider: str) -> str:

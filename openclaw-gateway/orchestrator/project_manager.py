@@ -7,6 +7,7 @@ Manages the full lifecycle of a project:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -394,6 +395,7 @@ class ProjectManager:
             "create_directory",
             {"directory": path},
             confirmed=True,
+            retry_on_transient=True,
         )
         bootstrap_notes.append(
             "directory: ok" if ok else f"directory: failed ({msg})"
@@ -413,6 +415,7 @@ class ProjectManager:
             "file_write",
             {"file": readme_path, "content": readme},
             confirmed=True,
+            retry_on_transient=True,
         )
         bootstrap_notes.append("readme: ok" if ok else f"readme: failed ({msg})")
         if not ok:
@@ -422,6 +425,7 @@ class ProjectManager:
             "git_init",
             {"working_dir": path},
             confirmed=True,
+            retry_on_transient=True,
         )
         bootstrap_notes.append("git_init: ok" if ok else f"git_init: failed ({msg})")
         if not ok:
@@ -431,11 +435,13 @@ class ProjectManager:
             "git_add_all",
             {"working_dir": path},
             confirmed=True,
+            retry_on_transient=True,
         )
         ok_commit, msg_commit = await self._run_agent_action(
             "git_commit",
             {"working_dir": path, "message": "chore: initialize project scaffold"},
             confirmed=True,
+            retry_on_transient=True,
         )
         # Git can return non-zero for no-op commits; treat this as non-fatal.
         if not ok_commit and "nothing to commit" in (msg_commit or "").lower():
@@ -461,6 +467,7 @@ class ProjectManager:
                     "private": cfg.AUTO_CREATE_GITHUB_PRIVATE,
                 },
                 confirmed=True,
+                retry_on_transient=True,
             )
             if ok_gh:
                 repo_url = self._extract_github_url(msg_gh) or ""
@@ -487,12 +494,46 @@ class ProjectManager:
         params: dict[str, Any],
         *,
         confirmed: bool,
+        retry_on_transient: bool = False,
+        max_attempts: int = 2,
     ) -> tuple[bool, str]:
-        payload = {
-            "action": action,
-            "params": params,
-            "confirmed": confirmed,
-        }
+        attempts = max(1, max_attempts if retry_on_transient else 1)
+        last_error = "unknown error"
+
+        for attempt in range(1, attempts + 1):
+            ok, message = await self._run_agent_action_once(
+                action=action,
+                params=params,
+                confirmed=confirmed,
+            )
+            if ok:
+                return True, message
+
+            last_error = message or "unknown error"
+            if attempt >= attempts or not self._is_transient_agent_error(last_error):
+                break
+
+            delay = min(2.0, 0.5 * attempt)
+            logger.warning(
+                "Transient action failure (%s) for %s; retrying (%d/%d) in %.1fs",
+                last_error,
+                action,
+                attempt,
+                attempts,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+        return False, last_error
+
+    async def _run_agent_action_once(
+        self,
+        *,
+        action: str,
+        params: dict[str, Any],
+        confirmed: bool,
+    ) -> tuple[bool, str]:
+        payload = {"action": action, "params": params, "confirmed": confirmed}
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -500,14 +541,19 @@ class ProjectManager:
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=130),
                 ) as resp:
-                    data = await resp.json()
+                    status_code = resp.status
+                    try:
+                        data = await resp.json()
+                    except Exception:
+                        raw = (await resp.text()).strip()
+                        return False, raw or f"http {status_code}"
         except Exception as exc:
             return False, str(exc)
 
         if data.get("error"):
             return False, str(data.get("error"))
         if data.get("status") == "error":
-            return False, data.get("error", "Unknown error")
+            return False, str(data.get("error", "Unknown error"))
 
         inner = data.get("result", {})
         rc = inner.get("returncode", 0)
@@ -531,3 +577,23 @@ class ProjectManager:
             return None
         match = re.search(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", text)
         return match.group(0) if match else None
+
+    @staticmethod
+    def _is_transient_agent_error(message: str) -> bool:
+        text = (message or "").lower()
+        markers = (
+            "no existing session",
+            "agent disconnected",
+            "agent not connected",
+            "temporarily unavailable",
+            "timeout",
+            "timed out",
+            "connection reset",
+            "connection aborted",
+            "broken pipe",
+            "transport endpoint",
+            "ssh action failed",
+            "http 503",
+            "service unavailable",
+        )
+        return any(marker in text for marker in markers)
