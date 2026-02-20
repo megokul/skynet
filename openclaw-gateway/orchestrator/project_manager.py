@@ -88,16 +88,28 @@ class ProjectManager:
         )
         bootstrap_summary, bootstrap_ok = await self._bootstrap_project_workspace(project)
         if not bootstrap_ok:
-            # Keep creation atomic: do not retain a project row if required
-            # workspace bootstrap steps failed.
-            await self.db.execute("DELETE FROM projects WHERE id = ?", (project["id"],))
-            await self.db.commit()
-            raise ValueError(
-                f"Project bootstrap failed and creation was rolled back. {bootstrap_summary}"
+            if cfg.AUTO_BOOTSTRAP_STRICT:
+                # Strict mode keeps creation atomic: do not retain a project row
+                # if required workspace bootstrap steps failed.
+                await self.db.execute("DELETE FROM projects WHERE id = ?", (project["id"],))
+                await self.db.commit()
+                raise ValueError(
+                    f"Project bootstrap failed and creation was rolled back. {bootstrap_summary}"
+                )
+            logger.warning(
+                "Project %s created with bootstrap warnings: %s",
+                project["id"],
+                bootstrap_summary,
             )
         await store.add_event(
-            self.db, project["id"], "created",
-            f"Project '{name}' created at {local_path}",
+            self.db,
+            project["id"],
+            "created" if bootstrap_ok else "created_with_warnings",
+            (
+                f"Project '{name}' created at {local_path}"
+                if bootstrap_ok else
+                f"Project '{name}' created at {local_path} with bootstrap warnings"
+            ),
             detail=bootstrap_summary,
         )
         out = await store.get_project(self.db, project["id"])

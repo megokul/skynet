@@ -84,6 +84,10 @@ AUTO_BOOTSTRAP_PROJECT: bool = os.environ.get(
     "AUTO_BOOTSTRAP_PROJECT",
     os.environ.get("OPENCLAW_AUTO_BOOTSTRAP_PROJECT", "1"),
 ).strip().lower() in {"1", "true", "yes", "on"}
+AUTO_BOOTSTRAP_STRICT: bool = os.environ.get(
+    "AUTO_BOOTSTRAP_STRICT",
+    os.environ.get("OPENCLAW_AUTO_BOOTSTRAP_STRICT", "0"),
+).strip().lower() in {"1", "true", "yes", "on"}
 AUTO_CREATE_GITHUB_REPO: bool = os.environ.get(
     "AUTO_CREATE_GITHUB_REPO",
     os.environ.get("OPENCLAW_AUTO_CREATE_GITHUB_REPO", "1"),
