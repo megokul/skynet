@@ -939,6 +939,27 @@ def _extract_project_name_candidate(text: str) -> str:
     if quoted_name:
         return quoted_name
 
+    # Handle descriptive replies while awaiting name:
+    # "python app - my-name which does X"
+    descriptive_patterns = (
+        r"^(?:[a-z0-9+.#_-]+\s+)?(?:app|project|application|repo)\s*[-:]\s*(?P<name>.+)$",
+        r"^(?:.*?\b)?(?:called|named)\s+(?P<name>.+)$",
+    )
+    for pattern in descriptive_patterns:
+        match = re.search(pattern, raw, flags=re.IGNORECASE)
+        if not match:
+            continue
+        tail = _clean_entity(match.group("name"))
+        tail = re.split(
+            r"\b(which|that|with|where|when|to|for)\b",
+            tail,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        tail = _clean_entity(tail)
+        if _is_plausible_project_name(tail):
+            return tail
+
     # For follow-up name replies, prefer short plain phrases.
     if any(ch in raw for ch in ".!?;\n"):
         return ""
@@ -1747,45 +1768,58 @@ async def _maybe_handle_pending_project_name(update: Update, text: str) -> bool:
     if (text or "").strip().startswith("/"):
         return False
 
+    candidate = _extract_project_name_candidate(text)
+    if candidate:
+        _pending_project_name_requests.pop(key, None)
+        previous_project_id = _last_project_id
+        handled = await _create_project_from_name(update, candidate)
+
+        # If the follow-up also contains build details, capture them as the first idea.
+        new_project_id = _last_project_id
+        if (
+            handled
+            and _project_manager is not None
+            and new_project_id
+            and new_project_id != previous_project_id
+        ):
+            idea_text = _extract_followup_idea_after_project_name(text, candidate)
+            if idea_text:
+                try:
+                    count = await _project_manager.add_idea(new_project_id, idea_text)
+                    await update.message.reply_text(
+                        f"Captured that as idea #{count} for '{candidate}'.",
+                    )
+                except Exception:
+                    logger.exception("Failed capturing follow-up idea after project-name reply.")
+        return handled
+
+    lowered = (text or "").strip().lower()
+    if lowered in {"cancel", "cancel it", "never mind", "nevermind", "forget it"}:
+        _pending_project_name_requests.pop(key, None)
+        await update.message.reply_text("Okay, cancelled project creation.")
+        return True
+
     intent_data = await _extract_nl_intent_hybrid(text)
-    if intent_data:
-        # User provided a full create instruction as follow-up.
-        if intent_data.get("intent") == "create_project" and intent_data.get("project_name"):
-            _pending_project_name_requests.pop(key, None)
-            return await _create_project_from_name(update, intent_data["project_name"])
-        # Different intent: clear pending and let normal intent path handle it.
+    if intent_data and intent_data.get("intent") == "create_project" and intent_data.get("project_name"):
+        _pending_project_name_requests.pop(key, None)
+        return await _create_project_from_name(update, intent_data["project_name"])
+
+    if intent_data and intent_data.get("intent") in {"help", "list_projects", "project_status"}:
         _pending_project_name_requests.pop(key, None)
         return False
 
-    candidate = _extract_project_name_candidate(text)
-    if not candidate:
+    if intent_data and intent_data.get("intent") in {"run_coding_agent", "configure_coding_agent", "check_coding_agents"}:
         await update.message.reply_text(
-            "Please send just the project name (example: boom-baby).",
+            "I still need the project name first. Reply with the name only, or say 'cancel'.",
         )
         return True
 
-    _pending_project_name_requests.pop(key, None)
-    previous_project_id = _last_project_id
-    handled = await _create_project_from_name(update, candidate)
-
-    # If the follow-up also contains build details, capture them as the first idea.
-    new_project_id = _last_project_id
-    if (
-        handled
-        and _project_manager is not None
-        and new_project_id
-        and new_project_id != previous_project_id
-    ):
-        idea_text = _extract_followup_idea_after_project_name(text, candidate)
-        if idea_text:
-            try:
-                count = await _project_manager.add_idea(new_project_id, idea_text)
-                await update.message.reply_text(
-                    f"Captured that as idea #{count} for '{candidate}'.",
-                )
-            except Exception:
-                logger.exception("Failed capturing follow-up idea after project-name reply.")
-    return handled
+    if not candidate:
+        await update.message.reply_text(
+            "Please send just the project name (example: boom-baby), or say 'cancel'.",
+        )
+        return True
+    return True
 
 
 # ------------------------------------------------------------------

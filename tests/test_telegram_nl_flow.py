@@ -51,6 +51,15 @@ def test_pending_name_candidate_from_longer_sentence() -> None:
     assert bot._extract_project_name_candidate(text) == "kundan bhai"
 
 
+def test_pending_name_candidate_from_descriptive_unquoted_sentence() -> None:
+    repo_root = Path(__file__).parent.parent
+    bot_path = repo_root / "openclaw-gateway" / "telegram_bot.py"
+    bot = _load_module(bot_path, "oc_gateway_telegram_bot_nl_7")
+
+    text = "python app -kundi curry which when clicked give a 1 sec beep"
+    assert bot._extract_project_name_candidate(text) == "kundi curry"
+
+
 def test_start_the_project_not_misclassified_as_new_project() -> None:
     repo_root = Path(__file__).parent.parent
     bot_path = repo_root / "openclaw-gateway" / "telegram_bot.py"
