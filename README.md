@@ -79,6 +79,26 @@ docker compose up -d skynet-api openclaw-gateway
 docker compose -f docker-compose.skynet-only.yml up -d
 ```
 
+## Sync Local `.env` To GitHub (No Commit)
+
+Use this to push local `.env` values into repository Actions secrets:
+
+```bash
+python scripts/dev/sync_env_to_github.py --mode secrets
+```
+
+You can also enable automatic sync on every `git push`:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+To bypass once:
+
+```bash
+SKYNET_SKIP_ENV_SYNC=1 git push
+```
+
 ## Tests
 
 ```bash
