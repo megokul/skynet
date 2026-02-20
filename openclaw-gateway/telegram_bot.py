@@ -646,24 +646,24 @@ def _truncate_for_notice(value: str, *, max_chars: int = 700) -> str:
 
 
 def _format_notification(level: str, title: str, body: str, *, project: str = "") -> str:
-    label_map = {
-        "info": "INFO",
-        "progress": "IN_PROGRESS",
-        "success": "SUCCESS",
-        "warning": "WARNING",
-        "error": "ERROR",
+    theme_map: dict[str, tuple[str, str, str]] = {
+        "info": ("🔵", "INFO", "BLUE"),
+        "progress": ("🟣", "IN_PROGRESS", "PURPLE"),
+        "success": ("🟢", "SUCCESS", "GREEN"),
+        "warning": ("🟠", "WARNING", "ORANGE"),
+        "error": ("🔴", "ERROR", "RED"),
     }
-    label = label_map.get(level, "INFO")
+    accent, label, theme = theme_map.get(level, ("🔵", "INFO", "BLUE"))
     ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
     lines = [
-        f"<b>[NOTIFICATION | {html.escape(label)}]</b>",
+        f"<b>{accent} {html.escape(label)} | SKYNET STATUS</b>",
         f"<b>{html.escape(title)}</b>",
-        f"<code>time={html.escape(ts)}</code>",
+        f"<code>theme={html.escape(theme)} | time={html.escape(ts)}</code>",
     ]
     if project:
         lines.append(f"<code>project={html.escape(project)}</code>")
     lines.append("")
-    lines.append(html.escape(_truncate_for_notice(body, max_chars=1800)))
+    lines.append(f"{accent} {html.escape(_truncate_for_notice(body, max_chars=1800))}")
     return "\n".join(lines)
 
 
