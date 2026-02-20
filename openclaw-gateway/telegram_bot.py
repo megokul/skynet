@@ -52,6 +52,8 @@ _confirm_counter: int = 0
 # { "key": asyncio.Future }
 _pending_approvals: dict[str, asyncio.Future] = {}
 _approval_counter: int = 0
+# Stores pending natural-language follow-up for project-name capture by user id.
+_pending_project_name_requests: dict[int, dict[str, str]] = {}
 
 # Reference to the Telegram app for sending proactive messages.
 _bot_app: Application | None = None
@@ -869,6 +871,48 @@ def _project_bootstrap_note(project: dict) -> str:
     return f"Bootstrap: {summary}"
 
 
+def _is_plausible_project_name(name: str) -> bool:
+    cleaned = _clean_entity(name)
+    if not cleaned:
+        return False
+    if len(cleaned) > 64:
+        return False
+    if any(ch in cleaned for ch in "\n\r\t"):
+        return False
+    if re.search(r"[.!?]", cleaned):
+        return False
+    lowered = cleaned.lower()
+    if re.match(r"^(and|to|please)\b", lowered):
+        return False
+    if (
+        len(cleaned.split()) > 4
+        and re.search(
+            r"\b(start|build|make|implement|create|run|click|beep|sound)\b",
+            lowered,
+        )
+    ):
+        return False
+    return True
+
+
+def _extract_project_name_candidate(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    quoted = re.fullmatch(r"[\"'`]\s*(.+?)\s*[\"'`]", raw)
+    if quoted:
+        name = _clean_entity(quoted.group(1))
+        return name if _is_plausible_project_name(name) else ""
+
+    # For follow-up name replies, prefer short plain phrases.
+    if any(ch in raw for ch in ".!?;\n"):
+        return ""
+    name = _clean_entity(raw)
+    if len(name.split()) > 8:
+        return ""
+    return name if _is_plausible_project_name(name) else ""
+
+
 def _extract_nl_intent(text: str) -> dict[str, str]:
     """
     Extract action intent/entities from natural language.
@@ -901,13 +945,27 @@ def _extract_nl_intent(text: str) -> dict[str, str]:
         match = re.search(pattern, raw, flags=re.IGNORECASE)
         if match:
             name = _clean_entity(match.group("name"))
-            if name:
+            if _is_plausible_project_name(name):
                 return {"intent": "create_project", "project_name": name}
+    if re.search(
+        r"\b(?:start|begin|run|kick\s*off)\s+(?:the|this|that|my)\s+"
+        r"(?:project|application|repo|proj|app)\b",
+        raw,
+        flags=re.IGNORECASE,
+    ):
+        return {"intent": "approve_and_start"}
     if re.search(
         r"\b(?:create|start|begin|kick\s*off|make|spin\s*up|new)\b.*\b(?:project|proj|app|application|repo)\b",
         raw,
         flags=re.IGNORECASE,
-    ) and not re.search(r"\b(?:execution|coding|work)\b", lowered):
+    ) and not re.search(
+        r"\b(?:execution|coding|work)\b",
+        lowered,
+    ) and not re.search(
+        r"\b(?:start|begin|run|kick\s*off)\s+(?:the|this|that|my)\s+(?:project|proj|app|application|repo)\b",
+        raw,
+        flags=re.IGNORECASE,
+    ):
         return {"intent": "create_project"}
 
     # Add idea
@@ -1325,28 +1383,15 @@ async def _handle_natural_action(update: Update, text: str) -> bool:
     if intent == "create_project":
         name = intent_data.get("project_name", "")
         if not name:
+            key = _pending_project_name_key(update)
+            if key is not None:
+                _pending_project_name_requests[key] = {"expected": "project_name"}
             await update.message.reply_text("Tell me the project name to create.")
             return True
-        try:
-            project = await _project_manager.create_project(name)
-            _last_project_id = project["id"]
-            repo_line = (
-                f"\nGitHub: {project.get('github_repo')}"
-                if project.get("github_repo") else ""
-            )
-            bootstrap_note = _project_bootstrap_note(project)
-            if bootstrap_note:
-                bootstrap_note = "\n" + bootstrap_note
-            await update.message.reply_text(
-                (
-                    f"Created project '{_project_display(project)}' at {project.get('local_path', '')}.{repo_line}\n"
-                    f"{bootstrap_note}\n"
-                    "Share details naturally. Once details are enough, I can auto-plan and execute."
-                )
-            )
-        except Exception as exc:
-            await update.message.reply_text(f"I couldn't create that project: {exc}")
-        return True
+        key = _pending_project_name_key(update)
+        if key is not None:
+            _pending_project_name_requests.pop(key, None)
+        return await _create_project_from_name(update, name)
 
     if intent == "list_projects":
         try:
@@ -1501,6 +1546,66 @@ async def _handle_natural_action(update: Update, text: str) -> bool:
             return True
 
     return False
+
+
+def _pending_project_name_key(update: Update) -> int | None:
+    user = update.effective_user
+    if user is None:
+        return None
+    return int(user.id)
+
+
+async def _create_project_from_name(update: Update, name: str) -> bool:
+    global _last_project_id
+    try:
+        project = await _project_manager.create_project(name)
+        _last_project_id = project["id"]
+        repo_line = (
+            f"\nGitHub: {project.get('github_repo')}"
+            if project.get("github_repo") else ""
+        )
+        bootstrap_note = _project_bootstrap_note(project)
+        if bootstrap_note:
+            bootstrap_note = "\n" + bootstrap_note
+        await update.message.reply_text(
+            (
+                f"Created project '{_project_display(project)}' at {project.get('local_path', '')}.{repo_line}\n"
+                f"{bootstrap_note}\n"
+                "Share details naturally. Once details are enough, I can auto-plan and execute."
+            )
+        )
+        return True
+    except Exception as exc:
+        await update.message.reply_text(f"I couldn't create that project: {exc}")
+        return True
+
+
+async def _maybe_handle_pending_project_name(update: Update, text: str) -> bool:
+    key = _pending_project_name_key(update)
+    if key is None or key not in _pending_project_name_requests:
+        return False
+    if (text or "").strip().startswith("/"):
+        return False
+
+    intent_data = _extract_nl_intent(text)
+    if intent_data:
+        # User provided a full create instruction as follow-up.
+        if intent_data.get("intent") == "create_project" and intent_data.get("project_name"):
+            _pending_project_name_requests.pop(key, None)
+            return await _create_project_from_name(update, intent_data["project_name"])
+        # Different intent: clear pending and let normal intent path handle it.
+        _pending_project_name_requests.pop(key, None)
+        return False
+
+    candidate = _extract_project_name_candidate(text)
+    if not candidate:
+        await update.message.reply_text(
+            "Please send just the project name (example: boom-baby).",
+        )
+        return True
+
+    _pending_project_name_requests.pop(key, None)
+    return await _create_project_from_name(update, candidate)
 
 
 # ------------------------------------------------------------------
@@ -2449,6 +2554,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     skip_store = _is_no_store_once_message(text)
     await _capture_profile_memory(update, text, skip_store=skip_store)
+
+    if await _maybe_handle_pending_project_name(update, text):
+        return
 
     # Optional explicit idea prefix while in chat mode.
     if text.lower().startswith("idea:"):
