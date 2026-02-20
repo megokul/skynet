@@ -14,8 +14,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from skynet.api.routes import app_state, router
-from skynet.control_plane import ControlPlaneRegistry, GatewayClient
+from skynet.control_plane import (
+    ControlPlaneRegistry,
+    ControlPlaneScheduler,
+    GatewayClient,
+    StaleLockReaper,
+)
 from skynet.ledger.schema import init_db
+from skynet.ledger.task_queue import TaskQueueManager
 from skynet.ledger.worker_registry import WorkerRegistry
 
 # Configure logging
@@ -60,6 +66,7 @@ async def lifespan(app: FastAPI):
         db_path = os.getenv("SKYNET_DB_PATH", "data/skynet.db")
         app_state.ledger_db = await init_db(db_path)
         app_state.worker_registry = WorkerRegistry(app_state.ledger_db)
+        app_state.task_queue = TaskQueueManager(app_state.ledger_db)
     except Exception as e:
         logger.warning(f"Failed to initialize ledger worker registry: {e}")
 
@@ -88,6 +95,40 @@ async def lifespan(app: FastAPI):
             metadata={"source": "startup"},
         )
 
+    # Start control-plane scheduler authority (disabled only if explicitly configured).
+    scheduler_enabled = os.getenv("SKYNET_CONTROL_SCHEDULER_ENABLED", "1").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if scheduler_enabled and app_state.task_queue is not None:
+        task_lock_timeout = int(os.getenv("SKYNET_CONTROL_TASK_LOCK_TIMEOUT", "300"))
+        app_state.control_scheduler = ControlPlaneScheduler(
+            task_queue=app_state.task_queue,
+            registry=app_state.control_registry,
+            gateway_client=app_state.gateway_client,
+            worker_id=os.getenv("SKYNET_CONTROL_SCHEDULER_WORKER_ID", "skynet-control-scheduler"),
+            poll_interval_seconds=float(os.getenv("SKYNET_CONTROL_SCHEDULER_POLL_SECS", "1.5")),
+            lock_timeout_seconds=task_lock_timeout,
+        )
+        await app_state.control_scheduler.start()
+
+        reaper_enabled = os.getenv("SKYNET_STALE_LOCK_REAPER_ENABLED", "1").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        if reaper_enabled:
+            app_state.stale_lock_reaper = StaleLockReaper(
+                task_queue=app_state.task_queue,
+                registry=app_state.control_registry,
+                gateway_client=app_state.gateway_client,
+                ttl_seconds=task_lock_timeout,
+                poll_interval_seconds=float(os.getenv("SKYNET_STALE_LOCK_REAPER_POLL_SECS", "15")),
+            )
+            await app_state.stale_lock_reaper.start()
+        else:
+            app_state.stale_lock_reaper = None
+    else:
+        app_state.control_scheduler = None
+        app_state.stale_lock_reaper = None
+
     logger.info(
         """
   ____  _  ____   ___   _ _____ _____
@@ -98,8 +139,8 @@ async def lifespan(app: FastAPI):
       Control Plane API v2.2
 
   Status    : ONLINE
-  Version   : 2.2.0 (Gateway-Orchestrated)
-  Endpoints : /v1/register-gateway, /v1/register-worker, /v1/route-task, /v1/system-state
+  Version   : 2.3.0 (Control-Plane Scheduler Authority)
+  Endpoints : /v1/register-gateway, /v1/register-worker, /v1/route-task, /v1/tasks/*
   Docs      : http://localhost:8000/docs
 """
     )
@@ -111,6 +152,19 @@ async def lifespan(app: FastAPI):
     app_state.control_registry = None
     app_state.gateway_client = None
     app_state.worker_registry = None
+    if app_state.stale_lock_reaper is not None:
+        try:
+            await app_state.stale_lock_reaper.stop()
+        except Exception as e:
+            logger.error(f"Error stopping stale lock reaper: {e}")
+    app_state.stale_lock_reaper = None
+    if app_state.control_scheduler is not None:
+        try:
+            await app_state.control_scheduler.stop()
+        except Exception as e:
+            logger.error(f"Error stopping control scheduler: {e}")
+    app_state.control_scheduler = None
+    app_state.task_queue = None
     if app_state.ledger_db:
         try:
             await app_state.ledger_db.close()
@@ -146,14 +200,19 @@ async def root():
     """Root endpoint with API information."""
     return {
         "service": "SKYNET Control Plane API",
-        "version": "2.2.0",
+        "version": "2.3.0",
         "status": "online",
         "docs": "/docs",
         "endpoints": {
             "register_gateway": "POST /v1/register-gateway",
             "register_worker": "POST /v1/register-worker",
             "route_task": "POST /v1/route-task",
+            "task_queue": "POST /v1/tasks/enqueue",
+            "task_list": "GET /v1/tasks",
+            "task_next": "GET /v1/tasks/next?agent_id=...",
             "system_state": "GET /v1/system-state",
+            "agents": "GET /v1/agents",
+            "events": "GET /v1/events",
             "health": "GET /v1/health",
         },
     }

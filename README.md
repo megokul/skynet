@@ -12,14 +12,52 @@ Authoritative contract: `docs/SKYNET_OPENCLAW_CONTRACT.md`.
 - Gateway/worker registry
 - Health-aware gateway routing
 - System topology state
+- Authoritative task scheduling and locking (dependency + file ownership aware)
 
 ## API Endpoints
 
 - `POST /v1/register-gateway`
 - `POST /v1/register-worker`
 - `POST /v1/route-task`
+- `POST /v1/tasks/enqueue`
+- `GET /v1/tasks`
+- `GET /v1/tasks/next?agent_id=...`
+- `POST /v1/tasks/claim`
+- `POST /v1/tasks/{task_id}/start`
+- `POST /v1/tasks/{task_id}/complete`
+- `POST /v1/tasks/{task_id}/release`
+- `GET /v1/agents`
+- `GET /v1/events`
+- `GET /v1/files/ownership`
 - `GET /v1/system-state`
 - `GET /v1/health`
+
+## Control-Plane Scheduler Authority
+
+Scheduler authority now lives in `skynet/` (control plane), not in gateway runtime:
+
+- `skynet/ledger/task_queue.py` implements:
+  - atomic task lock claim (`locked_by`, `locked_at`, `claim_token`)
+  - explicit state machine (`queued -> claimed -> running -> terminal`)
+  - strict dependency graph (`dependencies`, `dependents`)
+  - file ownership registry (`required_files` + active ownership table)
+  - task event stream (`control_task_events`)
+- `skynet/control_plane/scheduler.py` runs the scheduling loop:
+  - claim ready task
+  - transition claimed -> running
+  - select gateway
+  - dispatch action to gateway with idempotency (`task_id`, `claim_token`)
+  - complete/fail/requeue task
+- `skynet/control_plane/reaper.py` reaps stale locks:
+  - checks worker/gateway health
+  - releases stale claims or marks `failed_timeout`
+
+Gateway remains execution transport (`/action`) and does not own scheduling state.
+
+## PostgreSQL Roadmap
+
+SQLite is currently used for control-plane and gateway persistence.
+PostgreSQL migration is planned for scale-out deployments (future step).
 
 ## Run
 

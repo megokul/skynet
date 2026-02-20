@@ -1,6 +1,6 @@
 # SKYNET/OpenClaw Contract
 
-Last Updated: 2026-02-18
+Last Updated: 2026-02-20
 Status: Authoritative
 
 ## One-line contract
@@ -52,6 +52,42 @@ SKYNET control-plane API:
 - register_worker()
 - route_task()
 - get_system_state()
+
+## Dispatch Idempotency Contract
+- Control plane dispatches `claim_token` as `idempotency_key` and includes `task_id`.
+- Gateway caches `(task_id, idempotency_key) -> execution_result` in SQLite (`action_idempotency`).
+- Worker receives the same key and short-circuits duplicate requests from local idempotency cache.
+
+## Task State Machine (Authoritative)
+States:
+- `queued`
+- `claimed`
+- `running`
+- `succeeded`
+- `failed`
+- `released`
+- `failed_timeout`
+
+Legal transitions:
+- `queued -> claimed`
+- `released -> claimed`
+- `claimed -> running|released|failed|failed_timeout`
+- `running -> succeeded|failed|released|failed_timeout`
+
+Illegal transitions are rejected (example: complete without running, release after success).
+
+## Stale-Lock Reaper
+- Background reaper scans `claimed`/`running` tasks older than TTL.
+- Reaper verifies worker and gateway health.
+- Reaper either:
+  - releases task back to `released`, or
+  - marks task as `failed_timeout`.
+
+## Read Models
+Additional control-plane read-model endpoints:
+- `GET /v1/tasks/next?agent_id=...` (dry-run eligibility, no lock)
+- `GET /v1/agents` (who is working on what)
+- `GET /v1/events` (task execution/event stream)
 
 ## Control flow
 User -> OpenClaw Gateway -> SKYNET (optional orchestration) -> selected OpenClaw Gateway -> OpenClaw runtime -> OpenClaw worker

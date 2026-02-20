@@ -28,9 +28,12 @@ def test_api_lifespan_initializes_control_plane(monkeypatch) -> None:
         assert app_state.gateway_client is not None
         assert app_state.worker_registry is not None
         assert app_state.ledger_db is not None
+        assert app_state.task_queue is not None
 
     # Lifespan shutdown should clear app_state references.
     assert app_state.control_registry is None
     assert app_state.gateway_client is None
     assert app_state.worker_registry is None
     assert app_state.ledger_db is None
+    assert app_state.task_queue is None
+    assert app_state.stale_lock_reaper is None

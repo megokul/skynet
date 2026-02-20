@@ -114,3 +114,173 @@ class SystemStateResponse(BaseModel):
     gateways: list[SystemGatewayState] = Field(default_factory=list)
     workers: list[SystemWorkerState] = Field(default_factory=list)
     generated_at: str
+
+
+class QueueTaskRequest(BaseModel):
+    """Enqueue a control-plane task for scheduler execution."""
+
+    action: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    task_id: str | None = None
+    priority: int = 0
+    dependencies: list[str] = Field(default_factory=list)
+    required_files: list[str] = Field(default_factory=list)
+    gateway_id: str | None = None
+
+
+class TaskState(BaseModel):
+    """Task row as exposed by control-plane APIs."""
+
+    id: str
+    action: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    status: str
+    priority: int = 0
+    dependencies: list[str] = Field(default_factory=list)
+    dependents: list[str] = Field(default_factory=list)
+    required_files: list[str] = Field(default_factory=list)
+    locked_by: str | None = None
+    locked_at: str | None = None
+    claim_token: str | None = None
+    gateway_id: str | None = None
+    result: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
+    created_at: str
+    updated_at: str
+    completed_at: str | None = None
+
+
+class QueueTaskResponse(BaseModel):
+    """Task enqueue response."""
+
+    task: TaskState
+
+
+class ClaimTaskRequest(BaseModel):
+    """Explicit claim request for pull workers/tests."""
+
+    worker_id: str
+    lock_timeout_seconds: int | None = None
+
+
+class ClaimTaskResponse(BaseModel):
+    """Response for explicit claim attempts."""
+
+    claimed: bool
+    task: TaskState | None = None
+
+
+class NextTaskResponse(BaseModel):
+    """Dry-run next-task eligibility without locking."""
+
+    eligible: bool
+    agent_id: str
+    task: TaskState | None = None
+
+
+class StartTaskRequest(BaseModel):
+    """Transition claimed task to running."""
+
+    worker_id: str
+    claim_token: str
+
+
+class CompleteTaskRequest(BaseModel):
+    """Mark claimed task complete/failed."""
+
+    worker_id: str
+    claim_token: str
+    success: bool = True
+    result: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
+
+
+class TaskMutationResponse(BaseModel):
+    """Generic task mutation result."""
+
+    ok: bool
+
+
+class ReleaseTaskRequest(BaseModel):
+    """Release a claimed/running lock back to released/failed."""
+
+    worker_id: str
+    claim_token: str
+    reason: str = ""
+    back_to_pending: bool = True
+
+
+class TaskListResponse(BaseModel):
+    """List of control-plane queued tasks."""
+
+    tasks: list[TaskState] = Field(default_factory=list)
+
+
+class FileOwnershipRecord(BaseModel):
+    """Active ownership of a file path by a running task."""
+
+    file_path: str
+    owning_task: str
+    claim_token: str | None = None
+    claimed_at: str
+
+
+class FileOwnershipResponse(BaseModel):
+    """List active file ownership claims."""
+
+    ownership: list[FileOwnershipRecord] = Field(default_factory=list)
+
+
+class ClaimFileRequest(BaseModel):
+    """Manual file claim for a running task."""
+
+    task_id: str
+    claim_token: str
+    file_path: str
+
+
+class ClaimFileResponse(BaseModel):
+    """Response from file claim endpoint."""
+
+    ok: bool
+    owner_task_id: str | None = None
+
+
+class AgentState(BaseModel):
+    """Read model for who is working on what."""
+
+    agent_id: str
+    status: str
+    gateway_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    active_task_id: str | None = None
+    active_task_status: str | None = None
+    active_task_action: str | None = None
+    active_task_locked_at: str | None = None
+
+
+class AgentListResponse(BaseModel):
+    """List of agents with current assignments."""
+
+    agents: list[AgentState] = Field(default_factory=list)
+
+
+class TaskEventRecord(BaseModel):
+    """Execution/event log row for task lifecycle."""
+
+    id: int
+    task_id: str
+    event_type: str
+    from_status: str | None = None
+    to_status: str | None = None
+    worker_id: str | None = None
+    claim_token: str | None = None
+    message: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class EventListResponse(BaseModel):
+    """List of task events."""
+
+    events: list[TaskEventRecord] = Field(default_factory=list)

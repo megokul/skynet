@@ -110,6 +110,15 @@ CREATE TABLE IF NOT EXISTS project_events (
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Idempotent action execution cache for dispatch retries
+CREATE TABLE IF NOT EXISTS action_idempotency (
+    task_id          TEXT NOT NULL,
+    idempotency_key  TEXT NOT NULL,
+    response_json    TEXT NOT NULL DEFAULT '{}',
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (task_id, idempotency_key)
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_ideas_project ON ideas(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
@@ -119,6 +128,7 @@ CREATE INDEX IF NOT EXISTS idx_events_project ON project_events(project_id, crea
 CREATE INDEX IF NOT EXISTS idx_provider_usage_lookup ON provider_usage(provider_name, date);
 CREATE INDEX IF NOT EXISTS idx_agents_project ON agents(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_agent_role ON tasks(assigned_agent_role);
+CREATE INDEX IF NOT EXISTS idx_action_idempotency_created ON action_idempotency(created_at);
 """
 
 

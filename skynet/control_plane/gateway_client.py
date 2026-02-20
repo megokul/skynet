@@ -35,6 +35,8 @@ class GatewayClient:
         action: str,
         params: dict[str, Any] | None = None,
         confirmed: bool = True,
+        task_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         url = f"{self._base_url(host)}/action"
         payload = {
@@ -42,6 +44,10 @@ class GatewayClient:
             "params": params or {},
             "confirmed": confirmed,
         }
+        if task_id:
+            payload["task_id"] = task_id
+        if idempotency_key:
+            payload["idempotency_key"] = idempotency_key
         timeout = aiohttp.ClientTimeout(total=max(self.timeout_seconds, 130))
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, json=payload) as resp:

@@ -52,6 +52,8 @@ async def send_action(
     params: dict[str, Any] | None = None,
     timeout: int = cfg.ACTION_TIMEOUT_SECONDS,
     confirmed: bool = False,
+    task_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """
     Send an action request to the connected agent and wait for the response.
@@ -73,6 +75,10 @@ async def send_action(
         "params": params or {},
         "confirmed": confirmed,
     }
+    if task_id:
+        message["task_id"] = task_id
+    if idempotency_key:
+        message["idempotency_key"] = idempotency_key
 
     # Create a future for the response.
     loop = asyncio.get_running_loop()
