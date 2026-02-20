@@ -92,6 +92,7 @@ _DOC_LLM_TARGET_PATHS: tuple[str, ...] = (
     "docs/runbooks/recovery.md",
     "docs/guides/getting-started.md",
     "docs/guides/configuration.md",
+    "docs/decisions/ADR-001-tech-stack.md",
     "planning/task_plan.md",
     "planning/progress.md",
     "planning/findings.md",
@@ -1398,18 +1399,19 @@ def _doc_intake_done_signal(text: str) -> bool:
     lowered = (text or "").strip().lower()
     done_phrases = {
         "done", "thats all", "that's all", "enough", "proceed", "continue", "go ahead",
-        "start building", "build it", "generate docs", "finalize docs", "looks good",
+        "start building", "build it", "generate docs", "finalize docs", "looks good", "that's enough",
     }
     return lowered in done_phrases or any(phrase in lowered for phrase in done_phrases)
 
 
 def _intake_has_enough_context(answers: dict[str, str], turn_count: int, done_signal: bool) -> bool:
     filled = len(_DOC_INTAKE_FIELDS) - len(_missing_intake_fields(answers))
-    if done_signal and filled >= 3:
+    min_ctx = _has_minimum_doc_context(answers)
+    if done_signal and min_ctx:
         return True
-    if filled >= 5 and turn_count >= 2:
+    if min_ctx and filled >= 5 and turn_count >= 2:
         return True
-    if filled >= 4 and turn_count >= 3:
+    if min_ctx and filled >= 4 and turn_count >= 3:
         return True
     return False
 
@@ -1532,14 +1534,23 @@ def _render_project_state_yaml() -> str:
     )
 
 
+def _has_minimum_doc_context(answers: dict[str, str]) -> bool:
+    problem = _sanitize_intake_text(str(answers.get("problem", "")))
+    requirements = _sanitize_intake_text(str(answers.get("requirements", "")))
+    users = _sanitize_intake_text(str(answers.get("users", "")))
+    success = _sanitize_intake_text(str(answers.get("success_metrics", "")))
+    tech = _sanitize_intake_text(str(answers.get("tech_stack", "")))
+    if not problem or not requirements:
+        return False
+    return bool(users or success or tech)
+
+
 def _build_baseline_doc_pack(project_name: str, answers: dict[str, str]) -> dict[str, str]:
     prd, overview, features = _format_initial_docs_from_answers(project_name, answers)
     problem = _sanitize_markdown_paragraph(
         str(answers.get("problem", "")),
         max_chars=_DOC_INTAKE_FIELD_LIMITS["problem"],
     )
-    if not problem or problem == "TBD":
-        problem = f"{project_name} should solve a clear user-facing problem with a small MVP."
     users = _parse_natural_list(
         str(answers.get("users", "")),
         max_items=8,
@@ -1555,10 +1566,21 @@ def _build_baseline_doc_pack(project_name: str, answers: dict[str, str]) -> dict
         max_items=12,
         max_chars=_DOC_INTAKE_FIELD_LIMITS["tech_stack"],
     )
-    user_lines = _to_bullets(users, fallback="General end users")
-    req_lines = _to_checklist(requirements, fallback=["Deliver MVP workflow", "Include basic validation and error handling"])
-    tech_lines = _to_bullets(tech, fallback="To be finalized after implementation spike")
-    tech_text = ", ".join(tech) if tech else "TBD"
+    non_goals = _parse_natural_list(
+        str(answers.get("non_goals", "")),
+        max_items=10,
+        max_chars=_DOC_INTAKE_FIELD_LIMITS["non_goals"],
+    )
+    metrics = _parse_natural_list(
+        str(answers.get("success_metrics", "")),
+        max_items=10,
+        max_chars=_DOC_INTAKE_FIELD_LIMITS["success_metrics"],
+    )
+    user_lines = _to_bullets(users, fallback="TBD")
+    req_lines = _to_checklist(requirements, fallback=["TBD"])
+    tech_lines = _to_bullets(tech, fallback="TBD")
+    non_goal_lines = _to_bullets(non_goals, fallback="TBD")
+    metric_lines = _to_bullets(metrics, fallback="TBD")
 
     docs: dict[str, str] = {
         "docs/product/PRD.md": prd,
@@ -1567,68 +1589,70 @@ def _build_baseline_doc_pack(project_name: str, answers: dict[str, str]) -> dict
         "docs/architecture/overview.md": (
             "# Architecture Overview (Current State)\n\n"
             f"## Project\n{project_name}\n\n"
-            "## Objective\n"
+            "## Problem Context\n"
             f"- {problem}\n\n"
-            "## Core Components\n"
-            "- Telegram interaction layer\n"
-            "- Control plane task lifecycle\n"
-            "- OpenClaw gateway and worker execution\n"
-            "- Project documentation and memory persistence\n"
+            "## Major Components (Project-Specific)\n"
+            "- UI / user interaction layer\n"
+            "- Application logic layer\n"
+            "- Data/config storage layer (if applicable)\n"
         ),
         "docs/architecture/system-design.md": (
             "# System Design (Current State)\n\n"
             "## Components\n"
-            "- Main Persona Agent\n"
-            "- Planner/Manager/Worker orchestration\n"
-            "- Control plane queue and state machine\n"
-            "- OpenClaw execution gateway\n\n"
-            f"## Initial Technical Direction\n- Preferred stack: {tech_text}\n"
+            "- Client/entrypoint\n"
+            "- Core service/module\n"
+            "- Supporting utilities and storage\n\n"
+            "## Technical Direction\n"
+            + "\n".join(tech_lines)
+            + "\n"
         ),
         "docs/architecture/data-flow.md": (
             "# Data Flow (Current State)\n\n"
-            "1. User sends natural-language request in Telegram.\n"
-            "2. Gateway classifies intent and resolves project context.\n"
-            "3. For project work, tasks/events are stored in control-plane data.\n"
-            "4. Worker execution outputs artifacts and updates status.\n"
-            "5. Documentation files are updated in project workspace.\n"
+            "1. User triggers action.\n"
+            "2. Input is validated and mapped to domain behavior.\n"
+            "3. Core logic executes and returns output.\n"
+            "4. Results are displayed or persisted.\n"
         ),
         "docs/runbooks/local-dev.md": (
             "# Runbook: Local Development\n\n"
-            "## Prerequisites\n- Python\n- Git\n- Docker (recommended)\n\n"
-            "## Setup\n1. Clone repository\n2. Configure environment variables\n3. Start services\n\n"
-            "## Verify\n- Health checks pass\n- Project docs are present\n"
+            "## Prerequisites\n"
+            + "\n".join(tech_lines)
+            + "\n\n## Steps\n1. Setup environment\n2. Run app locally\n3. Verify expected behavior\n"
         ),
         "docs/runbooks/deploy.md": (
             "# Runbook: Deploy\n\n"
-            "## Deployment Steps\n1. Push changes to main\n2. Trigger CI/CD workflow\n3. Verify container health and logs\n\n"
-            "## Post-Deploy Checks\n- API health endpoint\n- Gateway startup provider logs\n- Project path and SSH fallback readiness\n"
+            "Define deploy packaging, runtime target, and verification checklist for this project.\n"
         ),
         "docs/runbooks/recovery.md": (
             "# Runbook: Recovery\n\n"
-            "## Common Failure Modes\n- SSH tunnel unavailable\n- provider quota exhaustion\n- stale task locks\n\n"
-            "## Recovery\n1. Validate worker connectivity\n2. Reap stale locks\n3. Resume failed tasks with revised plan\n"
+            "Document failure modes, rollback strategy, and quick recovery steps specific to this project.\n"
         ),
         "docs/guides/getting-started.md": (
             "# Getting Started\n\n"
             f"## Project\n{project_name}\n\n"
-            "## What this solves\n"
-            f"- {problem}\n\n"
-            "## Primary users\n"
+            "## Target Users\n"
             + "\n".join(user_lines)
-            + "\n\n## First Deliverables\n"
-            + "\n".join(req_lines[:5])
+            + "\n\n## First Scope\n"
+            + "\n".join(req_lines[:6])
             + "\n"
         ),
         "docs/guides/configuration.md": (
             "# Configuration\n\n"
-            "## Core Environment Variables\n"
-            "- SKYNET_PROJECT_BASE_DIR\n"
-            "- OPENCLAW_PROJECT_BASE_DIR\n"
-            "- SKYNET_DEFAULT_WORKING_DIR\n"
-            "- OPENCLAW_DEFAULT_WORKING_DIR\n"
-            "- OPENCLAW_SSH_ALLOWED_ROOTS\n\n"
-            "## Project Tech Preferences\n"
+            "## Runtime and Tooling\n"
             + "\n".join(tech_lines)
+            + "\n\n## Constraints\n"
+            + "\n".join(non_goal_lines)
+            + "\n"
+        ),
+        "docs/decisions/ADR-001-tech-stack.md": (
+            "# ADR-001: Initial Technical Stack\n\n"
+            "## Status\nAccepted\n\n"
+            "## Context\n"
+            f"{problem}\n\n"
+            "## Decision\n"
+            + "\n".join(tech_lines)
+            + "\n\n## Consequences\n"
+            + "\n".join(metric_lines)
             + "\n"
         ),
         "planning/task_plan.md": (
@@ -1637,16 +1661,16 @@ def _build_baseline_doc_pack(project_name: str, answers: dict[str, str]) -> dict
             "## Goal\n"
             f"{problem}\n\n"
             "## Milestones (Initial)\n\n"
-            "### TASK-001: Finalize requirements and acceptance criteria\n"
+            "### TASK-001: Lock requirements and acceptance criteria\n"
             "Dependencies:\n"
             "Outputs:\n"
             "  - docs/product/PRD.md\n\n"
-            "### TASK-002: Implement MVP skeleton\n"
+            "### TASK-002: Implement MVP behavior\n"
             "Dependencies: TASK-001\n"
             "Outputs:\n"
             "  - src/\n"
             "  - tests/\n\n"
-            "### TASK-003: Validate and document\n"
+            "### TASK-003: Validation and documentation hardening\n"
             "Dependencies: TASK-002\n"
             "Outputs:\n"
             "  - docs/runbooks/local-dev.md\n"
@@ -1657,19 +1681,16 @@ def _build_baseline_doc_pack(project_name: str, answers: dict[str, str]) -> dict
             "Completed:\n\n"
             "In Progress:\n\n"
             "Pending:\n"
-            "- TASK-001: Finalize requirements and acceptance criteria\n"
-            "- TASK-002: Implement MVP skeleton\n"
-            "- TASK-003: Validate and document\n\n"
-            "Next Actions:\n"
-            "- Confirm scope and lock MVP requirements\n"
+            "- TASK-001: Lock requirements and acceptance criteria\n"
+            "- TASK-002: Implement MVP behavior\n"
+            "- TASK-003: Validation and documentation hardening\n\n"
+            "Success Metrics (Draft):\n"
+            + "\n".join(metric_lines)
+            + "\n"
         ),
         "planning/findings.md": (
             "# Findings\n\n"
-            "Record:\n"
-            "- key decisions\n"
-            "- pitfalls and mitigations\n"
-            "- validation commands\n"
-            "- rollback steps\n"
+            "Track assumptions, risks, validation evidence, and corrections specific to this project.\n"
         ),
     }
     return {k: _sanitize_markdown_document(v) for k, v in docs.items()}
@@ -1697,6 +1718,8 @@ async def _generate_detailed_doc_pack_with_llm(
     project: dict,
     answers: dict[str, str],
     baseline_docs: dict[str, str],
+    *,
+    review_pass: bool = False,
 ) -> tuple[dict[str, str], str]:
     if _provider_router is None:
         return {}, "provider router unavailable"
@@ -1713,13 +1736,16 @@ async def _generate_detailed_doc_pack_with_llm(
         for k, v in baseline_docs.items()
     }
 
+    mode = "review_and_refine" if review_pass else "generate"
     system = (
         "You are a principal software architect and technical writer. "
-        "Generate comprehensive, production-grade project documentation from partial user input. "
-        "Use reasonable explicit assumptions where details are missing. "
+        "Produce project-specific documentation only. "
+        "Do NOT mention SKYNET, OpenClaw, control-plane internals, or platform details "
+        "unless the user explicitly asked for them in this specific project. "
+        "Use explicit assumptions where needed, but keep them tied to this project scope. "
         "Return ONLY valid JSON with shape: "
         "{\"documents\": {\"<relative/path>.md\": \"<markdown>\"}}. "
-        "Do not include any keys outside the required document paths."
+        "Do not include keys outside required paths."
     )
     user_payload = {
         "project_name": _project_display(project),
@@ -1728,10 +1754,12 @@ async def _generate_detailed_doc_pack_with_llm(
         "required_document_paths": list(_DOC_LLM_TARGET_PATHS),
         "user_intake": intake,
         "baseline_documents_excerpt": baseline_excerpt,
+        "mode": mode,
         "quality_bar": [
             "Detailed sections with assumptions, constraints, risks, and acceptance criteria",
-            "Concrete, technically consistent architecture and data flow descriptions",
-            "Actionable runbooks and configuration guidance",
+            "Concrete, technically consistent architecture and data flow for this project",
+            "Actionable runbooks and configuration guidance for this project context",
+            "Remove irrelevant platform/vendor references if unrelated to project requirements",
             "Do not just restate user text; synthesize missing details responsibly",
         ],
     }
@@ -1739,9 +1767,9 @@ async def _generate_detailed_doc_pack_with_llm(
         response = await _provider_router.chat(
             [{"role": "user", "content": json.dumps(user_payload)}],
             system=system,
-            max_tokens=7000,
+            max_tokens=8000,
             task_type="planning",
-            preferred_provider="gemini",
+            preferred_provider="groq",
             allowed_providers=_CHAT_PROVIDER_ALLOWLIST,
         )
     except Exception as exc:
@@ -1756,7 +1784,12 @@ async def _generate_detailed_doc_pack_with_llm(
     return docs, ""
 
 
-async def _write_initial_project_docs(project: dict, answers: dict[str, str]) -> tuple[bool, str]:
+async def _write_initial_project_docs(
+    project: dict,
+    answers: dict[str, str],
+    *,
+    scaffold_only: bool = False,
+) -> tuple[bool, str]:
     path = str(project.get("local_path") or "").strip()
     if not path:
         return False, "project local_path is empty"
@@ -1768,11 +1801,54 @@ async def _write_initial_project_docs(project: dict, answers: dict[str, str]) ->
     template_files["PROJECT.yaml"] = _render_project_yaml(project)
     template_files["PROJECT_STATE.yaml"] = _render_project_state_yaml()
 
+    if scaffold_only:
+        directories: set[str] = set()
+        for rel in template_files.keys():
+            rel_norm = _normalize_doc_relpath(rel)
+            if "/" in rel_norm:
+                directories.add(rel_norm.rsplit("/", 1)[0])
+
+        ops: list[tuple[str, dict[str, str]]] = []
+        for rel_dir in sorted(directories):
+            ops.append(("create_directory", {"directory": _join_project_path(path, rel_dir)}))
+        for rel, content in sorted(template_files.items(), key=lambda item: item[0]):
+            ops.append(
+                (
+                    "file_write",
+                    {
+                        "file": _join_project_path(path, _normalize_doc_relpath(rel)),
+                        "content": str(content),
+                    },
+                )
+            )
+        for action, params in ops:
+            result = await _send_action(action, params, confirmed=True)
+            ok, err = _action_result_ok(result)
+            if not ok:
+                return False, f"{action} failed: {err}"
+        return True, "Template scaffold created; waiting for richer project details before populating docs."
+
+    if not _has_minimum_doc_context(answers):
+        return True, "Not enough project information yet; docs population deferred."
+
     baseline_docs = _build_baseline_doc_pack(_project_display(project), answers)
-    llm_docs, llm_warning = await _generate_detailed_doc_pack_with_llm(project, answers, baseline_docs)
+    llm_docs, llm_warning = await _generate_detailed_doc_pack_with_llm(
+        project,
+        answers,
+        baseline_docs,
+        review_pass=False,
+    )
 
     final_docs = dict(baseline_docs)
     final_docs.update(llm_docs)
+    reviewed_docs, review_warning = await _generate_detailed_doc_pack_with_llm(
+        project,
+        answers,
+        final_docs,
+        review_pass=True,
+    )
+    if reviewed_docs:
+        final_docs.update(reviewed_docs)
     for rel, content in final_docs.items():
         template_files[rel] = content
 
@@ -1801,10 +1877,17 @@ async def _write_initial_project_docs(project: dict, answers: dict[str, str]) ->
         ok, err = _action_result_ok(result)
         if not ok:
             return False, f"{action} failed: {err}"
+    notes: list[str] = []
     if llm_warning and not llm_docs:
-        return True, f"LLM enrichment unavailable ({llm_warning}); finalized template baseline was written."
-    if llm_warning:
-        return True, f"LLM enrichment note: {llm_warning}"
+        notes.append(f"LLM enrichment unavailable ({llm_warning}); baseline project docs were written.")
+    elif llm_warning:
+        notes.append(f"LLM enrichment note: {llm_warning}")
+    if review_warning and not reviewed_docs:
+        notes.append(f"Review pass unavailable ({review_warning}).")
+    elif review_warning:
+        notes.append(f"Review pass note: {review_warning}")
+    if notes:
+        return True, " ".join(notes)
     return True, ""
 
 
@@ -1813,9 +1896,14 @@ async def _run_project_docs_generation_async(
     answers: dict[str, str],
     *,
     reason: str,
+    notify_user: bool = True,
 ) -> None:
     start = time.monotonic()
-    ok, note = await _write_initial_project_docs(project, answers)
+    ok, note = await _write_initial_project_docs(
+        project,
+        answers,
+        scaffold_only=(reason == "project_create"),
+    )
     elapsed = round(time.monotonic() - start, 1)
     name = _project_display(project)
     if ok:
@@ -1830,7 +1918,8 @@ async def _run_project_docs_generation_async(
             f"Documentation update failed for '{name}' ({reason}) after {elapsed}s.\n"
             f"Error: {note}"
         )
-    await _send_to_user(msg)
+    if notify_user:
+        await _send_to_user(msg)
 
 
 async def _finalize_project_doc_intake(update: Update | None, state: dict[str, Any]) -> None:
@@ -1878,11 +1967,12 @@ async def _start_project_documentation_intake(update: Update, project: dict) -> 
         "project_id": project["id"],
         "project_name": _project_display(project),
         "turn_count": 0,
+        "last_doc_refresh_sig": "",
         "answers": {},
     }
     await update.message.reply_text(
         (
-            f"Starting skynet-project-documentation intake for '{_project_display(project)}'.\n"
+            f"Starting project documentation intake for '{_project_display(project)}'.\n"
             "Reply naturally in any format. I will extract details across problem, users, scope, success metrics, and technical constraints.\n"
             "You can say 'skip docs' to stop or 'proceed' when you feel context is enough.\n\n"
             "Tell me what you want this project to do in v1."
@@ -1933,6 +2023,36 @@ async def _maybe_handle_project_doc_intake(update: Update, text: str) -> bool:
     turn_count = int(state.get("turn_count", 0)) + 1
     state["turn_count"] = turn_count
     state["answers"] = answers
+
+    # Progressive docs refresh: once minimum context exists, keep template docs
+    # aligned in background as new information arrives.
+    if _has_minimum_doc_context(answers):
+        sig = json.dumps(
+            {k: answers.get(k, "") for k in _DOC_INTAKE_FIELDS},
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        last_sig = str(state.get("last_doc_refresh_sig", ""))
+        if sig != last_sig and _project_manager is not None:
+            state["last_doc_refresh_sig"] = sig
+            try:
+                from db import store
+
+                project = await store.get_project(_project_manager.db, str(state.get("project_id", "")))
+            except Exception:
+                logger.exception("Failed loading project for progressive docs refresh.")
+                project = None
+            if project:
+                _spawn_background_task(
+                    _run_project_docs_generation_async(
+                        project,
+                        dict(answers),
+                        reason="intake_progress",
+                        notify_user=False,
+                    ),
+                    tag=f"doc-intake-progress-{state.get('project_id', 'unknown')}",
+                )
+
     _pending_project_doc_intake[key] = state
 
     done_signal = _doc_intake_done_signal(text)
@@ -2947,8 +3067,8 @@ async def _create_project_from_name(update: Update, name: str) -> bool:
         if bootstrap_note:
             bootstrap_note = "\n" + bootstrap_note
         docs_note = (
-            "\nDocumentation: generation started in background using the finalized template. "
-            "I will notify you when it completes."
+            "\nDocumentation: finalized template scaffold started in background. "
+            "I will populate project-specific docs only after enough requirements are captured."
         )
         await update.message.reply_text(
             (
