@@ -212,6 +212,10 @@ class BackgroundStorage:
         self._scheduler = BackgroundScheduler(s3=s3, db=db, gateway_api_url=gateway_api_url)
 
     async def backup_active_projects(self) -> None:
+        if not await self._is_executor_available():
+            logger.info("Daily backup skipped: no connected agent and SSH fallback is unhealthy.")
+            return
+
         projects = await store.list_projects(self.db)
         active = [
             p for p in projects
@@ -239,3 +243,22 @@ class BackgroundStorage:
                 backed_up += 1
 
         logger.info("Daily backup finished: %d/%d projects backed up.", backed_up, attempted)
+
+    async def _is_executor_available(self) -> bool:
+        import aiohttp
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.gateway_api_url}/status",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    data = await resp.json()
+        except Exception:
+            return False
+
+        agent_connected = bool(data.get("agent_connected", False))
+        ssh_ok = bool(data.get("ssh_fallback_enabled", False)) and bool(
+            data.get("ssh_fallback_healthy", False)
+        )
+        return agent_connected or ssh_ok

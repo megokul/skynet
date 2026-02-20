@@ -226,7 +226,7 @@ def _build_ssl_context() -> ssl.SSLContext | None:
         ctx.load_cert_chain(cfg.TLS_CERT, cfg.TLS_KEY)
         logger.info("TLS enabled (cert=%s).", cfg.TLS_CERT)
         return ctx
-    logger.warning(
+    logger.info(
         "TLS cert/key not found (%s, %s). Running WITHOUT TLS — "
         "use setup_tls.sh to generate certificates.",
         cfg.TLS_CERT,

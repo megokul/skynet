@@ -68,11 +68,14 @@ class SentinelMonitor:
         scheduler: Any = None,
         db: Any = None,
         s3: Any = None,
+        startup_grace_seconds: int = 60,
     ):
         self.gateway_api_url = gateway_api_url
         self.scheduler = scheduler
         self.db = db
         self.s3 = s3
+        self.startup_grace_seconds = max(0, int(startup_grace_seconds))
+        self._started_at = time.monotonic()
 
     async def check_worker_health(self) -> HealthStatus:
         """Ping /status endpoint — check CHATHAN Worker connectivity."""
@@ -99,6 +102,14 @@ class SentinelMonitor:
                         status.message = "Agent disconnected; SSH fallback unhealthy"
                     else:
                         status.message = "Agent disconnected"
+
+                    # Avoid noisy false alarms during process startup while
+                    # websocket agent / SSH tunnel are still initializing.
+                    if not connected:
+                        age = time.monotonic() - self._started_at
+                        if age < self.startup_grace_seconds:
+                            status.healthy = True
+                            status.message = "Startup grace period: awaiting executor connection"
                     status.details = data
         except Exception as exc:
             status.latency_ms = (time.monotonic() - start) * 1000
