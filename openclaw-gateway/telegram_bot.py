@@ -57,6 +57,8 @@ _pending_approvals: dict[str, asyncio.Future] = {}
 _approval_counter: int = 0
 # Stores pending natural-language follow-up for project-name capture by user id.
 _pending_project_name_requests: dict[int, dict[str, str]] = {}
+# Stores pending routing choices when user says "start/make project" without clear target.
+_pending_project_route_requests: dict[str, dict[str, Any]] = {}
 # Stores pending destructive remove-project confirmations.
 _pending_project_removals: dict[str, dict[str, str]] = {}
 # Stores pending project documentation intake by user id.
@@ -552,6 +554,88 @@ def _store_pending_project_removal(project: dict[str, Any]) -> str:
     if project.get("local_path"):
         _pending_project_removals[key]["local_path"] = str(project["local_path"])
     return key
+
+
+def _store_pending_project_route_request(user_id: int, source_text: str = "") -> str:
+    key = f"pr{uuid.uuid4().hex[:10]}"
+    _pending_project_route_requests[key] = {
+        "user_id": int(user_id),
+        "source_text": str(source_text or "").strip(),
+        "created_at": time.time(),
+    }
+    return key
+
+
+def _project_choice_label(project: dict[str, Any]) -> str:
+    name = _project_display(project).strip()
+    status = str(project.get("status") or "unknown").strip().lower()
+    if len(name) > 38:
+        name = name[:35].rstrip() + "..."
+    return f"{name} [{status}]"
+
+
+def _has_pending_project_route_for_user(user_id: int) -> bool:
+    for pending in _pending_project_route_requests.values():
+        if int(pending.get("user_id", 0) or 0) == int(user_id):
+            return True
+    return False
+
+
+def _clear_pending_project_route_for_user(user_id: int) -> None:
+    to_delete = [
+        key
+        for key, pending in _pending_project_route_requests.items()
+        if int(pending.get("user_id", 0) or 0) == int(user_id)
+    ]
+    for key in to_delete:
+        _pending_project_route_requests.pop(key, None)
+
+
+async def _ask_project_routing_choice(update: Update, text: str = "") -> bool:
+    if _project_manager is None:
+        await update.message.reply_text("Project manager not initialized.")
+        return True
+
+    key = _pending_project_name_key(update)
+    if key is not None:
+        _pending_project_name_requests.pop(key, None)
+
+    try:
+        projects = await _project_manager.list_projects()
+    except Exception as exc:
+        await update.message.reply_text(f"I couldn't load project list: {exc}")
+        return True
+
+    if not projects:
+        if key is not None:
+            _pending_project_name_requests[key] = {"expected": "project_name"}
+        await update.message.reply_text(
+            "No existing projects found. Tell me the new project name to create.",
+        )
+        return True
+
+    user = update.effective_user
+    if user is None:
+        await update.message.reply_text("Tell me the project name to create.")
+        return True
+
+    _clear_pending_project_route_for_user(int(user.id))
+    route_key = _store_pending_project_route_request(int(user.id), text)
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("New Project", callback_data=f"project_route_new:{route_key}"),
+            InlineKeyboardButton("Add to Existing", callback_data=f"project_route_existing:{route_key}"),
+        ],
+        [InlineKeyboardButton("Cancel", callback_data=f"project_route_cancel:{route_key}")],
+    ])
+    await update.message.reply_text(
+        (
+            "Do you want to start a <b>new project</b> or add this to an <b>existing project</b>?"
+        ),
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    return True
 
 
 def _truncate_for_notice(value: str, *, max_chars: int = 700) -> str:
@@ -1118,6 +1202,8 @@ async def _smalltalk_reply_with_context(update: Update, text: str) -> str:
     base = _smalltalk_reply(text)
     key = _doc_intake_key(update)
     if key is not None:
+        if _has_pending_project_route_for_user(key):
+            return base + " Please choose using the New Project / Add to Existing buttons."
         if key in _pending_project_name_requests:
             return base + " I am waiting for the project name. Reply with the name only, or say 'cancel'."
         intake = _pending_project_doc_intake.get(key)
@@ -3035,14 +3121,7 @@ async def _handle_natural_action(update: Update, text: str) -> bool:
                 )
             return True
         if not name:
-            if not _is_explicit_new_project_request(text):
-                # Likely follow-up details for current context; allow idea capture path.
-                return False
-            key = _pending_project_name_key(update)
-            if key is not None:
-                _pending_project_name_requests[key] = {"expected": "project_name"}
-            await update.message.reply_text("Tell me the project name to create.")
-            return True
+            return await _ask_project_routing_choice(update, text)
         key = _pending_project_name_key(update)
         if key is not None:
             _pending_project_name_requests.pop(key, None)
@@ -3284,6 +3363,9 @@ def _pending_project_name_key(update: Update) -> int | None:
 
 async def _create_project_from_name(update: Update, name: str) -> bool:
     global _last_project_id
+    user = update.effective_user
+    if user is not None:
+        _clear_pending_project_route_for_user(int(user.id))
     try:
         project = await _project_manager.create_project(name)
         _last_project_id = project["id"]
@@ -3567,6 +3649,88 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text("<b>Plan CANCELLED</b>", parse_mode="HTML")
         except Exception as exc:
             await query.edit_message_text(f"Error: {exc}")
+
+    elif data.startswith("project_route_new:"):
+        route_key = data[len("project_route_new:"):]
+        pending = _pending_project_route_requests.pop(route_key, None)
+        if not pending:
+            await query.edit_message_text("Selection expired. Send your request again.")
+            return
+        user_id = int(pending.get("user_id", 0) or 0)
+        if user_id:
+            _pending_project_name_requests[user_id] = {"expected": "project_name"}
+            _pending_project_doc_intake.pop(user_id, None)
+        await query.edit_message_text(
+            "New project selected. Tell me the project name to create.",
+        )
+
+    elif data.startswith("project_route_existing:"):
+        route_key = data[len("project_route_existing:"):]
+        pending = _pending_project_route_requests.get(route_key)
+        if not pending:
+            await query.edit_message_text("Selection expired. Send your request again.")
+            return
+        try:
+            projects = await _project_manager.list_projects()
+        except Exception as exc:
+            await query.edit_message_text(f"I couldn't load projects: {exc}")
+            return
+        if not projects:
+            _pending_project_route_requests.pop(route_key, None)
+            await query.edit_message_text("No existing projects found. Send a new project name to create.")
+            return
+
+        buttons = [
+            [InlineKeyboardButton(_project_choice_label(project), callback_data=f"project_pick:{route_key}:{project['id']}")]
+            for project in projects[:12]
+        ]
+        buttons.append([InlineKeyboardButton("Cancel", callback_data=f"project_route_cancel:{route_key}")])
+        await query.edit_message_text(
+            "Choose the existing project:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    elif data.startswith("project_pick:"):
+        payload = data[len("project_pick:"):]
+        parts = payload.split(":", 1)
+        if len(parts) != 2:
+            await query.edit_message_text("Invalid selection.")
+            return
+        route_key, project_id = parts
+        pending = _pending_project_route_requests.pop(route_key, None)
+        if not pending:
+            await query.edit_message_text("Selection expired. Send your request again.")
+            return
+        user_id = int(pending.get("user_id", 0) or 0)
+        if user_id:
+            _pending_project_name_requests.pop(user_id, None)
+            _pending_project_doc_intake.pop(user_id, None)
+
+        try:
+            from db import store
+
+            project = await store.get_project(_project_manager.db, project_id)
+        except Exception as exc:
+            await query.edit_message_text(f"I couldn't load the selected project: {exc}")
+            return
+
+        if not project:
+            await query.edit_message_text("That project no longer exists. Please try again.")
+            return
+
+        _last_project_id = project["id"]
+        await query.edit_message_text(
+            (
+                f"Using existing project <b>{html.escape(_project_display(project))}</b>.\n"
+                "Share the changes/details and I will continue there."
+            ),
+            parse_mode="HTML",
+        )
+
+    elif data.startswith("project_route_cancel:"):
+        route_key = data[len("project_route_cancel:"):]
+        _pending_project_route_requests.pop(route_key, None)
+        await query.edit_message_text("Project selection cancelled.")
 
     elif data.startswith("confirm_remove_project:"):
         key = data[len("confirm_remove_project:"):]
@@ -4451,10 +4615,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Deterministic fallback: do not let explicit "new project" requests fall
     # into generic chat or implicit-idea capture if intent extraction misses.
     if _is_explicit_new_project_request(text):
-        key = _pending_project_name_key(update)
-        if key is not None:
-            _pending_project_name_requests[key] = {"expected": "project_name"}
-        await update.message.reply_text("Tell me the project name to create.")
+        await _ask_project_routing_choice(update, text)
         return
 
     if await _maybe_capture_implicit_idea(update, text):
