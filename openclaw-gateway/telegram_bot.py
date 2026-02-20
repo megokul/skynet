@@ -616,7 +616,7 @@ async def _ask_project_routing_choice(update: Update, text: str = "") -> bool:
 
     user = update.effective_user
     if user is None:
-        await update.message.reply_text("Tell me the project name to create.")
+        await update.message.reply_text("Sure. What should we call the new project?")
         return True
 
     _clear_pending_project_route_for_user(int(user.id))
@@ -3292,7 +3292,7 @@ async def _handle_natural_action(update: Update, text: str) -> bool:
             else:
                 _last_project_id = project["id"]
                 await update.message.reply_text(
-                    f"Using existing project '{_project_display(project)}'. Share implementation details and I will proceed."
+                    f"Great, we'll continue in '{_project_display(project)}'. Tell me what you want to build."
                 )
             return True
         if not name:
@@ -3560,7 +3560,7 @@ async def _create_project_from_name(update: Update, name: str) -> bool:
                 f"Created project '{_project_display(project)}' at {project.get('local_path', '')}.{repo_line}\n"
                 f"{bootstrap_note}\n"
                 f"{docs_note}\n"
-                "Share details naturally. Once details are enough, I can auto-plan and execute."
+                "Tell me what you want it to do, and I’ll take it forward."
             )
         )
         _spawn_background_task(
@@ -3666,13 +3666,13 @@ async def _maybe_handle_pending_project_name(update: Update, text: str) -> bool:
 
     if intent_data and intent_data.get("intent") in {"run_coding_agent", "configure_coding_agent", "check_coding_agents"}:
         await update.message.reply_text(
-            "I still need the project name first. Reply with the name only, or say 'cancel'.",
+            "Before we continue, what should I name the project? (or say 'cancel')",
         )
         return True
 
     if not candidate:
         await update.message.reply_text(
-            "Please send just the project name (example: boom-baby), or say 'cancel'.",
+            "I didn’t catch the name yet. Just send the project name (or say 'cancel').",
         )
         return True
     return True
@@ -3838,7 +3838,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             _pending_project_name_requests[user_id] = {"expected": "project_name"}
             _pending_project_doc_intake.pop(user_id, None)
         await query.edit_message_text(
-            "New project selected. Tell me the project name to create.",
+            "Perfect. What should we name the new project?",
         )
 
     elif data.startswith("project_route_existing:"):
@@ -3899,7 +3899,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(
             (
                 f"Using existing project <b>{html.escape(_project_display(project))}</b>.\n"
-                "Share the changes/details and I will continue there."
+                "Tell me what you want to add or change, and I’ll continue there."
             ),
             parse_mode="HTML",
         )
