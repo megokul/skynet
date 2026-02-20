@@ -380,8 +380,9 @@ class ProjectManager:
 
         Returns:
             (summary, ok)
-            ok=False means required bootstrap steps failed and project creation
-            should be rolled back.
+            ok=False means required bootstrap steps failed in a non-recoverable way.
+            Temporary executor transport issues are marked as deferred and return ok=True
+            so project creation remains stable.
         """
         if not cfg.AUTO_BOOTSTRAP_PROJECT:
             return "Bootstrap skipped (AUTO_BOOTSTRAP_PROJECT disabled).", True
@@ -397,9 +398,13 @@ class ProjectManager:
             confirmed=True,
             retry_on_transient=True,
         )
-        bootstrap_notes.append(
-            "directory: ok" if ok else f"directory: failed ({msg})"
-        )
+        if ok:
+            bootstrap_notes.append("directory: ok")
+        elif self._is_deferred_bootstrap_error(msg):
+            bootstrap_notes.append(f"directory: deferred ({msg})")
+            return "; ".join(bootstrap_notes), True
+        else:
+            bootstrap_notes.append(f"directory: failed ({msg})")
         if not ok:
             return "; ".join(bootstrap_notes), False
 
@@ -417,7 +422,13 @@ class ProjectManager:
             confirmed=True,
             retry_on_transient=True,
         )
-        bootstrap_notes.append("readme: ok" if ok else f"readme: failed ({msg})")
+        if ok:
+            bootstrap_notes.append("readme: ok")
+        elif self._is_deferred_bootstrap_error(msg):
+            bootstrap_notes.append(f"readme: deferred ({msg})")
+            return "; ".join(bootstrap_notes), True
+        else:
+            bootstrap_notes.append(f"readme: failed ({msg})")
         if not ok:
             return "; ".join(bootstrap_notes), False
 
@@ -427,7 +438,13 @@ class ProjectManager:
             confirmed=True,
             retry_on_transient=True,
         )
-        bootstrap_notes.append("git_init: ok" if ok else f"git_init: failed ({msg})")
+        if ok:
+            bootstrap_notes.append("git_init: ok")
+        elif self._is_deferred_bootstrap_error(msg):
+            bootstrap_notes.append(f"git_init: deferred ({msg})")
+            return "; ".join(bootstrap_notes), True
+        else:
+            bootstrap_notes.append(f"git_init: failed ({msg})")
         if not ok:
             return "; ".join(bootstrap_notes), False
 
@@ -447,9 +464,19 @@ class ProjectManager:
         if not ok_commit and "nothing to commit" in (msg_commit or "").lower():
             ok_commit = True
             msg_commit = "nothing to commit"
-        bootstrap_notes.append("git_add: ok" if ok_add else f"git_add: failed ({msg_add})")
+        if ok_add:
+            bootstrap_notes.append("git_add: ok")
+        elif self._is_deferred_bootstrap_error(msg_add):
+            bootstrap_notes.append(f"git_add: deferred ({msg_add})")
+            bootstrap_notes.append("git_commit: deferred (blocked by git_add)")
+            return "; ".join(bootstrap_notes), True
+        else:
+            bootstrap_notes.append(f"git_add: failed ({msg_add})")
         if ok_commit and msg_commit == "nothing to commit":
             bootstrap_notes.append("git_commit: skipped (nothing to commit)")
+        elif not ok_commit and self._is_deferred_bootstrap_error(msg_commit):
+            bootstrap_notes.append(f"git_commit: deferred ({msg_commit})")
+            return "; ".join(bootstrap_notes), True
         else:
             bootstrap_notes.append(
                 "git_commit: ok" if ok_commit else f"git_commit: failed ({msg_commit})"
@@ -595,5 +622,34 @@ class ProjectManager:
             "ssh action failed",
             "http 503",
             "service unavailable",
+        )
+        return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _is_deferred_bootstrap_error(message: str) -> bool:
+        """
+        Detect infra/connectivity problems where bootstrap should be deferred.
+        """
+        text = (message or "").lower()
+        markers = (
+            "no existing session",
+            "agent disconnected",
+            "agent not connected",
+            "ssh action failed",
+            "ssh fallback is not configured",
+            "ssh tunnel mode is enabled but ssh executor is not configured",
+            "no connected agent and ssh fallback is not configured",
+            "unable to connect to port",
+            "could not resolve hostname",
+            "connection reset",
+            "connection aborted",
+            "timed out",
+            "timeout",
+            "service unavailable",
+            "http 503",
+            "no lines in openssh private key file",
+            "not a valid openssh private key file",
+            "private key file is encrypted",
+            "password is required for key",
         )
         return any(marker in text for marker in markers)
