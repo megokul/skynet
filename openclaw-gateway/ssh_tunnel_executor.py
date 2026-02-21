@@ -43,8 +43,10 @@ def _parse_roots(raw: str, remote_os: str) -> list[str]:
     parts = [p.strip() for p in raw.replace(",", ";").split(";") if p.strip()]
     if parts:
         return parts
+    # No OPENCLAW_SSH_ALLOWED_ROOTS configured — use safe OS-level defaults.
+    # Set OPENCLAW_SSH_ALLOWED_ROOTS to restrict access to specific directories.
     if remote_os == "windows":
-        return [r"E:\MyProjects"]
+        return [r"%USERPROFILE%\Projects", r"%USERPROFILE%\Documents"]
     return ["/home", "/tmp"]
 
 

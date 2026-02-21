@@ -59,11 +59,28 @@ async def list_projects(db: aiosqlite.Connection) -> list[dict[str, Any]]:
         return [dict(row) for row in await cur.fetchall()]
 
 
+_PROJECTS_UPDATABLE_COLUMNS: frozenset[str] = frozenset({
+    "name",
+    "display_name",
+    "description",
+    "status",
+    "tech_stack",
+    "github_repo",
+    "local_path",
+    "updated_at",
+    "approved_at",
+    "completed_at",
+})
+
+
 async def update_project(
     db: aiosqlite.Connection,
     project_id: str,
     **fields: Any,
 ) -> None:
+    invalid = set(fields) - _PROJECTS_UPDATABLE_COLUMNS
+    if invalid:
+        raise ValueError(f"update_project: unknown column(s): {sorted(invalid)}")
     fields["updated_at"] = _now()
     sets = ", ".join(f"{k} = ?" for k in fields)
     vals = list(fields.values()) + [project_id]

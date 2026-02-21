@@ -19,6 +19,7 @@ from typing import Any
 
 import aiosqlite
 
+import bot_config
 from db import store
 from .s3_client import S3Storage
 
@@ -151,7 +152,8 @@ class BackgroundScheduler:
         import aiohttp
 
         try:
-            target_dir = working_dir or f"E:\\MyProjects\\{project_slug}"
+            import os
+            target_dir = working_dir or os.path.join(bot_config.PROJECT_BASE_DIR, project_slug)
 
             # Request the agent to zip the project.
             async with aiohttp.ClientSession() as session:

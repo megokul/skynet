@@ -4,7 +4,9 @@ SKYNET — Bot & Orchestrator Configuration
 Centralises every setting needed by the Telegram bot, AI router,
 SKYNET Core orchestrator, and SKYNET Ledger (database).
 
-SECURITY: In production, load secrets from environment variables.
+SECURITY: All secrets must be provided via environment variables.
+          There are no hardcoded defaults for sensitive values.
+          Missing required variables raise RuntimeError at import time.
 """
 
 import os
@@ -34,16 +36,16 @@ def _int_env(name: str, default: int) -> int:
 # ---------------------------------------------------------------------------
 # Telegram
 # ---------------------------------------------------------------------------
-TELEGRAM_BOT_TOKEN: str = _str_env(
-    "TELEGRAM_BOT_TOKEN",
-    "8524123888:AAFxY-nqK0gLGt87pdStkxXEpPoA6bjBHu4",
-)
+# These values are intentionally left empty-by-default; validation happens
+# at bot startup in telegram_bot.build_app(), so that test environments and
+# API-only deployments (DISABLE_TELEGRAM_BOT=1) can import bot_config freely.
+TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 
 # Only this Telegram user ID can issue commands.
-ALLOWED_USER_ID: int = _int_env("TELEGRAM_ALLOWED_USER_ID", 7152683074)
+ALLOWED_USER_ID: int = _int_env("TELEGRAM_ALLOWED_USER_ID", 0)
 
-# Gateway HTTP API (runs on the same machine).
-GATEWAY_API_URL: str = "http://127.0.0.1:8766"
+# Gateway HTTP API (runs on the same machine; override with GATEWAY_API_URL).
+GATEWAY_API_URL: str = _str_env("GATEWAY_API_URL", "http://127.0.0.1:8766")
 
 # Default working directory for worker actions.
 # Can be overridden with SKYNET_DEFAULT_WORKING_DIR / OPENCLAW_DEFAULT_WORKING_DIR.

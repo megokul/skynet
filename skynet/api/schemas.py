@@ -11,7 +11,7 @@ class HealthResponse(BaseModel):
     """Service health response."""
 
     status: str = Field("ok", description="Service status")
-    version: str = Field("1.0.0", description="API version")
+    version: str = Field(..., description="API version (matches skynet.__version__)")
     components: dict[str, str] = Field(default_factory=dict, description="Component status")
 
 
@@ -157,10 +157,12 @@ class QueueTaskResponse(BaseModel):
 
 
 class ClaimTaskRequest(BaseModel):
-    """Explicit claim request for pull workers/tests."""
+    """Explicit claim request for pull workers/tests.
+
+    Lock timeout is controlled server-side by SKYNET_CONTROL_TASK_LOCK_TIMEOUT.
+    """
 
     worker_id: str
-    lock_timeout_seconds: int | None = None
 
 
 class ClaimTaskResponse(BaseModel):

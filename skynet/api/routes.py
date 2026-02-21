@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
+from skynet import __version__
 from skynet.api import schemas
 from skynet.control_plane import ControlPlaneRegistry, GatewayClient
 from skynet.ledger.task_queue import TaskQueueManager
@@ -85,6 +86,12 @@ def _enforce_rate_limit(request: Request) -> None:
 
     client_ip = request.client.host if request.client else "unknown"
     now = time.time()
+
+    # Evict stale buckets to prevent unbounded memory growth.
+    stale = [ip for ip, (ws, _) in _rate_limit_buckets.items() if now - ws >= 60]
+    for ip in stale:
+        del _rate_limit_buckets[ip]
+
     window_start, count = _rate_limit_buckets.get(client_ip, (now, 0))
 
     if now - window_start >= 60:
@@ -333,7 +340,6 @@ async def claim_task(
     """
     task = await task_queue.claim_next_ready_task(
         worker_id=request.worker_id,
-        lock_timeout_seconds=request.lock_timeout_seconds,
     )
     if not task:
         return schemas.ClaimTaskResponse(claimed=False, task=None)
@@ -510,6 +516,6 @@ async def health_check() -> schemas.HealthResponse:
     status = "ok" if all(v == "ok" for v in components.values()) else "degraded"
     return schemas.HealthResponse(
         status=status,
-        version="1.0.0",
+        version=__version__,
         components=components,
     )

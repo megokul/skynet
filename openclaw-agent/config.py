@@ -122,14 +122,18 @@ def _parse_allowed_roots() -> list[str]:
         if roots:
             return roots
 
+    # No SKYNET_ALLOWED_ROOTS / OPENCLAW_ALLOWED_ROOTS configured.
+    # Using safe user-home-relative defaults. Set the env var to restrict
+    # access to specific directories on this machine.
     if os.name == "nt":
+        home = os.path.expanduser("~")
         return [
-            r"E:\MyProjects",
-            r"E:\OpenClaw\projects",
+            os.path.join(home, "Projects"),
+            os.path.join(home, "Documents"),
         ]
 
-    # Linux default for EC2-hosted workers.
-    return ["/home/ubuntu", "/tmp"]
+    # Linux/macOS defaults.
+    return [os.path.expanduser("~"), "/tmp"]
 
 
 ALLOWED_ROOTS: list[str] = _parse_allowed_roots()

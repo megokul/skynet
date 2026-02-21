@@ -12,9 +12,7 @@ from typing import Any
 
 import aiosqlite
 
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from skynet.utils import iso_now as _utc_now
 
 
 class WorkerRegistry:

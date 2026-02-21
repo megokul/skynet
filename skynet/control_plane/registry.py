@@ -8,13 +8,10 @@ This module does not execute workloads.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from threading import RLock
 from typing import Any
 
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from skynet.utils import iso_now as _utc_now
 
 
 @dataclass

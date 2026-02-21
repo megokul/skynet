@@ -18,6 +18,8 @@ from uuid import uuid4
 
 import aiosqlite
 
+from skynet.utils import utc_now, iso_now
+
 
 TASK_STATE_QUEUED = "queued"
 TASK_STATE_CLAIMED = "claimed"
@@ -59,11 +61,11 @@ LEGAL_TASK_TRANSITIONS: dict[str, set[str]] = {
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utc_now()
 
 
 def _iso_now() -> str:
-    return _utc_now().isoformat()
+    return iso_now()
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -270,7 +272,6 @@ class TaskQueueManager:
         self,
         *,
         worker_id: str,
-        lock_timeout_seconds: int | None = None,  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """
         Atomically claim one ready task.
@@ -280,6 +281,9 @@ class TaskQueueManager:
         - not currently locked
         - all dependencies are succeeded
         - required files are not owned by another active task
+
+        Lock timeout is determined by the control-plane scheduler, configured
+        via SKYNET_CONTROL_TASK_LOCK_TIMEOUT (default: 300 seconds).
         """
         now = _iso_now()
         await self.db.execute("BEGIN IMMEDIATE")

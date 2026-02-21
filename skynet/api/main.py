@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from skynet import __version__
 from skynet.api.routes import app_state, router
 from skynet.control_plane import (
     ControlPlaneRegistry,
@@ -130,16 +131,16 @@ async def lifespan(app: FastAPI):
         app_state.stale_lock_reaper = None
 
     logger.info(
-        """
+        f"""
   ____  _  ____   ___   _ _____ _____
  / ___|| |/ /\\ \\ / / \\ | | ____|_   _|
  \\___ \\| ' /  \\ V /|  \\| |  _|   | |
   ___) | . \\   | | | |\\  | |___  | |
  |____/|_|\\_\\  |_| |_| \\_|_____| |_|
-      Control Plane API v2.2
+      Control Plane API v{__version__}
 
   Status    : ONLINE
-  Version   : 2.3.0 (Control-Plane Scheduler Authority)
+  Version   : {__version__} (Control-Plane Scheduler Authority)
   Endpoints : /v1/register-gateway, /v1/register-worker, /v1/route-task, /v1/tasks/*
   Docs      : http://localhost:8000/docs
 """
@@ -180,7 +181,7 @@ app = FastAPI(
         "SKYNET orchestration control plane. "
         "Routes task actions to OpenClaw gateways and tracks global topology."
     ),
-    version="1.0.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
@@ -200,7 +201,7 @@ async def root():
     """Root endpoint with API information."""
     return {
         "service": "SKYNET Control Plane API",
-        "version": "2.3.0",
+        "version": __version__,
         "status": "online",
         "docs": "/docs",
         "endpoints": {

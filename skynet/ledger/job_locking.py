@@ -11,9 +11,7 @@ from typing import Any
 
 import aiosqlite
 
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+from skynet.utils import utc_now as _utc_now
 
 
 def _iso(dt: datetime) -> str:

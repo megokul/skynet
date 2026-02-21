@@ -39,6 +39,47 @@ from ai.providers.base import ToolCall
 
 logger = logging.getLogger("skynet.telegram")
 
+
+class _TTLDict(dict):
+    """dict subclass that evicts entries older than *ttl_seconds* on each write.
+
+    All existing read/write patterns work without modification. Stale entries
+    are silently dropped before each insertion, bounding memory growth for
+    abandoned in-flight Telegram flows. If a stale value is an asyncio.Future
+    it is cancelled before removal to prevent resource leaks.
+    """
+
+    def __init__(self, ttl_seconds: int) -> None:
+        super().__init__()
+        self._ttl = ttl_seconds
+        self._timestamps: dict = {}
+
+    def __setitem__(self, key, value):
+        self._evict()
+        self._timestamps[key] = time.time()
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key):
+        self._timestamps.pop(key, None)
+        super().__delitem__(key)
+
+    def pop(self, key, *args):
+        self._timestamps.pop(key, None)
+        return super().pop(key, *args)
+
+    def _evict(self):
+        now = time.time()
+        stale = [k for k, ts in list(self._timestamps.items()) if now - ts > self._ttl]
+        for k in stale:
+            value = super().get(k)
+            if isinstance(value, asyncio.Future) and not value.done():
+                value.cancel()
+            self._timestamps.pop(k, None)
+            super().pop(k, None)
+        if stale:
+            logger.debug("TTL evicted %d stale pending flow(s)", len(stale))
+
+
 # Injected at startup by main.py.
 _project_manager = None
 _provider_router = None
@@ -47,22 +88,22 @@ _sentinel = None
 _searcher = None
 _skill_registry = None
 
-# Stores pending CONFIRM actions keyed by a short ID.
-_pending_confirms: dict[str, dict] = {}
+# Stores pending CONFIRM actions keyed by a short ID (TTL: 30 min).
+_pending_confirms: _TTLDict = _TTLDict(ttl_seconds=1800)
 _confirm_counter: int = 0
 
-# Stores pending approval futures from the orchestrator worker.
+# Stores pending approval futures from the orchestrator worker (TTL: 10 min).
 # { "key": asyncio.Future }
-_pending_approvals: dict[str, asyncio.Future] = {}
+_pending_approvals: _TTLDict = _TTLDict(ttl_seconds=600)
 _approval_counter: int = 0
-# Stores pending natural-language follow-up for project-name capture by user id.
-_pending_project_name_requests: dict[int, dict[str, str]] = {}
-# Stores pending routing choices when user says "start/make project" without clear target.
-_pending_project_route_requests: dict[str, dict[str, Any]] = {}
-# Stores pending destructive remove-project confirmations.
-_pending_project_removals: dict[str, dict[str, str]] = {}
-# Stores pending project documentation intake by user id.
-_pending_project_doc_intake: dict[int, dict[str, Any]] = {}
+# Stores pending natural-language follow-up for project-name capture (TTL: 30 min).
+_pending_project_name_requests: _TTLDict = _TTLDict(ttl_seconds=1800)
+# Stores pending routing choices when user says "start/make project" (TTL: 30 min).
+_pending_project_route_requests: _TTLDict = _TTLDict(ttl_seconds=1800)
+# Stores pending destructive remove-project confirmations (TTL: 5 min).
+_pending_project_removals: _TTLDict = _TTLDict(ttl_seconds=300)
+# Stores pending project documentation intake by user id (TTL: 60 min).
+_pending_project_doc_intake: _TTLDict = _TTLDict(ttl_seconds=3600)
 _background_tasks: set[asyncio.Task] = set()
 
 _PROJECT_DOC_INTAKE_STEPS: list[tuple[str, str]] = [
@@ -1270,13 +1311,25 @@ def _project_bootstrap_note(project: dict) -> str:
     summary = str(project.get("bootstrap_summary") or "").strip()
     if not summary:
         return ""
+    bootstrap_ok = project.get("bootstrap_ok", True)
     lowered = summary.lower()
-    if "failed" in lowered:
+    # Deferred bootstrap: infra/agent unavailable but project row is intact.
+    # Use bootstrap_ok (not text search) so "SSH action failed" inside a
+    # deferred summary doesn't trigger the hard-failure branch.
+    if bootstrap_ok and "deferred" in lowered:
+        return (
+            "Workspace bootstrap deferred — the agent is currently unreachable.\n"
+            "The directory and git scaffold will be created automatically when the agent reconnects."
+        )
+    if not bootstrap_ok:
         return (
             f"Bootstrap issue: {summary}\n"
             "Project record was created, but workspace setup did not fully complete."
         )
-    return f"Bootstrap: {summary}"
+    # ok=True with warnings (e.g. GitHub repo creation failed but is non-fatal)
+    if "warning" in lowered or "failed" in lowered:
+        return f"Bootstrap note: {summary}"
+    return ""
 
 
 def _join_project_path(base: str, leaf: str) -> str:
@@ -3562,20 +3615,18 @@ async def _create_project_from_name(update: Update, name: str) -> bool:
             if project.get("github_repo") else ""
         )
         bootstrap_note = _project_bootstrap_note(project)
-        if bootstrap_note:
-            bootstrap_note = "\n" + bootstrap_note
         docs_note = (
-            "\nDocumentation: finalized template scaffold started in background. "
+            "Documentation: finalized template scaffold started in background. "
             "I will populate project-specific docs only after enough requirements are captured."
         )
-        await update.message.reply_text(
-            (
-                f"Created project '{_project_display(project)}' at {project.get('local_path', '')}.{repo_line}\n"
-                f"{bootstrap_note}\n"
-                f"{docs_note}\n"
-                "Tell me what you want it to do, and I’ll take it forward."
-            )
-        )
+        msg_parts = [
+            f"Created project '{_project_display(project)}' at {project.get('local_path', '')}.{repo_line}",
+        ]
+        if bootstrap_note:
+            msg_parts.append(bootstrap_note)
+        msg_parts.append(docs_note)
+        msg_parts.append("Tell me what you want it to do, and I’ll take it forward.")
+        await update.message.reply_text("\n".join(msg_parts))
         _spawn_background_task(
             _run_project_docs_generation_async(project, {}, reason="project_create"),
             tag=f"doc-init-{project['id']}",
@@ -4373,292 +4424,9 @@ async def _maybe_handle_memory_text_command(update: Update, text: str) -> bool:
 
 
 # ------------------------------------------------------------------
-# v1 Agent commands (kept as-is)
+# v1 Agent commands — extracted to telegram_cmd_agent.py
+# (registered in build_app() below via import telegram_cmd_agent)
 # ------------------------------------------------------------------
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    await update.message.reply_text(
-        "<b>SKYNET // CHATHAN - AI Project Factory</b>\n\n"
-        "<b>Project Management:</b>\n"
-        "  /newproject &lt;name&gt; - start a new project\n"
-        "  (send text) - natural chat with SKYNET\n"
-        "  /idea &lt;text&gt; - add idea to current project\n"
-        "  /plan [name] - generate project plan\n"
-        "  /projects - list all projects\n"
-        "  /status &lt;name&gt; - project status\n"
-        "  /pause &lt;name&gt; - pause project\n"
-        "  /resume_project &lt;name&gt; - resume project\n"
-        "  /cancel &lt;name&gt; - cancel project\n"
-        "  /removeproject &lt;name&gt; - permanently remove project record (with Yes/No confirmation)\n"
-        "  /quota - AI provider status\n\n"
-        "<b>Persona Memory:</b>\n"
-        "  /profile - show stored profile and preferences\n"
-        "  /forget &lt;fact-or-text&gt; - forget matching stored facts\n"
-        "  /no_store - stop storing new memory\n"
-        "  /store_on - re-enable memory storage\n\n"
-        "<b>SKYNET System:</b>\n"
-        "  /agents [project] - list agents\n"
-        "  /heartbeat - heartbeat task status\n"
-        "  /sentinel - run health checks\n"
-        "  /skills - list available skills\n\n"
-        "<b>Agent Commands:</b>\n"
-        "  /agent_status - agent connection check\n"
-        "  /git_status [path]\n"
-        "  /run_tests [path]\n"
-        "  /lint [path]\n"
-        "  /build [path]\n"
-        "  /vscode <path> - open folder/file in VS Code on laptop\n"
-        "  /check_agents - check codex/claude/cline CLI availability\n"
-        "  /run_agent <agent> [path=<dir>] <prompt> - run coding agent\n"
-        "  /cline_provider <provider> [model] - switch Cline provider/model\n"
-        "  /close_app [name]\n\n"
-        "<b>Controls:</b>\n"
-        "  /emergency_stop - kill everything\n"
-        "  /resume - resume agent\n",
-        parse_mode="HTML",
-    )
-
-
-async def cmd_agent_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    try:
-        result = await _gateway_get("/status")
-        execution_mode = str(result.get("execution_mode", "")).strip().lower()
-        if execution_mode == "ssh_tunnel":
-            ssh_enabled = result.get("ssh_fallback_enabled", False)
-            ssh_healthy = result.get("ssh_fallback_healthy", False)
-            ssh_target = result.get("ssh_fallback_target", "")
-            if ssh_enabled:
-                status = "SSH Tunnel Ready" if ssh_healthy else "SSH Tunnel Configured (unreachable)"
-                msg = f"Execution: <b>{status}</b>\nMode: <code>ssh_tunnel (forced)</code>"
-                if ssh_target:
-                    msg += f"\nTarget: <code>{html.escape(str(ssh_target))}</code>"
-                await update.message.reply_text(msg, parse_mode="HTML")
-                return
-
-        connected = result.get("agent_connected", False)
-        if connected:
-            await update.message.reply_text("Execution: <b>Worker Connected</b>", parse_mode="HTML")
-            return
-
-        ssh_enabled = result.get("ssh_fallback_enabled", False)
-        ssh_healthy = result.get("ssh_fallback_healthy", False)
-        ssh_target = result.get("ssh_fallback_target", "")
-        if ssh_enabled:
-            status = "SSH Tunnel Ready" if ssh_healthy else "SSH Tunnel Configured (unreachable)"
-            msg = f"Execution: <b>{status}</b>"
-            if ssh_target:
-                msg += f"\nTarget: <code>{html.escape(str(ssh_target))}</code>"
-            await update.message.reply_text(msg, parse_mode="HTML")
-            return
-
-        await update.message.reply_text("Execution: <b>No worker and no SSH fallback</b>", parse_mode="HTML")
-    except Exception as exc:
-        await update.message.reply_text(f"Gateway unreachable: {exc}")
-
-
-async def cmd_git_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    path = _parse_path(context.args)
-    await update.message.reply_text(f"Running git_status on <code>{html.escape(path)}</code> ...", parse_mode="HTML")
-    try:
-        result = await _send_action("git_status", {"working_dir": path}, confirmed=True)
-        await update.message.reply_text(_format_result(result), parse_mode="HTML")
-    except Exception as exc:
-        await update.message.reply_text(f"Error: {exc}")
-
-
-async def cmd_run_tests(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    path = _parse_path(context.args)
-    runner = context.args[1] if context.args and len(context.args) > 1 else "pytest"
-    await update.message.reply_text(f"Running tests ({runner}) ...", parse_mode="HTML")
-    try:
-        result = await _send_action("run_tests", {"working_dir": path, "runner": runner}, confirmed=True)
-        await update.message.reply_text(_format_result(result), parse_mode="HTML")
-    except Exception as exc:
-        await update.message.reply_text(f"Error: {exc}")
-
-
-async def cmd_lint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    path = _parse_path(context.args)
-    linter = context.args[1] if context.args and len(context.args) > 1 else "ruff"
-    try:
-        result = await _send_action("lint_project", {"working_dir": path, "linter": linter}, confirmed=True)
-        await update.message.reply_text(_format_result(result), parse_mode="HTML")
-    except Exception as exc:
-        await update.message.reply_text(f"Error: {exc}")
-
-
-async def cmd_build(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    path = _parse_path(context.args)
-    tool = context.args[1] if context.args and len(context.args) > 1 else "npm"
-    try:
-        result = await _send_action("build_project", {"working_dir": path, "build_tool": tool}, confirmed=True)
-        await update.message.reply_text(_format_result(result), parse_mode="HTML")
-    except Exception as exc:
-        await update.message.reply_text(f"Error: {exc}")
-
-
-async def cmd_vscode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /vscode <path>")
-        return
-    path = " ".join(context.args).strip()
-    await _ask_confirm(
-        update,
-        "open_in_vscode",
-        {"path": path},
-        f"Path: <code>{html.escape(path)}</code>",
-    )
-
-
-async def cmd_check_agents(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    try:
-        result = await _send_action("check_coding_agents", {}, confirmed=True)
-        await update.message.reply_text(_format_result(result), parse_mode="HTML")
-    except Exception as exc:
-        await update.message.reply_text(f"Error: {exc}")
-
-
-async def cmd_run_agent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            "Usage: /run_agent <codex|claude|cline> [path=<dir>] <prompt>",
-        )
-        return
-
-    agent = context.args[0].strip().lower()
-    if agent not in {"codex", "claude", "cline"}:
-        await update.message.reply_text("Agent must be one of: codex, claude, cline")
-        return
-
-    working_dir = cfg.PROJECT_BASE_DIR or cfg.DEFAULT_WORKING_DIR
-    prompt_start_index = 1
-    if len(context.args) >= 3 and context.args[1].startswith("path="):
-        working_dir = context.args[1][len("path="):].strip() or working_dir
-        prompt_start_index = 2
-
-    prompt = " ".join(context.args[prompt_start_index:]).strip()
-    if not prompt:
-        await update.message.reply_text(
-            "Usage: /run_agent <codex|claude|cline> [path=<dir>] <prompt>",
-        )
-        return
-
-    await _ask_confirm(
-        update,
-        "run_coding_agent",
-        {"agent": agent, "prompt": prompt, "working_dir": working_dir},
-        (
-            f"Agent: <code>{html.escape(agent)}</code>\n"
-            f"Path: <code>{html.escape(working_dir)}</code>\n"
-            f"Prompt: <i>{html.escape(prompt)}</i>"
-        ),
-    )
-
-
-async def cmd_cline_provider(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    if not context.args:
-        await update.message.reply_text(
-            "Usage: /cline_provider <gemini|deepseek|groq|openrouter|openai|anthropic> [model]",
-        )
-        return
-    provider = context.args[0].strip().lower()
-    if provider not in {"gemini", "deepseek", "groq", "openrouter", "openai", "anthropic"}:
-        await update.message.reply_text(
-            "Provider must be one of: gemini, deepseek, groq, openrouter, openai, anthropic.",
-        )
-        return
-    model = " ".join(context.args[1:]).strip()
-    params = {"agent": "cline", "provider": provider}
-    if model:
-        params["model"] = model
-    try:
-        result = await _send_action("configure_coding_agent", params, confirmed=True)
-        await update.message.reply_text(_format_result(result), parse_mode="HTML")
-    except Exception as exc:
-        await update.message.reply_text(f"Error: {exc}")
-
-
-async def cmd_git_commit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text(f"Usage: /git_commit [path] [message]")
-        return
-    path = context.args[0]
-    message = " ".join(context.args[1:])
-    await _ask_confirm(update, "git_commit", {"working_dir": path, "message": message},
-                       f"Path: <code>{html.escape(path)}</code>\nMessage: <i>{html.escape(message)}</i>")
-
-
-async def cmd_install_deps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    path = _parse_path(context.args)
-    manager = context.args[1] if context.args and len(context.args) > 1 else "pip"
-    await _ask_confirm(update, "install_dependencies", {"working_dir": path, "manager": manager},
-                       f"Path: <code>{html.escape(path)}</code>\nManager: {html.escape(manager)}")
-
-
-async def cmd_close_app(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /close_app [name]")
-        return
-    app_name = context.args[0].lower()
-    await _ask_confirm(update, "close_app", {"app": app_name},
-                       f"Application: <code>{html.escape(app_name)}</code>")
-
-
-async def cmd_emergency_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    # Cancel all running projects.
-    if _project_manager and _project_manager.scheduler:
-        count = _project_manager.scheduler.cancel_all()
-        if count:
-            await update.message.reply_text(f"Cancelled {count} running project(s).")
-    try:
-        result = await _gateway_post("/emergency-stop")
-        await update.message.reply_text(
-            f"EMERGENCY STOP sent.\nResponse: <code>{html.escape(json.dumps(result))}</code>",
-            parse_mode="HTML",
-        )
-    except Exception as exc:
-        await update.message.reply_text(f"Error: {exc}")
-
-
-async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _authorised(update):
-        return
-    try:
-        result = await _gateway_post("/resume")
-        await update.message.reply_text(
-            f"Resume sent.\nResponse: <code>{html.escape(json.dumps(result))}</code>",
-            parse_mode="HTML",
-        )
-    except Exception as exc:
-        await update.message.reply_text(f"Error: {exc}")
 
 
 # ------------------------------------------------------------------
@@ -4840,6 +4608,17 @@ def build_app() -> Application:
     """Create and configure the Telegram bot application."""
     global _bot_app
 
+    if not cfg.TELEGRAM_BOT_TOKEN:
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN is not set. "
+            "Copy .env.example to .env and fill in your Telegram bot token."
+        )
+    if not cfg.ALLOWED_USER_ID:
+        raise RuntimeError(
+            "TELEGRAM_ALLOWED_USER_ID is not set. "
+            "Copy .env.example to .env and fill in your Telegram user ID."
+        )
+
     app = (
         Application.builder()
         .token(cfg.TELEGRAM_BOT_TOKEN)
@@ -4848,8 +4627,6 @@ def build_app() -> Application:
     )
 
     # v2 project commands.
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("newproject", cmd_newproject))
     app.add_handler(CommandHandler("idea", cmd_idea))
     app.add_handler(CommandHandler("plan", cmd_plan))
@@ -4871,21 +4648,24 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("sentinel", cmd_sentinel))
     app.add_handler(CommandHandler("skills", cmd_skills))
 
-    # v1 agent commands.
-    app.add_handler(CommandHandler("agent_status", cmd_agent_status))
-    app.add_handler(CommandHandler("git_status", cmd_git_status))
-    app.add_handler(CommandHandler("run_tests", cmd_run_tests))
-    app.add_handler(CommandHandler("lint", cmd_lint))
-    app.add_handler(CommandHandler("build", cmd_build))
-    app.add_handler(CommandHandler("vscode", cmd_vscode))
-    app.add_handler(CommandHandler("check_agents", cmd_check_agents))
-    app.add_handler(CommandHandler("run_agent", cmd_run_agent))
-    app.add_handler(CommandHandler("cline_provider", cmd_cline_provider))
-    app.add_handler(CommandHandler("git_commit", cmd_git_commit))
-    app.add_handler(CommandHandler("install_deps", cmd_install_deps))
-    app.add_handler(CommandHandler("close_app", cmd_close_app))
-    app.add_handler(CommandHandler("emergency_stop", cmd_emergency_stop))
-    app.add_handler(CommandHandler("resume", cmd_resume))
+    # v1 agent commands — implemented in telegram_cmd_agent.py.
+    import telegram_cmd_agent as _cmd_agent
+    app.add_handler(CommandHandler("start", _cmd_agent.cmd_start))
+    app.add_handler(CommandHandler("help", _cmd_agent.cmd_start))
+    app.add_handler(CommandHandler("agent_status", _cmd_agent.cmd_agent_status))
+    app.add_handler(CommandHandler("git_status", _cmd_agent.cmd_git_status))
+    app.add_handler(CommandHandler("run_tests", _cmd_agent.cmd_run_tests))
+    app.add_handler(CommandHandler("lint", _cmd_agent.cmd_lint))
+    app.add_handler(CommandHandler("build", _cmd_agent.cmd_build))
+    app.add_handler(CommandHandler("vscode", _cmd_agent.cmd_vscode))
+    app.add_handler(CommandHandler("check_agents", _cmd_agent.cmd_check_agents))
+    app.add_handler(CommandHandler("run_agent", _cmd_agent.cmd_run_agent))
+    app.add_handler(CommandHandler("cline_provider", _cmd_agent.cmd_cline_provider))
+    app.add_handler(CommandHandler("git_commit", _cmd_agent.cmd_git_commit))
+    app.add_handler(CommandHandler("install_deps", _cmd_agent.cmd_install_deps))
+    app.add_handler(CommandHandler("close_app", _cmd_agent.cmd_close_app))
+    app.add_handler(CommandHandler("emergency_stop", _cmd_agent.cmd_emergency_stop))
+    app.add_handler(CommandHandler("resume", _cmd_agent.cmd_resume))
 
     # Inline buttons.
     app.add_handler(CallbackQueryHandler(handle_callback))
