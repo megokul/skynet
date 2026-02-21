@@ -32,6 +32,9 @@ build/
 .coverage
 htmlcov/
 
+# Claude Code internal state
+.claude/worktrees/
+
 # IDEs
 .vscode/
 .idea/
