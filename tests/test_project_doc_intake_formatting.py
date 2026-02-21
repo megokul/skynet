@@ -52,3 +52,13 @@ def test_project_doc_intake_sanitizes_and_formats_natural_language() -> None:
     assert "Primary users:" in overview
     assert "- Developers" in overview
     assert "- [ ] Play 1 sec beep" in features
+
+
+def test_doc_opt_out_understands_natural_language_variants() -> None:
+    repo_root = Path(__file__).parent.parent
+    bot_path = repo_root / "openclaw-gateway" / "telegram_bot.py"
+    bot = _load_module(bot_path, "oc_gateway_telegram_bot_doc_intake_optout")
+
+    assert bot._doc_intake_opt_out_requested("no docs required. just build the app")
+    assert bot._doc_intake_opt_out_requested("it's simple, documentation is not needed")
+    assert bot._doc_intake_opt_out_requested("without documentation, just make it now")

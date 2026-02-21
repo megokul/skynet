@@ -2504,8 +2504,17 @@ def _is_explicit_new_project_request(text: str) -> bool:
     ):
         return True
     if re.search(
-        r"\b(?:create|start|begin|kick\s*off|make|spin\s*up)\s+"
-        r"(?:a\s+|an\s+|the\s+|my\s+)?(?:new\w*\s+)?"
+        r"\b(?:create|begin|kick\s*off|spin\s*up)\s+"
+        r"(?:a\s+|an\s+|my\s+)?(?:new\w*\s+)?"
+        + descriptor
+        + r"(?:project|application|repo|proj|app)\b",
+        raw,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"\b(?:start|make)\s+"
+        r"(?:a\s+|an\s+|my\s+)(?:new\w*\s+)?"
         + descriptor
         + r"(?:project|application|repo|proj|app)\b",
         raw,
@@ -2515,7 +2524,7 @@ def _is_explicit_new_project_request(text: str) -> bool:
     if re.search(
         r"\b(?:can\s+we|let'?s|i\s+want\s+to)\s+"
         r"(?:do|create|start|begin|make)\s+"
-        r"(?:a\s+|an\s+|the\s+|my\s+)?(?:new\w*\s+)?"
+        r"(?:a\s+|an\s+|my\s+)?(?:new\w*\s+)?"
         + descriptor
         + r"(?:project|application|repo|proj|app)\b",
         raw,
@@ -2531,6 +2540,10 @@ def _extract_project_name_candidate(text: str) -> str:
         return ""
     if _is_smalltalk_or_ack(raw):
         return ""
+    lowered = raw.lower()
+    if re.match(r"^\s*(?:can\s+we|i\s+want\s+to|let'?s|could\s+you|would\s+you)\b", lowered):
+        return ""
+
     quoted_name = _extract_quoted_project_name_candidate(raw)
     if quoted_name:
         return quoted_name

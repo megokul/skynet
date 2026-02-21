@@ -124,3 +124,34 @@ async def test_hybrid_intent_falls_back_to_rules() -> None:
     bot._extract_nl_intent_llm = _fake_llm
     out = await bot._extract_nl_intent_hybrid("can we do a project")
     assert out.get("intent") == "create_project"
+
+
+@pytest.mark.asyncio
+async def test_pending_name_does_not_hijack_generate_plan_intent() -> None:
+    repo_root = Path(__file__).parent.parent
+    bot_path = repo_root / "openclaw-gateway" / "telegram_bot.py"
+    bot = _load_module(bot_path, "oc_gateway_telegram_bot_nl_11")
+
+    class _DummyUser:
+        id = 123
+
+    class _DummyMessage:
+        async def reply_text(self, *_args, **_kwargs):
+            return None
+
+    class _DummyUpdate:
+        effective_user = _DummyUser()
+        message = _DummyMessage()
+
+    user_id = int(_DummyUpdate.effective_user.id)
+    bot._pending_project_name_requests[user_id] = {"expected": "project_name"}
+
+    async def _fake_hybrid(_text: str, update=None) -> dict[str, str]:
+        return {"intent": "generate_plan"}
+
+    bot._extract_nl_intent_hybrid = _fake_hybrid
+    handled = await bot._maybe_handle_pending_project_name(_DummyUpdate(), "generate plan")
+
+    # pending-name gate should release and allow normal handler to process generate_plan.
+    assert handled is False
+    assert user_id not in bot._pending_project_name_requests

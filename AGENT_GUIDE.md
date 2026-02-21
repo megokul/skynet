@@ -35,3 +35,13 @@ Hard rule:
 Use:
 - `python scripts/ci/check_control_plane_boundary.py`
 - `make test`
+
+## Handoff Policy
+
+- Always update `docs/AGENT_HANDOFF.md` before pausing or transferring work.
+- Include:
+  - current goal
+  - changed files (committed/uncommitted)
+  - test results with exact failing tests
+  - blockers
+  - concrete next actions
