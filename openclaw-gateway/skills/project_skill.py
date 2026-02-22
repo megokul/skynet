@@ -47,9 +47,11 @@ class ProjectManagementSkill(BaseSkill):
             {
                 "name": "project_create",
                 "description": (
-                    "Create a new SKYNET project with the given name. "
-                    "Call this when the user wants to start a new project. "
-                    "Returns the created project details including local path."
+                    "Create a new SKYNET project. "
+                    "IMPORTANT: ONLY call this after the user has given you an explicit project name. "
+                    "If they say 'start a project' or 'new project' without naming it, "
+                    "ask 'What would you like to name the project?' first — do NOT call this tool "
+                    "until the user provides a name."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -110,8 +112,10 @@ class ProjectManagementSkill(BaseSkill):
                 "name": "project_generate_plan",
                 "description": (
                     "Generate the task plan for the active project. "
-                    "Call this when the user asks to generate the plan, "
-                    "start building, or when enough ideas/requirements are captured."
+                    "IMPORTANT: ONLY call this when the user explicitly says words like "
+                    "'generate the plan', 'make the plan', 'I am ready to plan', or 'start planning'. "
+                    "NEVER call this automatically, never call it just because ideas have been captured. "
+                    "The user MUST give explicit permission before plan generation starts."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -126,8 +130,11 @@ class ProjectManagementSkill(BaseSkill):
             {
                 "name": "project_approve_start",
                 "description": (
-                    "Approve the plan and start execution for the active project. "
-                    "Call this when the user approves the plan and wants coding to begin."
+                    "Approve the plan and start autonomous code execution for the active project. "
+                    "IMPORTANT: ONLY call this when the user explicitly approves with words like "
+                    "'approve', 'start building', 'go ahead', 'begin coding', 'start execution', "
+                    "'let's do it'. NEVER call this automatically after plan generation — "
+                    "always wait for the user to review and explicitly confirm."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -423,6 +430,19 @@ class ProjectManagementSkill(BaseSkill):
         project, err = await self._resolve_project(pm, st, inp)
         if not project:
             return f"ERROR: {err}"
+        # Guard: refuse to plan with no ideas — forces the conversation to happen first.
+        ideas = project.get("ideas") or []
+        if not ideas:
+            try:
+                from db import store
+                ideas = await store.get_ideas(pm.db, project["id"])
+            except Exception:
+                ideas = []
+        if not ideas:
+            return (
+                f"ERROR: Project '{project.get('name', project['id'])}' has no ideas or requirements yet. "
+                "Please describe what you want the project to do before generating a plan."
+            )
         await pm.generate_plan(project["id"])
         st._last_project_id = project["id"]
         return f"Plan generation started for '{project.get('name', project['id'])}'. I will notify you when it's ready for review."
