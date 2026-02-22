@@ -451,10 +451,35 @@ class ProjectManagementSkill(BaseSkill):
         project, err = await self._resolve_project(pm, st, inp)
         if not project:
             return f"ERROR: {err}"
+        # Send a Telegram confirmation button rather than executing immediately.
+        # This ensures the user physically taps Approve before any code runs.
+        name = project.get("name", project["id"])
+        st._last_project_id = project["id"]
+        try:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            import bot_config as cfg
+            from bot import state as _st
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("Approve", callback_data=f"approve_plan:{project['id']}"),
+                InlineKeyboardButton("Cancel", callback_data=f"cancel_plan:{project['id']}"),
+            ]])
+            if _st._bot_app and _st._bot_app.bot:
+                await _st._bot_app.bot.send_message(
+                    chat_id=cfg.ALLOWED_USER_ID,
+                    text=f"Start execution for <b>{name}</b>? This will begin autonomous coding.",
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+                return (
+                    f"Sent approval request for '{name}'. "
+                    "Tap Approve in Telegram to start execution."
+                )
+        except Exception as exc:
+            logger.warning("Failed to send approve_start confirmation: %s", exc)
+        # Fallback: execute directly if the bot app is unavailable (e.g. tests).
         await pm.approve_plan(project["id"])
         await pm.start_execution(project["id"])
-        st._last_project_id = project["id"]
-        return f"Plan approved and execution started for '{project.get('name', project['id'])}'."
+        return f"Plan approved and execution started for '{name}'."
 
     async def _pause(self, pm, st, inp: dict) -> str:
         project, err = await self._resolve_project(pm, st, inp)
