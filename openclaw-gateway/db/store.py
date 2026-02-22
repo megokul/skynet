@@ -954,18 +954,34 @@ async def list_user_conversations(
     *,
     user_id: int,
     limit: int = 50,
+    since_seconds: int | None = None,
 ) -> list[dict[str, Any]]:
-    async with db.execute(
-        """
-        SELECT *
-        FROM user_conversations
-        WHERE user_id = ?
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (int(user_id), int(limit)),
-    ) as cur:
-        rows = [dict(row) for row in await cur.fetchall()]
+    if since_seconds is not None:
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=since_seconds)).strftime("%Y-%m-%dT%H:%M:%S")
+        async with db.execute(
+            """
+            SELECT *
+            FROM user_conversations
+            WHERE user_id = ? AND created_at >= ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (int(user_id), cutoff, int(limit)),
+        ) as cur:
+            rows = [dict(row) for row in await cur.fetchall()]
+    else:
+        async with db.execute(
+            """
+            SELECT *
+            FROM user_conversations
+            WHERE user_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (int(user_id), int(limit)),
+        ) as cur:
+            rows = [dict(row) for row in await cur.fetchall()]
     rows.reverse()
     for row in rows:
         try:

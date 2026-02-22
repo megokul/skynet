@@ -349,10 +349,24 @@ class ProjectManagementSkill(BaseSkill):
     # Tool implementations
     # ------------------------------------------------------------------
 
+    # Words that are clearly NOT project names (timing words, filler, etc.)
+    _NOT_A_PROJECT_NAME = frozenset({
+        "today", "tioday", "tday", "now", "please", "yes", "no", "ok",
+        "okay", "sure", "yep", "nope", "a", "the", "an", "new", "one",
+        "project", "app", "application", "start", "create", "make",
+        "something", "anything", "it", "this", "that",
+    })
+
     async def _create(self, pm, st, inp: dict) -> str:
         name = (inp.get("name") or "").strip()
         if not name:
             return "ERROR: Project name is required. Please provide a name."
+        # Reject obviously wrong names (timing words, filler words, etc.)
+        if name.lower() in self._NOT_A_PROJECT_NAME:
+            return (
+                f"ERROR: '{name}' is not a valid project name. "
+                "Please ask the user for a specific project name."
+            )
         # If project already exists, activate it instead of failing.
         try:
             project = await pm.create_project(name)

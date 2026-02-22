@@ -90,6 +90,7 @@ async def _load_recent_conversation_messages(
             state._project_manager.db,
             user_id=int(user_row["id"]),
             limit=max_items,
+            since_seconds=7200,  # Only load the last 2 hours — prevents old sessions bleeding in
         )
     except Exception:
         logger.exception("Failed to load persistent conversation history.")
