@@ -115,6 +115,28 @@ def _store_pending_project_removal(project: dict[str, Any]) -> str:
     return key
 
 
+def _human_age(iso_ts: str | None) -> str:
+    """Return a human-readable age string for an ISO timestamp, e.g. '3 hours ago'."""
+    if not iso_ts:
+        return ""
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - dt
+        secs = int(delta.total_seconds())
+        if secs < 120:
+            return "just now"
+        if secs < 3600:
+            return f"{secs // 60} min ago"
+        if secs < 86400:
+            return f"{secs // 3600} hour{'s' if secs >= 7200 else ''} ago"
+        return f"{secs // 86400} day{'s' if secs >= 172800 else ''} ago"
+    except Exception:
+        return ""
+
+
 async def _build_project_context_block() -> str:
     """Build a short context string about the last worked-on project for the LLM system prompt."""
     if not state._project_manager or not state._last_project_id:
@@ -128,13 +150,16 @@ async def _build_project_context_block() -> str:
         status = str(project.get("status") or "unknown")
         ideas = project.get("ideas") or []
         idea_count = len(ideas) if isinstance(ideas, list) else "?"
+        age = _human_age(project.get("updated_at") or project.get("created_at"))
+        age_str = f" — last active {age}" if age else ""
         return (
-            f"\n\n## Last worked on: {name}\n"
+            f"\n\n## Last worked on: {name}{age_str}\n"
             f"Status: {status} | Ideas captured: {idea_count}\n"
-            "IMPORTANT: Do NOT assume the user wants to continue this project. "
-            "If they say 'start a project', 'new project', 'create a project', or anything suggesting "
-            "they want to build something new — ask for the new project name and call project_create. "
-            "Only reference this project if the user clearly continues its conversation."
+            "Do NOT assume the user wants to continue this project. "
+            "If the message clearly signals something new ('start a project', 'new project', etc.) "
+            "ask for a name and call project_create. "
+            "If the gap is long (hours/days) and intent is ambiguous, ask naturally whether "
+            "they want to pick this up or start fresh — one short question, not a wall of options."
         )
     except Exception:
         return ""
