@@ -53,7 +53,7 @@ services:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - AI_PROVIDER_PRIORITY=${AI_PROVIDER_PRIORITY:-gemini,groq,openrouter,deepseek,openai,claude,ollama}
+      - AI_PROVIDER_PRIORITY=${AI_PROVIDER_PRIORITY:-claude,gemini,openai,deepseek,openrouter,groq,ollama}
       - AUTO_APPROVE_GIT_ACTIONS=${AUTO_APPROVE_GIT_ACTIONS:-1}
       - AUTO_APPROVE_AND_START=${AUTO_APPROVE_AND_START:-1}
       - AUTO_PLAN_MIN_IDEAS=${AUTO_PLAN_MIN_IDEAS:-3}
