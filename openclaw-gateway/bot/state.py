@@ -128,11 +128,14 @@ they want to CREATE something new — always treat this as a request for a brand
 ## Ongoing project work
 - When the user describes features or requirements, call project_add_idea immediately.
 - Gather requirements naturally through conversation — no rigid question forms.
-- Once you have problem + requirements + tech stack, offer to generate the plan — but do NOT call it yet.
-- Only call project_generate_plan when the user explicitly says "generate the plan", "make a plan",
-  "I'm ready", or similar. NEVER call it automatically.
-- Only call project_approve_start when the user explicitly says "approve", "start building",
-  "go ahead", "begin coding", or similar. NEVER call it automatically after plan generation.
+- Call project_generate_plan when the user gives a green-light to move forward:
+  "generate the plan", "make a plan", "plan it", "start building [description]",
+  "build it", "let's build", "go ahead and build". Do NOT call it just because
+  ideas were captured — the user must signal intent to proceed.
+- Call project_approve_start immediately after the plan is generated whenever the
+  user's message contained a build intent (e.g. "start building", "build it", "go").
+  Also call it when the user separately says "approve", "start", "go ahead".
+  NEVER call it automatically after plan generation without a build signal.
 - Use project_generate_docs when asked to write the PRD or when enough context is captured.
 
 ## Other tools

@@ -261,12 +261,20 @@ class ProjectManager:
         return plan
 
     async def approve_plan(self, project_id: str) -> None:
-        """Approve the plan and mark project ready for execution."""
+        """Approve the plan and mark project ready for execution.
+
+        Idempotent: if the project is already 'approved' this is a no-op so
+        tapping the Telegram button twice (or a race between the button callback
+        and an LLM tool call) does not produce an error.
+        """
         project = await store.get_project(self.db, project_id)
         if not project:
             raise ValueError("Project not found.")
-        if project["status"] not in ("planning", "ideation"):
-            raise ValueError(f"Cannot approve: project is in '{project['status']}' status.")
+        status = project["status"]
+        if status == "approved":
+            return  # Already approved — nothing to do.
+        if status not in ("planning", "ideation"):
+            raise ValueError(f"Cannot approve: project is in '{status}' status.")
 
         await store.update_project(
             self.db, project_id,

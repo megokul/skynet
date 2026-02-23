@@ -113,10 +113,11 @@ class ProjectManagementSkill(BaseSkill):
                 "name": "project_generate_plan",
                 "description": (
                     "Generate the task plan for the active project. "
-                    "IMPORTANT: ONLY call this when the user explicitly says words like "
-                    "'generate the plan', 'make the plan', 'I am ready to plan', or 'start planning'. "
-                    "NEVER call this automatically, never call it just because ideas have been captured. "
-                    "The user MUST give explicit permission before plan generation starts."
+                    "Call this when the user gives a clear green-light to proceed, for example: "
+                    "'generate the plan', 'make the plan', 'plan it', 'I am ready', "
+                    "'start building [description]', 'build it', 'let's build this', 'go ahead and build'. "
+                    "NEVER call automatically just because ideas were captured — "
+                    "the user must express intent to move forward."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -543,33 +544,55 @@ class ProjectManagementSkill(BaseSkill):
         project, err = await self._resolve_project(pm, st, inp)
         if not project:
             return f"ERROR: {err}"
-        # Send a Telegram confirmation button rather than executing immediately.
-        # This ensures the user physically taps Approve before any code runs.
+
         name = project.get("name", project["id"])
+        status = str(project.get("status", "")).lower()
         st._last_project_id = project["id"]
+
+        # Guard: already running — nothing to approve.
+        if status in ("coding", "testing"):
+            return f"Project '{name}' is already running (status: {status})."
+        # Guard: no plan yet — cannot approve before planning.
+        if status == "ideation":
+            return (
+                f"ERROR: Project '{name}' has no plan yet (status: ideation). "
+                "Generate a plan first, then approve."
+            )
+
+        # Build status-appropriate button text.
+        # 'approved' means the plan exists and was approved but execution hasn't
+        # started yet — skip the re-approve and jump straight to start.
+        already_approved = (status == "approved")
+        button_text = (
+            f"▶ Start execution for <b>{name}</b>"
+            if already_approved else
+            f"Approve &amp; start execution for <b>{name}</b>"
+        )
+
+        # Send a Telegram confirmation button — the user must physically tap it
+        # before any code runs, even if the plan is already approved.
         try:
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
             import bot_config as cfg
             from bot import state as _st
             keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("Approve", callback_data=f"approve_plan:{project['id']}"),
-                InlineKeyboardButton("Cancel", callback_data=f"cancel_plan:{project['id']}"),
+                InlineKeyboardButton("▶ Start", callback_data=f"approve_plan:{project['id']}"),
+                InlineKeyboardButton("✖ Cancel", callback_data=f"cancel_plan:{project['id']}"),
             ]])
             if _st._bot_app and _st._bot_app.bot:
                 await _st._bot_app.bot.send_message(
                     chat_id=cfg.ALLOWED_USER_ID,
-                    text=f"Start execution for <b>{name}</b>? This will begin autonomous coding.",
+                    text=button_text,
                     parse_mode="HTML",
                     reply_markup=keyboard,
                 )
                 return (
-                    f"Sent approval request for '{name}'. "
-                    "Tap Approve in Telegram to start execution."
+                    f"Ready to start '{name}'. Tap ▶ Start in Telegram to begin execution."
                 )
         except Exception as exc:
             logger.warning("Failed to send approve_start confirmation: %s", exc)
         # Fallback: execute directly if the bot app is unavailable (e.g. tests).
-        await pm.approve_plan(project["id"])
+        await pm.approve_plan(project["id"])   # idempotent if already approved
         await pm.start_execution(project["id"])
         return f"Plan approved and execution started for '{name}'."
 
