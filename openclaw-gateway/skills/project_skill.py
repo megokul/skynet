@@ -68,9 +68,12 @@ class ProjectManagementSkill(BaseSkill):
             {
                 "name": "project_add_idea",
                 "description": (
-                    "Add an idea or requirement to the active project. "
-                    "Call this whenever the user describes features, requirements, "
-                    "constraints, or anything they want the project to do. "
+                    "Add a concrete idea, feature, or requirement to the active project. "
+                    "Only call this when the user explicitly describes something to build, "
+                    "a specific feature, a technical requirement, or a constraint. "
+                    "Do NOT call for greetings (hi, hello, hey), acknowledgments (ok, sure, "
+                    "yes, got it), vague filler (something, anything), or conversational "
+                    "messages that contain no actionable project content. "
                     "If project_id is omitted, adds to the last active project."
                 ),
                 "input_schema": {

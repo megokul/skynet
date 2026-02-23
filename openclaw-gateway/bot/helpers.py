@@ -137,30 +137,61 @@ def _human_age(iso_ts: str | None) -> str:
         return ""
 
 
-async def _build_project_context_block() -> str:
-    """Build a short context string about the last worked-on project for the LLM system prompt."""
+async def _build_project_context_block(gap_tier=None) -> str:
+    """Build a context block about the last worked-on project for the LLM system prompt.
+
+    Injects actual ideas and task status so the LLM understands what conversation
+    it's in and where the project stands. Detail level is reduced for longer gaps.
+    """
     if not state._project_manager or not state._last_project_id:
         return ""
     try:
         from db import store
+        from bot.memory import GapTier
+
         project = await store.get_project(state._project_manager.db, state._last_project_id)
         if not project:
             return ""
+
         name = _project_display(project)
         status = str(project.get("status") or "unknown")
-        ideas = project.get("ideas") or []
-        idea_count = len(ideas) if isinstance(ideas, list) else "?"
         age = _human_age(project.get("updated_at") or project.get("created_at"))
         age_str = f" — last active {age}" if age else ""
-        return (
-            f"\n\n## Last worked on: {name}{age_str}\n"
-            f"Status: {status} | Ideas captured: {idea_count}\n"
-            "Do NOT assume the user wants to continue this project. "
-            "If the message clearly signals something new ('start a project', 'new project', etc.) "
-            "ask for a name and call project_create. "
-            "If the gap is long (hours/days) and intent is ambiguous, ask naturally whether "
-            "they want to pick this up or start fresh — one short question, not a wall of options."
-        )
+
+        # For long gaps: minimal context only — gap_context handles session guidance
+        if gap_tier is not None and gap_tier >= GapTier.LONG:
+            return f"\n\n## Last project: {name}\nStatus: {status}"
+
+        lines = [f"\n\n## Active project: {name}{age_str}", f"Status: {status}"]
+
+        # Inject actual ideas
+        ideas = await store.get_ideas(state._project_manager.db, state._last_project_id)
+        if ideas:
+            lines.append("")
+            lines.append("Ideas captured:")
+            for idea in ideas[-8:]:
+                text = (idea.get("message_text") or "").strip()
+                if text:
+                    lines.append(f"- {text[:120]}{'...' if len(text) > 120 else ''}")
+
+        # For medium gap: ideas only, skip task detail
+        if gap_tier is not None and gap_tier >= GapTier.MEDIUM:
+            return "\n".join(lines)
+
+        # For active/short gap: also inject tasks when project is in a build phase
+        if status in ("planning", "coding", "approved", "running", "paused"):
+            tasks = await store.get_tasks(state._project_manager.db, state._last_project_id)
+            if tasks:
+                done = sum(1 for t in tasks if t.get("status") == "done")
+                lines.append("")
+                lines.append(f"Build progress ({done}/{len(tasks)} tasks):")
+                for task in tasks[:10]:
+                    s = task.get("status") or "pending"
+                    title = (task.get("title") or "").strip()
+                    if title:
+                        lines.append(f"- [{s}] {title}")
+
+        return "\n".join(lines)
     except Exception:
         return ""
 
@@ -478,21 +509,6 @@ def _friendly_ai_error(exc: Exception) -> str:
         return "No cloud AI providers are currently available. Add at least one active API key."
     return f"OpenClaw chat error: {text}"
 
-
-def _is_smalltalk_or_ack(text: str) -> bool:
-    lowered = (text or "").strip().lower()
-    return bool(
-        re.fullmatch(
-            (
-                r"("
-                r"(?:hi|hello|hey|yo|sup)(?:\s+(?:there|skynet|bot))?"
-                r"|good\s+(?:morning|afternoon|evening)"
-                r"|thanks|thank you|ok|okay|cool|great|nice|got it|understood"
-                r")[.!? ]*"
-            ),
-            lowered,
-        ),
-    )
 
 
 

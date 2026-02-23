@@ -1,5 +1,5 @@
 """
-bot/nl_intent.py -- Greeting helpers and project reference resolution.
+bot/nl_intent.py -- Project reference resolution.
 
 The waterfall intent-extraction pipeline has been replaced by an LLM-first
 approach where the LLM calls project management tools directly. This module
@@ -10,16 +10,12 @@ from __future__ import annotations
 import logging
 import re
 
-from telegram import Update
-
 import bot_config as cfg
 from . import state
 from .helpers import (
-    _is_smalltalk_or_ack,
     _norm_project,
     _project_display,
 )
-from .memory import GapTier
 
 logger = logging.getLogger("skynet.telegram")
 
@@ -35,70 +31,6 @@ _NEW_PROJECT_RE = re.compile(
 def _is_new_project_intent(text: str) -> bool:
     """Return True if the message strongly signals intent to START a brand-new project."""
     return bool(_NEW_PROJECT_RE.search((text or "").strip()))
-
-
-def _is_pure_greeting(text: str) -> bool:
-    lowered = (text or "").strip().lower()
-    return bool(
-        re.fullmatch(
-            (
-                r"("
-                r"(?:hi|hello|hey|heya|yo|sup)(?:\s+(?:there|skynet|bot))?"
-                r"|good\s+(?:morning|afternoon|evening)"
-                r")[.!? ]*"
-            ),
-            lowered,
-        ),
-    )
-
-
-def _smalltalk_reply(text: str) -> str:
-    lowered = (text or "").strip().lower()
-    if any(tok in lowered for tok in ("thanks", "thank you")):
-        return "You're welcome. What should we work on next?"
-    return "Hi! How can I help today?"
-
-
-async def _smalltalk_reply_with_context(
-    update: Update,
-    text: str,
-    *,
-    gap_tier: GapTier = GapTier.ACTIVE,
-) -> str:
-    """Return a brief greeting, optionally mentioning the active project.
-
-    For LONG/DAY/EXTENDED gaps we don't mention the previous project — the
-    LLM system prompt handles re-entry context instead.
-    """
-    base = _smalltalk_reply(text)
-    if _is_pure_greeting(text):
-        return base
-
-    # Don't surface old project context after a long absence
-    if gap_tier >= GapTier.LONG:
-        return base
-
-    if not state._project_manager or not state._last_project_id:
-        return base
-
-    try:
-        from db import store
-        project = await store.get_project(state._project_manager.db, state._last_project_id)
-    except Exception:
-        return base
-
-    if not project:
-        return base
-
-    active_statuses = {"ideation", "planning", "approved", "coding", "testing", "paused"}
-    status = str(project.get("status", "")).strip().lower()
-    if status in active_statuses:
-        return (
-            base
-            + f" We are currently on '{_project_display(project)}' ({status}). "
-            "Do you want to continue this topic or switch to something else?"
-        )
-    return base
 
 
 async def _resolve_project(reference: str | None = None) -> tuple[dict | None, str | None]:

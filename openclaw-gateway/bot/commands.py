@@ -36,7 +36,6 @@ from .helpers import (
     _friendly_ai_error,
     _gateway_get,
     _gateway_post,
-    _is_smalltalk_or_ack,
     _join_project_path,
     _maybe_notify_model_switch,
     _notify_styled,
@@ -63,9 +62,7 @@ from .memory import (
     compute_session_gap,
 )
 from .nl_intent import (
-    _is_pure_greeting,
     _resolve_project,
-    _smalltalk_reply_with_context,
 )
 
 logger = logging.getLogger("skynet.telegram")
@@ -96,6 +93,7 @@ async def _reply_with_openclaw_capabilities(
     project_id = "telegram_chat"
     project_path = cfg.PROJECT_BASE_DIR or cfg.DEFAULT_WORKING_DIR
     last_project_name = ""
+    project_status: str | None = None
     if state._project_manager and state._last_project_id:
         try:
             from db import store
@@ -104,13 +102,15 @@ async def _reply_with_openclaw_capabilities(
                 project_id = project["id"]
                 project_path = project.get("local_path") or project_path
                 last_project_name = _project_display(project)
+                project_status = project.get("status") or None
         except Exception:
             logger.exception("Failed to resolve project context for chat")
 
-    project_context = await _build_project_context_block()
+    project_context = await _build_project_context_block(gap_tier=gap_tier)
     gap_context = _build_gap_system_context(gap_tier, last_project_name)
     base_system_prompt = (
-        f"{state._CHAT_SYSTEM_PROMPT}\n\n"
+        f"{state._PERSONALITY_PROMPT}\n\n"
+        f"{state._phase_instructions(project_status)}\n\n"
         f"Working directory: {project_path}\n"
         "If you perform filesystem/git/build actions, prefer this context unless the user specifies another path."
         f"{project_context}"
@@ -1211,22 +1211,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         tag="profile-capture",
     )
 
-    # 3. Compute session gap once — used for both greeting and LLM paths.
+    # 3. Compute session gap once.
     gap_tier = await compute_session_gap(update)
 
-    # 4. Pure greetings — brief reply, skip tool overhead
-    if _is_pure_greeting(text):
-        reply = await _smalltalk_reply_with_context(update, text, gap_tier=gap_tier)
-        await update.message.reply_text(reply)
-        await _append_user_conversation(
-            update,
-            role="assistant",
-            content=reply,
-            metadata={"channel": "smalltalk"},
-        )
-        return
-
-    # 5. Everything else → LLM with all tools including project management
+    # 4. All messages → LLM with full context and tools
     await _reply_with_openclaw_capabilities(update, text, gap_tier=gap_tier)
 
 
