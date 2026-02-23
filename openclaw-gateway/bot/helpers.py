@@ -165,6 +165,38 @@ async def _build_project_context_block() -> str:
         return ""
 
 
+def _build_gap_system_context(gap_tier, project_name: str = "") -> str:
+    """
+    Return a short system-prompt injection that tells the LLM how to behave
+    based on how long the user has been away.
+    """
+    from bot.memory import GapTier
+    proj = f" (last project: '{project_name}')" if project_name else ""
+    if gap_tier <= GapTier.MEDIUM:
+        # Active / short / medium — no special instruction, history does the work
+        return ""
+    if gap_tier == GapTier.LONG:
+        return (
+            f"\n\n[Session gap: several hours{proj}] "
+            "No previous conversation is loaded. "
+            "If the user's intent is ambiguous — are they continuing or starting fresh? — "
+            "ask one short natural question. If their message clearly signals something new, proceed."
+        )
+    if gap_tier == GapTier.DAY:
+        return (
+            f"\n\n[Session gap: 1+ days{proj}] "
+            "No previous conversation is loaded. "
+            "Greet the user naturally and mention their last project once if it seems relevant. "
+            "Be ready for a fresh start — do not assume they want to continue."
+        )
+    # EXTENDED
+    return (
+        f"\n\n[Session gap: extended absence{proj}] "
+        "No previous conversation is loaded. Treat this as a fresh conversation. "
+        "Mention the last project only if the user asks about it."
+    )
+
+
 def _truncate_for_notice(value: str, *, max_chars: int = 700) -> str:
     text = (value or "").strip()
     if len(text) <= max_chars:

@@ -28,6 +28,7 @@ from .helpers import (
     _ask_remove_project_confirmation,
     _authorised,
     _build_assistant_content,
+    _build_gap_system_context,
     _build_project_context_block,
     _extract_json_object,
     _extract_textual_tool_call,
@@ -48,6 +49,7 @@ from .helpers import (
     _truncate_for_notice,
 )
 from .memory import (
+    GapTier,
     _append_user_conversation,
     _capture_profile_memory,
     _ensure_memory_user,
@@ -58,6 +60,7 @@ from .memory import (
     _maybe_handle_memory_text_command,
     _profile_prompt_context,
     _set_memory_enabled_for_user,
+    compute_session_gap,
 )
 from .nl_intent import (
     _is_pure_greeting,
@@ -68,7 +71,12 @@ from .nl_intent import (
 logger = logging.getLogger("skynet.telegram")
 
 
-async def _reply_with_openclaw_capabilities(update: Update, text: str) -> None:
+async def _reply_with_openclaw_capabilities(
+    update: Update,
+    text: str,
+    *,
+    gap_tier: GapTier | None = None,
+) -> None:
     """Route natural conversation through OpenClaw tools + skills."""
     if not state._provider_router:
         await update.message.reply_text("AI providers are not configured.")
@@ -77,12 +85,17 @@ async def _reply_with_openclaw_capabilities(update: Update, text: str) -> None:
         await _reply_naturally_fallback(update, text)
         return
 
-    history = await _load_recent_conversation_messages(update)
+    # Use pre-computed gap tier from handle_text, or compute here if called standalone.
+    if gap_tier is None:
+        gap_tier = await compute_session_gap(update)
+
+    history = await _load_recent_conversation_messages(update, gap_tier=gap_tier)
     messages = [*history, {"role": "user", "content": text}]
     tools = state._skill_registry.get_all_tools()
 
     project_id = "telegram_chat"
     project_path = cfg.PROJECT_BASE_DIR or cfg.DEFAULT_WORKING_DIR
+    last_project_name = ""
     if state._project_manager and state._last_project_id:
         try:
             from db import store
@@ -90,15 +103,18 @@ async def _reply_with_openclaw_capabilities(update: Update, text: str) -> None:
             if project:
                 project_id = project["id"]
                 project_path = project.get("local_path") or project_path
+                last_project_name = _project_display(project)
         except Exception:
             logger.exception("Failed to resolve project context for chat")
 
     project_context = await _build_project_context_block()
+    gap_context = _build_gap_system_context(gap_tier, last_project_name)
     base_system_prompt = (
         f"{state._CHAT_SYSTEM_PROMPT}\n\n"
         f"Working directory: {project_path}\n"
         "If you perform filesystem/git/build actions, prefer this context unless the user specifies another path."
         f"{project_context}"
+        f"{gap_context}"
     )
     if state._main_persona_agent.should_delegate(text):
         base_system_prompt += (
@@ -1195,9 +1211,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         tag="profile-capture",
     )
 
-    # 3. Pure greetings — brief reply, skip tool overhead
+    # 3. Compute session gap once — used for both greeting and LLM paths.
+    gap_tier = await compute_session_gap(update)
+
+    # 4. Pure greetings — brief reply, skip tool overhead
     if _is_pure_greeting(text):
-        reply = await _smalltalk_reply_with_context(update, text)
+        reply = await _smalltalk_reply_with_context(update, text, gap_tier=gap_tier)
         await update.message.reply_text(reply)
         await _append_user_conversation(
             update,
@@ -1207,8 +1226,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # 4. Everything else → LLM with all tools including project management
-    await _reply_with_openclaw_capabilities(update, text)
+    # 5. Everything else → LLM with all tools including project management
+    await _reply_with_openclaw_capabilities(update, text, gap_tier=gap_tier)
 
 
 # ------------------------------------------------------------------

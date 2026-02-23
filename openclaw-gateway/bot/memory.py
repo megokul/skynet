@@ -6,12 +6,85 @@ from __future__ import annotations
 import html
 import logging
 import re
+from enum import IntEnum
 
 from telegram import Update
 
 from . import state
 
 logger = logging.getLogger("skynet.telegram")
+
+
+# ---------------------------------------------------------------------------
+# Session gap tiers
+# ---------------------------------------------------------------------------
+
+class GapTier(IntEnum):
+    """How long since the user last spoke — controls history depth and LLM briefing."""
+    ACTIVE   = 0  # < 10 min   — same conversation, full context
+    SHORT    = 1  # 10–60 min  — short break, most context
+    MEDIUM   = 2  # 1–4 hours  — returning, reduced context
+    LONG     = 3  # 4–24 hours — new session, no old messages
+    DAY      = 4  # 1–7 days   — next day, warm re-entry
+    EXTENDED = 5  # > 7 days   — long absence, clean slate
+
+
+# seconds → (upper_bound, tier)
+_GAP_THRESHOLDS: list[tuple[int, GapTier]] = [
+    (600,    GapTier.ACTIVE),
+    (3600,   GapTier.SHORT),
+    (14400,  GapTier.MEDIUM),
+    (86400,  GapTier.LONG),
+    (604800, GapTier.DAY),
+]
+
+# How many conversation messages to inject per tier
+_GAP_MESSAGE_LIMIT: dict[GapTier, int] = {
+    GapTier.ACTIVE:   24,
+    GapTier.SHORT:    16,
+    GapTier.MEDIUM:    8,
+    GapTier.LONG:      0,
+    GapTier.DAY:       0,
+    GapTier.EXTENDED:  0,
+}
+
+
+def _compute_gap_tier(gap_seconds: float | None) -> GapTier:
+    if gap_seconds is None:
+        return GapTier.EXTENDED
+    for upper, tier in _GAP_THRESHOLDS:
+        if gap_seconds < upper:
+            return tier
+    return GapTier.EXTENDED
+
+
+async def compute_session_gap(update: Update) -> GapTier:
+    """
+    Query the DB for the user's last message time and return the session GapTier.
+    Falls back to EXTENDED (clean slate) if DB is unavailable.
+    """
+    if update is None or state._project_manager is None:
+        return GapTier.EXTENDED
+    try:
+        user_row = await _ensure_memory_user(update)
+        if not user_row:
+            return GapTier.EXTENDED
+        from db import store
+        from datetime import datetime, timezone
+        last_ts = await store.get_last_user_message_time(
+            state._project_manager.db,
+            user_id=int(user_row["id"]),
+        )
+        if not last_ts:
+            return GapTier.EXTENDED
+        dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        gap_secs = (datetime.now(timezone.utc) - dt).total_seconds()
+        return _compute_gap_tier(gap_secs)
+    except Exception:
+        logger.debug("Gap computation failed; defaulting to EXTENDED.", exc_info=True)
+        return GapTier.EXTENDED
 
 
 async def _ensure_memory_user(update: Update) -> dict | None:
@@ -65,14 +138,21 @@ async def _append_user_conversation(
 async def _load_recent_conversation_messages(
     update: Update | None,
     *,
-    limit: int | None = None,
+    gap_tier: GapTier = GapTier.EXTENDED,
 ) -> list[dict]:
     """
     Load recent user/assistant turns from durable storage.
 
+    The number of messages loaded is controlled by gap_tier — the longer
+    the gap since the user's last message, the fewer old messages are injected.
     Falls back to process-local history when DB lookup is unavailable.
     """
-    max_items = int(limit or (state._CHAT_HISTORY_MAX * 2))
+    max_items = _GAP_MESSAGE_LIMIT.get(gap_tier, 0)
+
+    # For zero-message tiers, skip the DB entirely.
+    if max_items == 0:
+        return []
+
     if (
         update is None
         or state._project_manager is None
@@ -86,11 +166,19 @@ async def _load_recent_conversation_messages(
             return state._chat_history[-max_items:]
         from db import store
 
+        # Use a time window that matches the tier so we don't accidentally
+        # load messages older than the tier boundary.
+        tier_seconds = {
+            GapTier.ACTIVE:  600,
+            GapTier.SHORT:   3600,
+            GapTier.MEDIUM:  14400,
+        }.get(gap_tier)
+
         rows = await store.list_user_conversations(
             state._project_manager.db,
             user_id=int(user_row["id"]),
             limit=max_items,
-            since_seconds=7200,  # Only load the last 2 hours — prevents old sessions bleeding in
+            since_seconds=tier_seconds,  # None → no time filter (tier already constrains limit)
         )
     except Exception:
         logger.exception("Failed to load persistent conversation history.")

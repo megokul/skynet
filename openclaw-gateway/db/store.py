@@ -991,6 +991,24 @@ async def list_user_conversations(
     return rows
 
 
+async def get_last_user_message_time(
+    db: aiosqlite.Connection,
+    *,
+    user_id: int,
+) -> str | None:
+    """Return the ISO timestamp of the most recent user-role conversation row, or None."""
+    async with db.execute(
+        """
+        SELECT MAX(created_at)
+        FROM user_conversations
+        WHERE user_id = ? AND role = 'user'
+        """,
+        (int(user_id),),
+    ) as cur:
+        row = await cur.fetchone()
+    return row[0] if row and row[0] else None
+
+
 async def add_memory_audit_log(
     db: aiosqlite.Connection,
     *,

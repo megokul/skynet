@@ -19,6 +19,7 @@ from .helpers import (
     _norm_project,
     _project_display,
 )
+from .memory import GapTier
 
 logger = logging.getLogger("skynet.telegram")
 
@@ -58,10 +59,23 @@ def _smalltalk_reply(text: str) -> str:
     return "Hi! How can I help today?"
 
 
-async def _smalltalk_reply_with_context(update: Update, text: str) -> str:
-    """Return a brief greeting, optionally mentioning the active project."""
+async def _smalltalk_reply_with_context(
+    update: Update,
+    text: str,
+    *,
+    gap_tier: GapTier = GapTier.ACTIVE,
+) -> str:
+    """Return a brief greeting, optionally mentioning the active project.
+
+    For LONG/DAY/EXTENDED gaps we don't mention the previous project — the
+    LLM system prompt handles re-entry context instead.
+    """
     base = _smalltalk_reply(text)
     if _is_pure_greeting(text):
+        return base
+
+    # Don't surface old project context after a long absence
+    if gap_tier >= GapTier.LONG:
         return base
 
     if not state._project_manager or not state._last_project_id:
