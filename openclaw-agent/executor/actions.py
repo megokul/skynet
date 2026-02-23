@@ -450,6 +450,20 @@ async def create_directory(params: dict[str, Any]) -> dict[str, Any]:
         return {"returncode": 1, "stdout": "", "stderr": str(exc)}
 
 
+async def delete_directory(params: dict[str, Any]) -> dict[str, Any]:
+    """Remove a directory and all its contents recursively (rollback / cleanup use)."""
+    directory = _require_param(params, "directory")
+    loop = asyncio.get_running_loop()
+    try:
+        exists = await loop.run_in_executor(None, os.path.isdir, directory)
+        if not exists:
+            return {"returncode": 0, "stdout": f"Directory '{directory}' does not exist.", "stderr": ""}
+        await loop.run_in_executor(None, shutil.rmtree, directory)
+        return {"returncode": 0, "stdout": f"Deleted '{directory}'.", "stderr": ""}
+    except OSError as exc:
+        return {"returncode": 1, "stdout": "", "stderr": str(exc)}
+
+
 async def git_init(params: dict[str, Any]) -> dict[str, Any]:
     """Initialize a new git repository and set default branch to main."""
     cwd = _require_param(params, "working_dir")
@@ -683,6 +697,7 @@ ACTION_REGISTRY: dict[str, Any] = {
     "install_dependencies": install_dependencies,
     "file_write": file_write,
     "create_directory": create_directory,
+    "delete_directory": delete_directory,
     "git_init": git_init,
     "git_add_all": git_add_all,
     "git_push": git_push,

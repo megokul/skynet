@@ -9,7 +9,8 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_create_project_keeps_row_when_bootstrap_fails_non_strict(monkeypatch) -> None:
+async def test_create_project_rolls_back_when_bootstrap_fails(monkeypatch) -> None:
+    """When bootstrap returns ok=False, the project is always rolled back atomically."""
     repo_root = Path(__file__).parent.parent
     gateway_root = str(repo_root / "openclaw-gateway")
     if gateway_root not in sys.path:
@@ -17,7 +18,6 @@ async def test_create_project_keeps_row_when_bootstrap_fails_non_strict(monkeypa
 
     from db import schema, store
     from orchestrator.project_manager import ProjectManager
-    import bot_config as cfg
 
     class _DummyRouter:
         async def chat(self, *args, **kwargs):
@@ -28,7 +28,6 @@ async def test_create_project_keeps_row_when_bootstrap_fails_non_strict(monkeypa
 
     db = await schema.init_db(":memory:")
     try:
-        monkeypatch.setattr(cfg, "AUTO_BOOTSTRAP_STRICT", False)
         pm = ProjectManager(
             db=db,
             router=_DummyRouter(),
@@ -38,21 +37,16 @@ async def test_create_project_keeps_row_when_bootstrap_fails_non_strict(monkeypa
         )
 
         async def _fail_bootstrap(_project):
-            return ("directory: failed (SSH unavailable)", False)
+            return ("directory: failed (permanent error)", False)
 
         monkeypatch.setattr(pm, "_bootstrap_project_workspace", _fail_bootstrap)
-        created = await pm.create_project("kundi-vanam")
 
-        assert created["name"] == "kundi-vanam"
-        assert created["bootstrap_ok"] is False
-        assert "SSH unavailable" in created["bootstrap_summary"]
+        with pytest.raises(ValueError, match="rolled back"):
+            await pm.create_project("kundi-vanam")
 
-        reloaded = await store.get_project(db, created["id"])
-        assert reloaded is not None
-
-        events = await store.get_events(db, created["id"], limit=5)
-        assert events
-        assert events[0]["event_type"] == "created_with_warnings"
+        # Project row must have been removed by the rollback.
+        all_projects = await store.list_projects(db)
+        assert all_projects == [], "Expected project row to be rolled back on bootstrap failure"
     finally:
         await db.close()
 

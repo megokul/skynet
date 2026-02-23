@@ -77,7 +77,14 @@ class ProjectManager:
         )
 
     async def create_project(self, name: str) -> dict[str, Any]:
-        """Create a new project in 'ideation' status."""
+        """Create a new project in 'ideation' status.
+
+        Creation is atomic: if any required bootstrap step fails (permanent error,
+        not a transient/deferred one), the DB record is deleted and the partial
+        filesystem directory is removed before the exception is re-raised.
+        Transient failures (agent temporarily down) return ok=True and keep the
+        project record so creation is not lost.
+        """
         slug = _slugify(name)
         existing = await store.get_project_by_name(self.db, slug)
         if existing:
@@ -87,38 +94,73 @@ class ProjectManager:
         project = await store.create_project(
             self.db, name=slug, display_name=name, local_path=local_path,
         )
-        bootstrap_summary, bootstrap_ok = await self._bootstrap_project_workspace(project)
+
+        try:
+            bootstrap_summary, bootstrap_ok = await self._bootstrap_project_workspace(project)
+        except Exception as exc:
+            bootstrap_summary = str(exc)
+            bootstrap_ok = False
+
         if not bootstrap_ok:
-            if cfg.AUTO_BOOTSTRAP_STRICT:
-                # Strict mode keeps creation atomic: do not retain a project row
-                # if required workspace bootstrap steps failed.
-                await self.db.execute("DELETE FROM projects WHERE id = ?", (project["id"],))
-                await self.db.commit()
-                raise ValueError(
-                    f"Project bootstrap failed and creation was rolled back. {bootstrap_summary}"
-                )
-            logger.warning(
-                "Project %s created with bootstrap warnings: %s",
-                project["id"],
-                bootstrap_summary,
+            # Always rollback on permanent failures: remove DB record + partial filesystem.
+            await self._rollback_project_creation(project)
+            raise ValueError(
+                f"Project initialization failed and was rolled back: {bootstrap_summary}"
             )
+
         await store.add_event(
             self.db,
             project["id"],
-            "created" if bootstrap_ok else "created_with_warnings",
-            (
-                f"Project '{name}' created at {local_path}"
-                if bootstrap_ok else
-                f"Project '{name}' created at {local_path} with bootstrap warnings"
-            ),
+            "created",
+            f"Project '{name}' created at {local_path}",
             detail=bootstrap_summary,
         )
         out = await store.get_project(self.db, project["id"])
         if out is None:
             raise ValueError("Project was created but could not be loaded.")
         out["bootstrap_summary"] = bootstrap_summary
-        out["bootstrap_ok"] = bootstrap_ok
+        out["bootstrap_ok"] = True
         return out
+
+    async def _rollback_project_creation(self, project: dict[str, Any]) -> None:
+        """
+        Compensating transaction for a failed project creation.
+
+        Removes the DB record (cascade) and best-effort removes any partial
+        filesystem directory that was created before the failure.
+        """
+        project_id = project["id"]
+        local_path = project.get("local_path", "")
+
+        # 1. Remove DB record and all cascade-related rows.
+        try:
+            await store.remove_project_cascade(self.db, project_id)
+            logger.info("Rollback: removed project DB record %s", project_id)
+        except Exception:
+            logger.exception("Rollback: failed to remove DB record %s", project_id)
+
+        # 2. Best-effort: remove partial filesystem directory via the agent.
+        #    Skip if the agent is unreachable — the bootstrap failure may have been
+        #    deferred (directory was never created), so there may be nothing to remove.
+        if local_path:
+            try:
+                ok, msg = await self._run_agent_action(
+                    "delete_directory",
+                    {"directory": local_path},
+                    confirmed=True,
+                    retry_on_transient=False,
+                )
+                if ok:
+                    logger.info("Rollback: removed partial directory %s", local_path)
+                else:
+                    logger.warning(
+                        "Rollback: could not remove partial directory %s: %s",
+                        local_path, msg,
+                    )
+            except Exception:
+                logger.warning(
+                    "Rollback: failed to clean up directory %s", local_path, exc_info=True,
+                )
 
     async def add_idea(self, project_id: str, text: str) -> int:
         """Add an idea message to a project in ideation phase."""
@@ -630,6 +672,8 @@ class ProjectManager:
             "temporarily unavailable",
             "timeout",
             "timed out",
+            "cannot connect to host",
+            "connection refused",
             "connection reset",
             "connection aborted",
             "broken pipe",
@@ -656,6 +700,8 @@ class ProjectManager:
             "no connected agent and ssh fallback is not configured",
             "unable to connect to port",
             "could not resolve hostname",
+            "cannot connect to host",
+            "connection refused",
             "connection reset",
             "connection aborted",
             "timed out",

@@ -49,6 +49,7 @@ class _FakeMessage:
 class _FakeUser:
     id: int = 999
     first_name: str = "Tester"
+    last_name: str = ""
     username: str = "tester"
     language_code: str = "en"
 
