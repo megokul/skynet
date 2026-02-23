@@ -8,6 +8,7 @@ through natural conversation instead of regex-driven menus.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from .base import BaseSkill, SkillContext
@@ -364,38 +365,81 @@ class ProjectManagementSkill(BaseSkill):
     # Tool implementations
     # ------------------------------------------------------------------
 
-    # Words that are clearly NOT project names (timing words, filler, etc.)
-    _NOT_A_PROJECT_NAME = frozenset({
-        "today", "tioday", "tday", "now", "please", "yes", "no", "ok",
-        "okay", "sure", "yep", "nope", "a", "the", "an", "new", "one",
-        "project", "app", "application", "start", "create", "make",
-        "something", "anything", "it", "this", "that",
-        # LLM-invented compound non-names (clearly synthetic, never real user intent)
-        "newproject", "newapp", "startproject", "startapp",
+    # ---------------------------------------------------------------------------
+    # Project name validation — rules-based, not an ever-growing blocklist.
+    #
+    # Strategy: define *generic tokens* (words with no standalone meaning as a
+    # project name), then reject any name whose every slug-token is generic.
+    # A separate regex catches concatenated compounds without separators.
+    # This is more robust than enumerating bad names one by one.
+    # ---------------------------------------------------------------------------
+
+    # Individual words that carry no project-specific meaning on their own.
+    _GENERIC_TOKENS: frozenset[str] = frozenset({
+        # Articles / determiners / pronouns
+        "a", "an", "the", "my", "your", "our", "its",
+        # Generic adjectives / prefixes LLMs attach to project names
+        "new", "old", "temp", "tmp", "test", "demo", "sample", "example",
+        # Generic nouns that describe a project but are NOT a name for one
+        "project", "app", "application", "site", "web", "tool", "bot",
+        "thing", "stuff", "it", "one", "other", "something", "anything",
+        # Common verbs LLMs use as project names
+        "start", "create", "make", "build", "run", "do",
+        # Timing / filler words
+        "today", "now", "then", "soon", "tioday", "tday",
+        # Affirmations / negations
+        "please", "yes", "no", "ok", "okay", "sure", "yep", "nope",
+        # Demonstratives / locatives
+        "this", "that", "here", "there",
     })
+
+    # Catches concatenated compound non-names that lack a separator.
+    # Only "new" is used as prefix: no human intentionally names a production
+    # project "newapp" or "newproject" — it is always LLM-invented.
+    # Separated forms like "test app" or "my project" are already caught by
+    # the all-tokens-generic rule (Rule 4) without needing regex.
+    _JUNK_COMPOUND_RE = re.compile(
+        r"^new(project|app|application|site|web|tool|bot)$",
+        re.IGNORECASE,
+    )
 
     @classmethod
     def _is_invalid_project_name(cls, name: str) -> bool:
-        """Return True if the name is clearly not a meaningful project name.
+        """Return True if *name* is clearly not a meaningful project name.
 
-        Catches both exact blocklist matches and slug compounds made entirely
-        of blocklisted tokens (e.g. 'new-project', 'my-app').
+        Rules applied in order:
+        1. Too short after stripping non-alphanumeric characters.
+        2. Exact single-token generic word.
+        3. Concatenated compound junk (no separator), e.g. "newproject".
+        4. Every hyphen/underscore/space-separated token is generic,
+           e.g. "new-project", "test_app", "my app".
         """
-        import re as _re
         slug = name.strip().lower()
-        if slug in cls._NOT_A_PROJECT_NAME:
+
+        # Rule 1 — need at least 2 alphanumeric characters.
+        if len(re.sub(r"[^a-z0-9]", "", slug)) < 2:
             return True
-        # Split on hyphens/underscores/spaces and check if every token is blocklisted.
-        tokens = [t for t in _re.split(r"[-_\s]+", slug) if t]
-        if tokens and all(t in cls._NOT_A_PROJECT_NAME for t in tokens):
+
+        # Rule 2 — single generic token.
+        if slug in cls._GENERIC_TOKENS:
             return True
+
+        # Rule 3 — concatenated compound junk.
+        if cls._JUNK_COMPOUND_RE.match(slug):
+            return True
+
+        # Rule 4 — every separated token is generic.
+        tokens = [t for t in re.split(r"[-_\s]+", slug) if t]
+        if tokens and all(t in cls._GENERIC_TOKENS for t in tokens):
+            return True
+
         return False
 
     async def _create(self, pm, st, inp: dict) -> str:
         name = (inp.get("name") or "").strip()
         if not name:
             return "ERROR: Project name is required. Please provide a name."
-        # Reject obviously wrong names (timing words, filler words, compound non-names).
+        # Reject obviously wrong names using rules-based validation.
         if self._is_invalid_project_name(name):
             return (
                 f"ERROR: '{name}' is not a valid project name. "
