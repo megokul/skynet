@@ -90,7 +90,7 @@ OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
 AI_PROVIDER_PRIORITY: str = os.environ.get(
     "AI_PROVIDER_PRIORITY",
-    "gemini,groq,openrouter,deepseek,openai,claude,ollama",
+    "claude,gemini,openai,deepseek,openrouter,groq,ollama",
 )
 AUTO_APPROVE_GIT_ACTIONS: bool = os.environ.get(
     "AUTO_APPROVE_GIT_ACTIONS",

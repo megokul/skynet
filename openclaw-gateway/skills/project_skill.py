@@ -203,6 +203,19 @@ class ProjectManagementSkill(BaseSkill):
                 },
             },
             {
+                "name": "project_clean_failed",
+                "description": (
+                    "Remove all projects with 'failed' status from the database. "
+                    "Use when the user asks to clean up, clear failed projects, "
+                    "or remove stale/broken project entries. Safe to call — only "
+                    "removes projects that are in 'failed' state."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+            {
                 "name": "project_generate_docs",
                 "description": (
                     "Write project documentation (PRD, architecture overview, feature list, "
@@ -284,6 +297,8 @@ class ProjectManagementSkill(BaseSkill):
                 return await self._cancel(pm, st, tool_input)
             if tool_name == "project_remove":
                 return await self._remove(pm, st, tool_input)
+            if tool_name == "project_clean_failed":
+                return await self._clean_failed(pm, st)
             if tool_name == "project_generate_docs":
                 return await self._generate_docs(pm, st, tool_input)
             return f"Unknown tool: {tool_name}"
@@ -355,14 +370,33 @@ class ProjectManagementSkill(BaseSkill):
         "okay", "sure", "yep", "nope", "a", "the", "an", "new", "one",
         "project", "app", "application", "start", "create", "make",
         "something", "anything", "it", "this", "that",
+        # LLM-invented compound non-names (clearly synthetic, never real user intent)
+        "newproject", "newapp", "startproject", "startapp",
     })
+
+    @classmethod
+    def _is_invalid_project_name(cls, name: str) -> bool:
+        """Return True if the name is clearly not a meaningful project name.
+
+        Catches both exact blocklist matches and slug compounds made entirely
+        of blocklisted tokens (e.g. 'new-project', 'my-app').
+        """
+        import re as _re
+        slug = name.strip().lower()
+        if slug in cls._NOT_A_PROJECT_NAME:
+            return True
+        # Split on hyphens/underscores/spaces and check if every token is blocklisted.
+        tokens = [t for t in _re.split(r"[-_\s]+", slug) if t]
+        if tokens and all(t in cls._NOT_A_PROJECT_NAME for t in tokens):
+            return True
+        return False
 
     async def _create(self, pm, st, inp: dict) -> str:
         name = (inp.get("name") or "").strip()
         if not name:
             return "ERROR: Project name is required. Please provide a name."
-        # Reject obviously wrong names (timing words, filler words, etc.)
-        if name.lower() in self._NOT_A_PROJECT_NAME:
+        # Reject obviously wrong names (timing words, filler words, compound non-names).
+        if self._is_invalid_project_name(name):
             return (
                 f"ERROR: '{name}' is not a valid project name. "
                 "Please ask the user for a specific project name."
@@ -527,6 +561,23 @@ class ProjectManagementSkill(BaseSkill):
         from bot.helpers import _project_display, _send_remove_project_confirmation
         await _send_remove_project_confirmation(project)
         return f"Confirmation sent for removing '{_project_display(project)}'. Waiting for your approval."
+
+    async def _clean_failed(self, pm, st) -> str:
+        """Remove all projects in 'failed' status."""
+        from db import store
+        projects = await store.list_projects(pm.db)
+        failed = [p for p in projects if str(p.get("status", "")).lower() == "failed"]
+        if not failed:
+            return "No failed projects found. Nothing to clean up."
+        removed = []
+        for p in failed:
+            await store.remove_project_cascade(pm.db, p["id"])
+            removed.append(p.get("display_name") or p.get("name") or p["id"])
+            # Clear last_project_id if it pointed to a removed project.
+            if st._last_project_id == p["id"]:
+                st._last_project_id = None
+        names = ", ".join(f"'{n}'" for n in removed)
+        return f"Removed {len(removed)} failed project(s): {names}."
 
     async def _generate_docs(self, pm, st, inp: dict) -> str:
         project_id = self._resolve_project_id(st, inp)

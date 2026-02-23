@@ -50,12 +50,12 @@ class ProviderRouter:
         self.db = db
         self._error_counts: dict[str, int] = {}
         self._provider_priority = provider_priority or [
-            "gemini",
-            "groq",
-            "openrouter",
-            "deepseek",
-            "openai",
             "claude",
+            "gemini",
+            "openai",
+            "deepseek",
+            "openrouter",
+            "groq",
             "ollama",
         ]
         self._provider_rank = {
