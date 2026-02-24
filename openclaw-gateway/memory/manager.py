@@ -239,7 +239,13 @@ class MemoryManager:
                 ) as resp:
                     result = await resp.json()
                     if result.get("status") == "ok":
-                        return result.get("result", "")
+                        inner = result.get("result", "")
+                        # SSH executor wraps output as {"returncode": N, "stdout": "..."}
+                        if isinstance(inner, dict):
+                            if inner.get("returncode", 1) != 0:
+                                return None
+                            return inner.get("stdout") or None
+                        return inner if isinstance(inner, str) else None
                     logger.warning("Agent action %s failed: %s", action, result)
                     return None
         except Exception as exc:
