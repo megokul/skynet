@@ -43,10 +43,15 @@ Output your plan as valid JSON with this exact structure:
 
 RULES:
 - Be specific about file names and module structure
-- Choose popular, well-maintained libraries
-- Keep milestones small and focused (3-6 tasks each)
-- Include a testing milestone
-- Include a final "polish" milestone with README and cleanup
+- If the user specified a library, language, or framework — USE IT. Never substitute a different one.
+
+COMPLEXITY CALIBRATION — scale task count to actual project size:
+- Trivial script / single-file app (< 3 files): 2–4 tasks TOTAL. No separate testing or polish milestone.
+- Small app (3–10 files, one service): 4–8 tasks across 2 milestones.
+- Full app (API + frontend, database, auth, etc.): 8–18 tasks across 3–5 milestones.
+Do NOT pad simple projects with granular micro-tasks (e.g. do NOT split one function into
+"InitializeApp", "CreateWindow", "StartEventLoop" — that is ONE task: "Write main.py").
+A testing or polish milestone is OPTIONAL — only include one if the project is large enough to warrant it.
 - The project will be created at: {project_path}
 """
 
