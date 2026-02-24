@@ -477,9 +477,25 @@ class ProjectManagementSkill(BaseSkill):
         idea = (inp.get("idea") or "").strip()
         if not idea:
             return "ERROR: idea text is required."
+        # Guard: reject immediately when there is no active project context.
+        # Prevents the fallback in _resolve_project from auto-selecting an
+        # existing project (e.g. mango_curry in planning status) after a restart.
+        if not inp.get("project_id") and not st._last_project_id:
+            return (
+                "ERROR: No active project. Use project_create to start a new one "
+                "before adding ideas."
+            )
         project, err = await self._resolve_project(pm, st, inp)
         if not project:
             return f"ERROR: {err}"
+        # Guard: ideas can only be added during the ideation phase.
+        status = project.get("status", "")
+        if status != "ideation":
+            return (
+                f"ERROR: Cannot add ideas to '{project.get('name', project['id'])}' "
+                f"(status: {status}). "
+                "Use project_create to start a new project first."
+            )
         count = await pm.add_idea(project["id"], idea)
         st._last_project_id = project["id"]
         return f"Added idea #{count} to '{project.get('name', project['id'])}'."

@@ -135,7 +135,8 @@ _PHASE_PROMPTS: dict[str, str] = {
 No active project. Help the user figure out what to build.
 - Ask open questions to draw out their idea before suggesting tech.
 - When they describe something concrete, call project_create (ask for name if not given).
-- Do NOT call project_add_idea — no project exists yet.""",
+- NEVER call project_add_idea — there is no active project. It will fail with an error.
+  You MUST call project_create first to create a new project before capturing any ideas.""",
 
     "ideation": """\
 ## Mode: Ideation — capturing requirements
