@@ -955,33 +955,28 @@ async def list_user_conversations(
     user_id: int,
     limit: int = 50,
     since_seconds: int | None = None,
+    after_id: int | None = None,
 ) -> list[dict[str, Any]]:
+    conditions = ["user_id = ?"]
+    params: list[Any] = [int(user_id)]
+
     if since_seconds is not None:
         from datetime import timedelta
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=since_seconds)).strftime("%Y-%m-%dT%H:%M:%S")
-        async with db.execute(
-            """
-            SELECT *
-            FROM user_conversations
-            WHERE user_id = ? AND created_at >= ?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (int(user_id), cutoff, int(limit)),
-        ) as cur:
-            rows = [dict(row) for row in await cur.fetchall()]
-    else:
-        async with db.execute(
-            """
-            SELECT *
-            FROM user_conversations
-            WHERE user_id = ?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (int(user_id), int(limit)),
-        ) as cur:
-            rows = [dict(row) for row in await cur.fetchall()]
+        conditions.append("created_at >= ?")
+        params.append(cutoff)
+
+    if after_id is not None:
+        conditions.append("id > ?")
+        params.append(int(after_id))
+
+    where = " AND ".join(conditions)
+    params.append(int(limit))
+    async with db.execute(
+        f"SELECT * FROM user_conversations WHERE {where} ORDER BY id DESC LIMIT ?",
+        params,
+    ) as cur:
+        rows = [dict(row) for row in await cur.fetchall()]
     rows.reverse()
     for row in rows:
         try:
@@ -989,6 +984,48 @@ async def list_user_conversations(
         except Exception:
             row["metadata"] = {}
     return rows
+
+
+async def add_conversation_summary(
+    db: aiosqlite.Connection,
+    *,
+    user_id: int,
+    summary: str,
+    covered_up_to_id: int,
+    message_count: int,
+) -> int:
+    """Insert a rolling summary record. Returns the new summary id."""
+    async with db.execute(
+        """
+        INSERT INTO conversation_summaries (
+            user_id, summary, covered_up_to_id, message_count, created_at
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (int(user_id), summary, int(covered_up_to_id), int(message_count), _now()),
+    ) as cur:
+        sid = int(cur.lastrowid)
+    await db.commit()
+    return sid
+
+
+async def get_latest_conversation_summary(
+    db: aiosqlite.Connection,
+    *,
+    user_id: int,
+) -> dict[str, Any] | None:
+    """Return the most recent summary row for the user, or None."""
+    async with db.execute(
+        """
+        SELECT *
+        FROM conversation_summaries
+        WHERE user_id = ?
+        ORDER BY covered_up_to_id DESC
+        LIMIT 1
+        """,
+        (int(user_id),),
+    ) as cur:
+        row = await cur.fetchone()
+    return dict(row) if row else None
 
 
 async def get_last_user_message_time(

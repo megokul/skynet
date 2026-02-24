@@ -48,6 +48,12 @@ _GAP_MESSAGE_LIMIT: dict[GapTier, int] = {
     GapTier.EXTENDED:  0,
 }
 
+# Number of new messages since the last summary that triggers a new summarization pass
+_SUMMARIZE_THRESHOLD: int = 12
+
+# Number of raw (verbatim) messages to keep at the tail regardless of summary coverage
+_SUMMARY_RAW_TAIL: int = 6
+
 
 def _compute_gap_tier(gap_seconds: float | None) -> GapTier:
     if gap_seconds is None:
@@ -106,6 +112,84 @@ async def _ensure_memory_user(update: Update) -> dict | None:
         return None
 
 
+async def _count_messages_since(
+    db,
+    user_id: int,
+    after_id: int,
+) -> int:
+    """Return how many user_conversations rows exist for user with id > after_id."""
+    try:
+        async with db.execute(
+            "SELECT COUNT(*) FROM user_conversations WHERE user_id = ? AND id > ?",
+            (int(user_id), int(after_id)),
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
+
+
+def _build_summarization_prompt(messages: list[dict]) -> str:
+    """Build a prompt asking the LLM to compress the conversation into a brief summary."""
+    transcript = "\n".join(
+        f"{m['role'].upper()}: {m['content'][:500]}"
+        for m in messages
+    )
+    return (
+        "Summarize the following conversation into 3–6 sentences.\n"
+        "Focus on: what the user wants to build, key decisions made, "
+        "constraints or preferences mentioned, and the current project phase.\n"
+        "Be factual and concise. Do NOT include greetings, filler, or meta-commentary.\n\n"
+        f"CONVERSATION:\n{transcript}\n\nSUMMARY:"
+    )
+
+
+async def _summarize_and_store(
+    db,
+    user_id: int,
+    up_to_message_id: int,
+) -> None:
+    """
+    Background task: load messages up to up_to_message_id, ask the LLM to compress
+    them, and store the result in conversation_summaries.
+    """
+    try:
+        from db import store
+
+        rows = await store.list_user_conversations(db, user_id=user_id, limit=200)
+        rows = [r for r in rows if r["id"] <= up_to_message_id]
+        if len(rows) < 4:
+            return
+
+        prompt = _build_summarization_prompt(rows)
+        if state._provider_router is None:
+            return
+        response = await state._provider_router.chat(
+            [{"role": "user", "content": prompt}],
+            system="You are a concise conversation summarizer. Output only the summary, no preamble.",
+            max_tokens=300,
+            task_type="general",
+            allowed_providers=["groq", "gemini", "claude"],
+        )
+        summary_text = (response.text or "").strip()
+        if not summary_text:
+            return
+
+        await store.add_conversation_summary(
+            db,
+            user_id=user_id,
+            summary=summary_text,
+            covered_up_to_id=up_to_message_id,
+            message_count=len(rows),
+        )
+        logger.debug(
+            "Conversation summarized for user %s up to message id %s (%d msgs)",
+            user_id, up_to_message_id, len(rows),
+        )
+    except Exception:
+        logger.exception("Failed to summarize conversation for user %s", user_id)
+
+
 async def _append_user_conversation(
     update: Update,
     *,
@@ -122,7 +206,7 @@ async def _append_user_conversation(
         from db import store
 
         msg = update.message
-        await store.add_user_conversation(
+        new_id = await store.add_user_conversation(
             state._project_manager.db,
             user_id=int(user_row["id"]),
             role=role,
@@ -131,6 +215,23 @@ async def _append_user_conversation(
             telegram_message_id=str(getattr(msg, "message_id", "")),
             metadata=metadata or {},
         )
+
+        # After a full exchange (assistant turn), check if summarization threshold is crossed.
+        if role == "assistant":
+            try:
+                db = state._project_manager.db
+                user_id = int(user_row["id"])
+                latest = await store.get_latest_conversation_summary(db, user_id=user_id)
+                after_id = int(latest["covered_up_to_id"]) if latest else 0
+                count = await _count_messages_since(db, user_id, after_id)
+                if count >= _SUMMARIZE_THRESHOLD:
+                    from bot.helpers import _spawn_background_task
+                    _spawn_background_task(
+                        _summarize_and_store(db, user_id, up_to_message_id=new_id),
+                        tag="conversation-summarizer",
+                    )
+            except Exception:
+                logger.debug("Summarization trigger check failed.", exc_info=True)
     except Exception:
         logger.exception("Failed to write user conversation record.")
 
@@ -141,10 +242,16 @@ async def _load_recent_conversation_messages(
     gap_tier: GapTier = GapTier.EXTENDED,
 ) -> list[dict]:
     """
-    Load recent user/assistant turns from durable storage.
+    Load conversation context using three-tier memory:
 
-    The number of messages loaded is controlled by gap_tier — the longer
-    the gap since the user's last message, the fewer old messages are injected.
+    Tier 1 — Working memory: last _SUMMARY_RAW_TAIL raw messages (verbatim).
+    Tier 2 — Rolling summary: LLM-compressed paragraph injected before the raw tail
+              if a summary exists and covers earlier messages.
+    Tier 3 — Project state: injected separately via _build_project_context_block
+              (not handled here).
+
+    The number of raw messages loaded is controlled by gap_tier. For LONG+ gaps,
+    returns empty (gap briefing handles session context instead).
     Falls back to process-local history when DB lookup is unavailable.
     """
     max_items = _GAP_MESSAGE_LIMIT.get(gap_tier, 0)
@@ -166,35 +273,71 @@ async def _load_recent_conversation_messages(
             return state._chat_history[-max_items:]
         from db import store
 
-        # Use a time window that matches the tier so we don't accidentally
-        # load messages older than the tier boundary.
+        db = state._project_manager.db
+        user_id = int(user_row["id"])
+
+        # Load the latest rolling summary (if any).
+        latest_summary = await store.get_latest_conversation_summary(db, user_id=user_id)
+
+        # Determine how many raw messages to keep verbatim.
+        keep_raw = min(max_items, _SUMMARY_RAW_TAIL)
+
+        # Load raw tail: only messages AFTER the summary's coverage (if a summary exists),
+        # otherwise load the most recent max_items within the tier time window.
         tier_seconds = {
             GapTier.ACTIVE:  600,
             GapTier.SHORT:   3600,
             GapTier.MEDIUM:  14400,
         }.get(gap_tier)
 
-        rows = await store.list_user_conversations(
-            state._project_manager.db,
-            user_id=int(user_row["id"]),
-            limit=max_items,
-            since_seconds=tier_seconds,  # None → no time filter (tier already constrains limit)
-        )
+        if latest_summary:
+            raw_rows = await store.list_user_conversations(
+                db,
+                user_id=user_id,
+                limit=keep_raw,
+                after_id=int(latest_summary["covered_up_to_id"]),
+            )
+        else:
+            raw_rows = await store.list_user_conversations(
+                db,
+                user_id=user_id,
+                limit=max_items,
+                since_seconds=tier_seconds,
+            )
+
     except Exception:
         logger.exception("Failed to load persistent conversation history.")
         return state._chat_history[-max_items:]
 
-    messages: list[dict] = []
-    for row in rows:
+    # Build raw message list.
+    raw_messages: list[dict] = []
+    for row in raw_rows:
         role = str(row.get("role") or "").strip().lower()
         if role not in {"user", "assistant"}:
             continue
         content = str(row.get("content") or "").strip()
         if not content:
             continue
-        messages.append({"role": role, "content": content[:4000]})
+        raw_messages.append({"role": role, "content": content[:4000]})
 
-    return messages[-max_items:] if messages else state._chat_history[-max_items:]
+    # If nothing came back, fall through to in-memory history.
+    if not raw_messages and not latest_summary:
+        return state._chat_history[-max_items:]
+
+    # Prepend the rolling summary as a synthetic exchange if it exists.
+    messages: list[dict] = []
+    if latest_summary and raw_messages:
+        messages.append({
+            "role": "user",
+            "content": f"[Conversation summary — earlier in this session]\n{latest_summary['summary']}",
+        })
+        messages.append({
+            "role": "assistant",
+            "content": "Understood, I have the context from earlier.",
+        })
+
+    messages.extend(raw_messages)
+    return messages
 
 
 async def _profile_prompt_context(update: Update) -> str:

@@ -203,6 +203,16 @@ CREATE TABLE IF NOT EXISTS memory_audit_log (
     created_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Rolling conversation summaries (three-tier memory compression)
+CREATE TABLE IF NOT EXISTS conversation_summaries (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    summary          TEXT NOT NULL,
+    covered_up_to_id INTEGER NOT NULL,
+    message_count    INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_ideas_project ON ideas(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
@@ -221,6 +231,7 @@ CREATE INDEX IF NOT EXISTS idx_users_telegram ON users(telegram_user_id);
 CREATE INDEX IF NOT EXISTS idx_user_facts_user ON user_profile_facts(user_id, is_active, fact_key);
 CREATE INDEX IF NOT EXISTS idx_user_conversations_user ON user_conversations(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_audit_user ON memory_audit_log(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_conversation_summaries_user ON conversation_summaries(user_id, covered_up_to_id DESC);
 """
 
 
