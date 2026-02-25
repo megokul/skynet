@@ -56,7 +56,11 @@ class Orchestrator:
             return "Still working on your previous request."
 
         async with lock:
-            return await self._handle_internal(update, text)
+            try:
+                return await self._handle_internal(update, text)
+            except Exception as exc:
+                logger.exception("Unhandled orchestrator failure for user %s: %s", user_id, exc)
+                return "Something went wrong. Please try again."
 
     async def _handle_internal(self, update, text: str) -> str:
         # 1. Load session
@@ -132,15 +136,18 @@ class Orchestrator:
         # 8. Persist assistant response AFTER execution
         await self._persist_message(update, role="assistant", content=response)
 
-        # 9. Update session
-        await self.session_loader.update(
-            session,
-            last_intent=intent.intent,
-            last_mode=mode.value,
-            last_message_at=datetime.utcnow().isoformat(),
-            conversation_phase=self._infer_phase(intent, mode, session),
-            session_metadata=self._build_metadata_update(intent, mode, response, session),
-        )
+        # 9. Update session (non-fatal on failure)
+        try:
+            await self.session_loader.update(
+                session,
+                last_intent=intent.intent,
+                last_mode=mode.value,
+                last_message_at=datetime.utcnow().isoformat(),
+                conversation_phase=self._infer_phase(intent, mode, session),
+                session_metadata=self._build_metadata_update(intent, mode, response, session),
+            )
+        except Exception as exc:
+            logger.exception("Failed to update session for user %s: %s", session.user_id, exc)
 
         return response
 
