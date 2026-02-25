@@ -183,9 +183,26 @@ class Orchestrator:
             # Execute tools
             tool_results = []
             for tc in response.tool_calls:
+                tool_input = tc.input if isinstance(tc.input, dict) else {}
+                if not isinstance(tc.input, dict):
+                    logger.warning(
+                        "Malformed tool input in %s mode for tool %s: %s",
+                        mode.value,
+                        tc.name,
+                        type(tc.input).__name__,
+                    )
                 skill = self.skill_registry.get_skill_for_tool(tc.name)
                 if skill:
-                    result = await skill.execute(tc.name, tc.input, skill_context)
+                    try:
+                        result = await skill.execute(tc.name, tool_input, skill_context)
+                    except Exception as exc:
+                        logger.exception(
+                            "Tool execution failed in %s mode for %s: %s",
+                            mode.value,
+                            tc.name,
+                            exc,
+                        )
+                        result = f"ERROR: tool {tc.name} failed: {exc}"
                 else:
                     logger.warning("Blocked tool call in %s mode: %s", mode.value, tc.name)
                     result = f"Unknown tool: {tc.name}"

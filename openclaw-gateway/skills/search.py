@@ -35,6 +35,8 @@ class SearchSkill(BaseSkill):
     async def execute(self, tool_name: str, tool_input: dict[str, Any], context: SkillContext) -> str:
         if tool_name != "web_search":
             return f"Unknown search tool: {tool_name}"
+        if not isinstance(tool_input, dict):
+            tool_input = {}
         result = await context.send_to_agent("web_search", {
             "query": tool_input.get("query", ""),
             "num_results": tool_input.get("num_results", 5),
