@@ -423,7 +423,13 @@ def _is_no_store_chat_message(text: str) -> bool:
     return any(marker in lowered for marker in state._NO_STORE_CHAT_MARKERS)
 
 
-async def _capture_profile_memory(update: Update, text: str, *, skip_store: bool) -> None:
+async def _capture_profile_memory(
+    update: Update,
+    text: str,
+    *,
+    skip_store: bool,
+    persist_message: bool = True,
+) -> None:
     if state._project_manager is None:
         return
     user_row = await _ensure_memory_user(update)
@@ -434,7 +440,8 @@ async def _capture_profile_memory(update: Update, text: str, *, skip_store: bool
         from db import store
 
         user_id = int(user_row["id"])
-        await _append_user_conversation(update, role="user", content=text)
+        if persist_message:
+            await _append_user_conversation(update, role="user", content=text)
 
         if skip_store:
             await store.add_memory_audit_log(

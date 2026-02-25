@@ -114,8 +114,17 @@ class ProviderRouter:
         preferences = self.TASK_PROVIDER_PREFERENCES.get(task_type, [])
         scored: list[tuple[BaseProvider, int]] = []
 
+        normalized_allowlist = allowed_providers
+        if allowed_providers is not None:
+            normalized_allowlist = set(allowed_providers)
+            # Compatibility alias for Anthropic provider naming.
+            if "anthropic" in normalized_allowlist:
+                normalized_allowlist.add("claude")
+            if "claude" in normalized_allowlist:
+                normalized_allowlist.add("anthropic")
+
         for p in self.providers:
-            if allowed_providers is not None and p.name not in allowed_providers:
+            if normalized_allowlist is not None and p.name not in normalized_allowlist:
                 continue
             if preferred_provider_only and preferred_provider and p.name != preferred_provider:
                 continue

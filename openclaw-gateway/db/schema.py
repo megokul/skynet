@@ -232,6 +232,20 @@ CREATE INDEX IF NOT EXISTS idx_user_facts_user ON user_profile_facts(user_id, is
 CREATE INDEX IF NOT EXISTS idx_user_conversations_user ON user_conversations(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_audit_user ON memory_audit_log(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_summaries_user ON conversation_summaries(user_id, covered_up_to_id DESC);
+
+-- Per-user orchestrator session (survives container restarts)
+CREATE TABLE IF NOT EXISTS sessions (
+    user_id          TEXT PRIMARY KEY,
+    project_id       TEXT,
+    conversation_phase TEXT NOT NULL DEFAULT 'discovery',
+    last_intent      TEXT NOT NULL DEFAULT '',
+    last_mode        TEXT NOT NULL DEFAULT 'conversation',
+    last_message_at  TEXT,
+    session_metadata TEXT NOT NULL DEFAULT '{}',
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
 
 

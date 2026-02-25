@@ -137,21 +137,17 @@ def _human_age(iso_ts: str | None) -> str:
         return ""
 
 
-async def _build_project_context_block(gap_tier=None) -> str:
+async def _build_project_context_block(gap_tier=None, *, project: dict[str, Any] | None = None) -> str:
     """Build a context block about the last worked-on project for the LLM system prompt.
 
     Injects actual ideas and task status so the LLM understands what conversation
     it's in and where the project stands. Detail level is reduced for longer gaps.
     """
-    if not state._project_manager or not state._last_project_id:
+    if not state._project_manager or not project:
         return ""
     try:
         from db import store
         from bot.memory import GapTier
-
-        project = await store.get_project(state._project_manager.db, state._last_project_id)
-        if not project:
-            return ""
 
         name = _project_display(project)
         status = str(project.get("status") or "unknown")
@@ -165,7 +161,7 @@ async def _build_project_context_block(gap_tier=None) -> str:
         lines = [f"\n\n## Active project: {name}{age_str}", f"Status: {status}"]
 
         # Inject actual ideas
-        ideas = await store.get_ideas(state._project_manager.db, state._last_project_id)
+        ideas = await store.get_ideas(state._project_manager.db, project["id"])
         if ideas:
             lines.append("")
             lines.append("Ideas captured:")
@@ -180,7 +176,7 @@ async def _build_project_context_block(gap_tier=None) -> str:
 
         # For active/short gap: also inject tasks when project is in a build phase
         if status in ("planning", "coding", "approved", "running", "paused"):
-            tasks = await store.get_tasks(state._project_manager.db, state._last_project_id)
+            tasks = await store.get_tasks(state._project_manager.db, project["id"])
             if tasks:
                 done = sum(1 for t in tasks if t.get("status") == "done")
                 lines.append("")

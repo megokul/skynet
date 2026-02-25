@@ -27,266 +27,33 @@ from .helpers import (
     _ask_confirm,
     _ask_remove_project_confirmation,
     _authorised,
-    _build_assistant_content,
-    _build_gap_system_context,
-    _build_project_context_block,
     _extract_json_object,
-    _extract_textual_tool_call,
     _format_result,
-    _friendly_ai_error,
     _gateway_get,
     _gateway_post,
     _join_project_path,
-    _maybe_notify_model_switch,
     _notify_styled,
     _parse_path,
     _project_display,
     _send_action,
     _send_to_user,
     _spawn_background_task,
-    _trim_chat_history,
     _truncate_for_notice,
 )
 from .memory import (
-    GapTier,
-    _append_user_conversation,
     _capture_profile_memory,
     _ensure_memory_user,
     _forget_profile_target,
     _format_profile_summary,
     _is_no_store_once_message,
-    _load_recent_conversation_messages,
     _maybe_handle_memory_text_command,
-    _profile_prompt_context,
     _set_memory_enabled_for_user,
-    compute_session_gap,
 )
 from .nl_intent import (
     _resolve_project,
 )
 
 logger = logging.getLogger("skynet.telegram")
-
-
-async def _reply_with_openclaw_capabilities(
-    update: Update,
-    text: str,
-    *,
-    gap_tier: GapTier | None = None,
-) -> None:
-    """Route natural conversation through OpenClaw tools + skills."""
-    if not state._provider_router:
-        await update.message.reply_text("AI providers are not configured.")
-        return
-    if not state._skill_registry:
-        await _reply_naturally_fallback(update, text)
-        return
-
-    # Use pre-computed gap tier from handle_text, or compute here if called standalone.
-    if gap_tier is None:
-        gap_tier = await compute_session_gap(update)
-
-    history = await _load_recent_conversation_messages(update, gap_tier=gap_tier)
-    messages = [*history, {"role": "user", "content": text}]
-    tools = state._skill_registry.get_all_tools()
-
-    project_id = "telegram_chat"
-    project_path = cfg.PROJECT_BASE_DIR or cfg.DEFAULT_WORKING_DIR
-    last_project_name = ""
-    project_status: str | None = None
-    if state._project_manager and state._last_project_id:
-        try:
-            from db import store
-            project = await store.get_project(state._project_manager.db, state._last_project_id)
-            if project:
-                project_id = project["id"]
-                project_path = project.get("local_path") or project_path
-                last_project_name = _project_display(project)
-                project_status = project.get("status") or None
-        except Exception:
-            logger.exception("Failed to resolve project context for chat")
-
-    project_context = await _build_project_context_block(gap_tier=gap_tier)
-    gap_context = _build_gap_system_context(gap_tier, last_project_name)
-    base_system_prompt = (
-        f"{state._PERSONALITY_PROMPT}\n\n"
-        f"{state._phase_instructions(project_status)}\n\n"
-        f"Working directory: {project_path}\n"
-        "If you perform filesystem/git/build actions, prefer this context unless the user specifies another path."
-        f"{project_context}"
-        f"{gap_context}"
-    )
-    if state._main_persona_agent.should_delegate(text):
-        base_system_prompt += (
-            "\n\nThis looks like long-running work. "
-            "Prefer delegated execution through tools and avoid claiming completion "
-            "until tool results confirm it."
-        )
-
-    profile_context = await _profile_prompt_context(update)
-    system_prompt = state._main_persona_agent.compose_system_prompt(
-        base_system_prompt,
-        profile_context=profile_context,
-    )
-    try:
-        prompt_context = state._skill_registry.get_prompt_skill_context(text, role="chat")
-        if prompt_context:
-            system_prompt += (
-                "\n\n[External Skill Guidance]\n"
-                "Use the following skill guidance if it helps solve the request:\n\n"
-                f"{prompt_context}"
-            )
-    except Exception:
-        logger.exception("Failed to inject external skill guidance into Telegram chat")
-
-    rounds = 0
-    final_text = ""
-    try:
-        while rounds < 12:
-            response = await state._provider_router.chat(
-                messages,
-                tools=tools,
-                system=system_prompt,
-                max_tokens=1500,
-                task_type="general",
-                allowed_providers=state._CHAT_PROVIDER_ALLOWLIST,
-            )
-            await _maybe_notify_model_switch(update, response)
-            messages.append({"role": "assistant", "content": _build_assistant_content(response)})
-
-            tool_calls = list(response.tool_calls or [])
-            if not tool_calls:
-                recovered = _extract_textual_tool_call(response.text or "")
-                if recovered:
-                    tool_calls = [recovered]
-
-            if not tool_calls:
-                final_text = (response.text or "").strip()
-                break
-
-            from skills.base import SkillContext
-
-            context = SkillContext(
-                project_id=project_id,
-                project_path=project_path,
-                gateway_api_url=cfg.GATEWAY_API_URL,
-                searcher=state._searcher,
-                request_approval=request_worker_approval,
-            )
-            tool_results = []
-            for tc in tool_calls:
-                skill = state._skill_registry.get_skill_for_tool(tc.name)
-                if skill is None:
-                    result = f"Unknown tool: {tc.name}"
-                else:
-                    result = await skill.execute(tc.name, tc.input, context)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tc.id,
-                    "name": tc.name,
-                    "content": result,
-                })
-            messages.append({"role": "user", "content": tool_results})
-            rounds += 1
-    except Exception as exc:
-        await update.message.reply_text(_friendly_ai_error(exc))
-        return
-
-    if not final_text:
-        try:
-            summary = await state._provider_router.chat(
-                messages + [{
-                    "role": "user",
-                    "content": "Summarize the result and next step in plain language.",
-                }],
-                system=system_prompt,
-                max_tokens=700,
-                task_type="general",
-                allowed_providers=state._CHAT_PROVIDER_ALLOWLIST,
-            )
-            await _maybe_notify_model_switch(update, summary)
-            final_text = (summary.text or "").strip()
-        except Exception:
-            final_text = ""
-
-    reply = final_text
-    if not reply:
-        reply = "I could not generate a reply right now."
-    reply = state._main_persona_agent.compose_final_response(reply)
-    if len(reply) > 3800:
-        reply = reply[:3800] + "\n\n... (truncated)"
-
-    # Keep chat history in a compact text form.
-    state._chat_history.append({"role": "user", "content": text})
-    state._chat_history.append({"role": "assistant", "content": reply})
-    _trim_chat_history()
-
-    await update.message.reply_text(reply)
-    await _append_user_conversation(
-        update,
-        role="assistant",
-        content=reply,
-        metadata={"channel": "openclaw_capabilities"},
-    )
-
-
-async def _reply_naturally_fallback(update: Update, text: str) -> None:
-    """Fallback chat path without tool execution."""
-    if not state._provider_router:
-        await update.message.reply_text("AI providers are not configured.")
-        return
-
-    history = await _load_recent_conversation_messages(update)
-    base_system_prompt = state._CHAT_SYSTEM_PROMPT
-    if state._main_persona_agent.should_delegate(text):
-        base_system_prompt += (
-            "\n\nThis looks like long-running work. "
-            "Do not pretend it is completed in chat; provide a concise delegated plan."
-        )
-    if state._skill_registry:
-        try:
-            prompt_context = state._skill_registry.get_prompt_skill_context(text, role="chat")
-            if prompt_context:
-                base_system_prompt += (
-                    "\n\n[External Skill Guidance]\n"
-                    "Use the following skill guidance if relevant:\n\n"
-                    f"{prompt_context}"
-                )
-        except Exception:
-            logger.exception("Failed to inject external skill guidance into fallback chat")
-    profile_context = await _profile_prompt_context(update)
-    system_prompt = state._main_persona_agent.compose_system_prompt(
-        base_system_prompt,
-        profile_context=profile_context,
-    )
-
-    messages = [*history, {"role": "user", "content": text}]
-    try:
-        response = await state._provider_router.chat(
-            messages,
-            system=system_prompt,
-            max_tokens=700,
-            task_type="general",
-            allowed_providers=state._CHAT_PROVIDER_ALLOWLIST,
-        )
-        await _maybe_notify_model_switch(update, response)
-    except Exception as exc:
-        await update.message.reply_text(_friendly_ai_error(exc))
-        return
-
-    reply = (response.text or "").strip() or "I could not generate a reply right now."
-    reply = state._main_persona_agent.compose_final_response(reply)
-    state._chat_history.append({"role": "user", "content": text})
-    state._chat_history.append({"role": "assistant", "content": reply})
-    _trim_chat_history()
-    await update.message.reply_text(reply)
-    await _append_user_conversation(
-        update,
-        role="assistant",
-        content=reply,
-        metadata={"channel": "fallback"},
-    )
-
 
 
 async def on_project_progress(project_id: str, event_type: str, summary: str) -> None:
@@ -444,8 +211,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         display_name = pending.get("display_name", "project")
         try:
             removed = await state._project_manager.remove_project(project_id)
-            if state._last_project_id == project_id:
-                state._last_project_id = None
             local_path = str(removed.get("local_path") or pending.get("local_path") or "").strip()
             note = (
                 f"\nWorkspace files kept at: <code>{html.escape(local_path)}</code>"
@@ -1207,15 +972,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # 2. Profile capture (background, non-blocking)
     skip_store = _is_no_store_once_message(text)
     _spawn_background_task(
-        _capture_profile_memory(update, text, skip_store=skip_store),
+        _capture_profile_memory(
+            update,
+            text,
+            skip_store=skip_store,
+            persist_message=not bool(state._orchestrator),
+        ),
         tag="profile-capture",
     )
 
-    # 3. Compute session gap once.
-    gap_tier = await compute_session_gap(update)
+    # 3. Route through orchestrator.
+    if not state._orchestrator:
+        await update.message.reply_text("Orchestrator is not configured.")
+        return
 
-    # 4. All messages → LLM with full context and tools
-    await _reply_with_openclaw_capabilities(update, text, gap_tier=gap_tier)
+    # Message persistence now happens inside orchestrator._handle_internal().
+    reply = await state._orchestrator.handle(update, text)
+    await update.message.reply_text(reply)
 
 
 # ------------------------------------------------------------------

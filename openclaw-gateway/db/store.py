@@ -1066,3 +1066,41 @@ async def add_memory_audit_log(
         audit_id = int(cur.lastrowid)
     await db.commit()
     return audit_id
+
+
+# ------------------------------------------------------------------
+# Orchestrator Sessions
+# ------------------------------------------------------------------
+
+async def get_or_create_session(
+    db: aiosqlite.Connection,
+    *,
+    user_id: str,
+) -> dict[str, Any]:
+    """Load session by telegram user_id string, or create with defaults."""
+    row = await db.execute("SELECT * FROM sessions WHERE user_id = ?", (user_id,))
+    row = await row.fetchone()
+    if row:
+        return dict(row)
+    await db.execute(
+        "INSERT INTO sessions (user_id) VALUES (?)",
+        (user_id,),
+    )
+    await db.commit()
+    row = await db.execute("SELECT * FROM sessions WHERE user_id = ?", (user_id,))
+    return dict(await row.fetchone())
+
+
+async def update_session(
+    db: aiosqlite.Connection,
+    *,
+    user_id: str,
+    **fields: Any,
+) -> None:
+    """UPDATE sessions SET field=? WHERE user_id=?. Accepts any subset of columns."""
+    if not fields:
+        return
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [user_id]
+    await db.execute(f"UPDATE sessions SET {set_clause} WHERE user_id = ?", values)
+    await db.commit()

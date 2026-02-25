@@ -9,27 +9,21 @@ load based on their role.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Awaitable
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable
 
 import aiohttp
 
 
+@dataclass
 class SkillContext:
     """Runtime context passed to skill execution — provides gateway services."""
-
-    def __init__(
-        self,
-        project_id: str,
-        project_path: str,
-        gateway_api_url: str,
-        searcher: Any = None,
-        request_approval: Callable[..., Awaitable[bool]] | None = None,
-    ):
-        self.project_id = project_id
-        self.project_path = project_path
-        self.gateway_api_url = gateway_api_url
-        self.searcher = searcher
-        self.request_approval = request_approval
+    project_id: str
+    project_path: str
+    gateway_api_url: str
+    searcher: Any | None = None
+    request_approval: Callable[..., Awaitable[bool]] | None = None
+    set_active_project: Any | None = None  # async callable(project_id: str, phase: str)
 
     async def send_to_agent(
         self,

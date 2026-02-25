@@ -10,12 +10,8 @@ from __future__ import annotations
 import logging
 import re
 
-import bot_config as cfg
 from . import state
-from .helpers import (
-    _norm_project,
-    _project_display,
-)
+from .helpers import _norm_project, _project_display
 
 logger = logging.getLogger("skynet.telegram")
 
@@ -33,7 +29,11 @@ def _is_new_project_intent(text: str) -> bool:
     return bool(_NEW_PROJECT_RE.search((text or "").strip()))
 
 
-async def _resolve_project(reference: str | None = None) -> tuple[dict | None, str | None]:
+async def _resolve_project(
+    reference: str | None = None,
+    *,
+    active_project_id: str | None = None,
+) -> tuple[dict | None, str | None]:
     """Resolve a natural-language project reference to a concrete project."""
     if not state._project_manager:
         return None, "Project manager is not initialized."
@@ -44,6 +44,7 @@ async def _resolve_project(reference: str | None = None) -> tuple[dict | None, s
 
     if reference:
         from .helpers import _clean_entity
+
         ref = _clean_entity(reference)
         ref_norm = _norm_project(ref)
         if not ref_norm:
@@ -72,28 +73,24 @@ async def _resolve_project(reference: str | None = None) -> tuple[dict | None, s
                 choices = ", ".join(_project_display(p) for p in top[:4])
                 return None, f"I found multiple matches: {choices}. Tell me the exact name."
 
-            state._last_project_id = top[0]["id"]
             return top[0], None
 
     # No explicit reference: use recent context first.
-    if state._last_project_id:
+    if active_project_id:
         for project in projects:
-            if project["id"] == state._last_project_id:
+            if project["id"] == active_project_id:
                 return project, None
 
     ideation = [p for p in projects if p.get("status") == "ideation"]
     if len(ideation) == 1:
-        state._last_project_id = ideation[0]["id"]
         return ideation[0], None
 
     if len(projects) == 1:
-        state._last_project_id = projects[0]["id"]
         return projects[0], None
 
     active_statuses = {"planning", "approved", "coding", "testing", "paused"}
     active = [p for p in projects if p.get("status") in active_statuses]
     if len(active) == 1:
-        state._last_project_id = active[0]["id"]
         return active[0], None
 
     choices = ", ".join(_project_display(p) for p in projects[:5])
