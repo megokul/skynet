@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 
 from bot.message_utils import strip_tool_messages
@@ -16,6 +17,16 @@ INTENT_CATEGORIES = [
     "request_continue", "request_stop", "change_direction", "provide_feedback",
     "memory_command", "unclear",
 ]
+
+_PLAN_REQUEST_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bplan it\b", re.IGNORECASE),
+    re.compile(r"\btask\s*plan\b", re.IGNORECASE),
+    re.compile(r"\b(generate|generating|make|create)\b.{0,24}\b(task\s+)?plan\b", re.IGNORECASE),
+)
+
+_APPROVAL_PHRASES: frozenset[str] = frozenset({
+    "yes", "ok", "sure", "go ahead", "do it", "approved", "lgtm", "build it",
+})
 
 
 @dataclass
@@ -106,7 +117,7 @@ class IntentClassifier:
             if intent not in INTENT_CATEGORIES:
                 intent = "unclear"
 
-            return ClassifiedIntent(
+            classified = ClassifiedIntent(
                 intent=intent,
                 confidence=float(data.get("confidence", 0.5)),
                 secondary_intents=data.get("secondary_intents", []),
@@ -114,9 +125,52 @@ class IntentClassifier:
                 requires_tools=bool(data.get("requires_tools", False)),
                 is_continuation=bool(data.get("is_continuation", False)),
             )
+            return self._apply_post_overrides(message, session, classified)
         except Exception as e:
             logger.warning("Intent classifier failed (%s), using fallback", e)
             return self.fallback_classify(message, session)
+
+    def _apply_post_overrides(
+        self,
+        message: str,
+        session: Session,
+        classified: ClassifiedIntent,
+    ) -> ClassifiedIntent:
+        msg = (message or "").strip().lower()
+
+        # Explicit planning phrases should never be interpreted as approval.
+        if any(pattern.search(msg) for pattern in _PLAN_REQUEST_PATTERNS):
+            return ClassifiedIntent(
+                intent="request_plan",
+                confidence=max(classified.confidence, 0.9),
+                secondary_intents=classified.secondary_intents,
+                entities=classified.entities,
+                requires_tools=True,
+                is_continuation=classified.is_continuation,
+            )
+
+        # Approval phrases map to approve_plan only while waiting for plan approval.
+        if msg in _APPROVAL_PHRASES:
+            waiting_for = str(session.metadata.get("waiting_for") or "")
+            if session.conversation_phase == "planning" or waiting_for == "plan_approval":
+                return ClassifiedIntent(
+                    intent="approve_plan",
+                    confidence=max(classified.confidence, 0.85),
+                    secondary_intents=classified.secondary_intents,
+                    entities=classified.entities,
+                    requires_tools=False,
+                    is_continuation=True,
+                )
+            return ClassifiedIntent(
+                intent="approve_execution",
+                confidence=max(classified.confidence, 0.6),
+                secondary_intents=classified.secondary_intents,
+                entities=classified.entities,
+                requires_tools=False,
+                is_continuation=True,
+            )
+
+        return classified
 
     def fallback_classify(self, message: str, session: Session) -> ClassifiedIntent:
         """Rule-based fallback when LLM classifier fails."""

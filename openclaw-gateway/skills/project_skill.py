@@ -354,12 +354,20 @@ class ProjectManagementSkill(BaseSkill):
 
     async def _resolve_project(self, pm, tool_input: dict, context: SkillContext) -> tuple[dict | None, str]:
         """Resolve project from tool_input or active context. Returns (project, error_msg)."""
+        explicit_ref = str(tool_input.get("project_id") or "").strip()
         project_id = self._resolve_project_id(tool_input, context)
         if project_id:
             project = await self._get_project(pm, project_id)
+            if not project:
+                project = await self._find_project_by_name(pm, project_id)
             if project:
                 await self._set_active_project(context, project)
                 return project, ""
+            # If the user explicitly supplied a project reference and we could not
+            # resolve it by ID, name, display name, or slug alias, do not silently
+            # fall through to an unrelated active project.
+            if explicit_ref:
+                return None, f"Project '{explicit_ref}' not found."
         # Fall back to listing and picking most recent active project
         try:
             projects = await pm.list_projects()
@@ -485,6 +493,7 @@ class ProjectManagementSkill(BaseSkill):
         idea = (inp.get("idea") or "").strip()
         if not idea:
             return "ERROR: idea text is required."
+        from bot.helpers import _project_display
         # Guard: reject immediately when there is no active project context.
         # Prevents the fallback in _resolve_project from auto-selecting an
         # existing project (e.g. mango_curry in planning status) after a restart.
@@ -500,13 +509,13 @@ class ProjectManagementSkill(BaseSkill):
         status = project.get("status", "")
         if status != "ideation":
             return (
-                f"ERROR: Cannot add ideas to '{project.get('name', project['id'])}' "
+                f"ERROR: Cannot add ideas to '{_project_display(project)}' "
                 f"(status: {status}). "
                 "Use project_create to start a new project first."
             )
         count = await pm.add_idea(project["id"], idea)
         await self._set_active_project(context, project)
-        return f"Added idea #{count} to '{project.get('name', project['id'])}'."
+        return f"Added idea #{count} to '{_project_display(project)}'."
 
     async def _list(self, pm) -> str:
         projects = await pm.list_projects()
@@ -525,24 +534,42 @@ class ProjectManagementSkill(BaseSkill):
         project, err = await self._resolve_project(pm, inp, context)
         if not project:
             return err or "No active project."
-        name = project.get("name", project["id"])
-        status = project.get("status", "?")
-        path = project.get("local_path", "?")
-        ideas = project.get("ideas") or []
-        idea_count = len(ideas) if isinstance(ideas, list) else "?"
-        recent = []
-        if isinstance(ideas, list):
-            recent = ideas[-3:]
+
+        from bot.helpers import _project_display
+        from db import store
+
+        status = str(project.get("status") or "?")
+        path = str(project.get("local_path") or "?")
+        canonical_name = str(project.get("name") or project.get("id") or "unknown")
+
+        ideas = await store.get_ideas(pm.db, project["id"])
+        idea_count = len(ideas)
+        recent_ideas = [str(i.get("message_text") or "").strip() for i in ideas[-3:]]
+        recent_ideas = [txt for txt in recent_ideas if txt]
+
+        active_plan = await store.get_active_plan(pm.db, project["id"])
+        plan_state = "ready" if active_plan else "not generated"
+
+        tasks = await store.get_tasks(pm.db, project["id"]) if active_plan else []
+        task_total = len(tasks)
+        task_done = sum(1 for t in tasks if str(t.get("status") or "").lower() == "completed")
+
         lines = [
-            f"Project: {name}",
+            f"Project: {_project_display(project)}",
+            f"Canonical Name: {canonical_name}",
             f"Status: {status}",
             f"Path: {path}",
             f"Ideas: {idea_count}",
+            f"Plan: {plan_state}",
         ]
-        if recent:
+
+        if active_plan:
+            lines.append(f"Task Progress: {task_done}/{task_total}")
+
+        if recent_ideas:
             lines.append("Recent ideas:")
-            for idea in recent:
-                text = (idea.get("text") or str(idea))[:120]
+            for text in recent_ideas:
+                text = text[:160]
                 lines.append(f"  - {text}")
         return "\n".join(lines)
 
@@ -550,6 +577,7 @@ class ProjectManagementSkill(BaseSkill):
         project, err = await self._resolve_project(pm, inp, context)
         if not project:
             return f"ERROR: {err}"
+        from bot.helpers import _project_display
         # Guard: refuse to plan with no ideas — forces the conversation to happen first.
         ideas = project.get("ideas") or []
         if not ideas:
@@ -560,19 +588,21 @@ class ProjectManagementSkill(BaseSkill):
                 ideas = []
         if not ideas:
             return (
-                f"ERROR: Project '{project.get('name', project['id'])}' has no ideas or requirements yet. "
+                f"ERROR: Project '{_project_display(project)}' has no ideas or requirements yet. "
                 "Please describe what you want the project to do before generating a plan."
             )
         await pm.generate_plan(project["id"])
         await self._set_active_project(context, project)
-        return f"Plan generation started for '{project.get('name', project['id'])}'. I will notify you when it's ready for review."
+        return f"Plan generation started for '{_project_display(project)}'. I will notify you when it's ready for review."
 
     async def _approve_start(self, pm, inp: dict, context: SkillContext) -> str:
         project, err = await self._resolve_project(pm, inp, context)
         if not project:
             return f"ERROR: {err}"
 
-        name = project.get("name", project["id"])
+        from bot.helpers import _project_display
+
+        name = _project_display(project)
         status = str(project.get("status", "")).lower()
         await self._set_active_project(context, project)
 
@@ -627,23 +657,26 @@ class ProjectManagementSkill(BaseSkill):
         project, err = await self._resolve_project(pm, inp, context)
         if not project:
             return f"ERROR: {err}"
+        from bot.helpers import _project_display
         await pm.pause_project(project["id"])
-        return f"Project '{project.get('name', project['id'])}' paused."
+        return f"Project '{_project_display(project)}' paused."
 
     async def _resume(self, pm, inp: dict, context: SkillContext) -> str:
         project, err = await self._resolve_project(pm, inp, context)
         if not project:
             return f"ERROR: {err}"
+        from bot.helpers import _project_display
         await pm.resume_project(project["id"])
         await self._set_active_project(context, project)
-        return f"Project '{project.get('name', project['id'])}' resumed."
+        return f"Project '{_project_display(project)}' resumed."
 
     async def _cancel(self, pm, inp: dict, context: SkillContext) -> str:
         project, err = await self._resolve_project(pm, inp, context)
         if not project:
             return f"ERROR: {err}"
+        from bot.helpers import _project_display
         await pm.cancel_project(project["id"])
-        return f"Project '{project.get('name', project['id'])}' cancelled."
+        return f"Project '{_project_display(project)}' cancelled."
 
     async def _remove(self, pm, inp: dict, context: SkillContext) -> str:
         project_id = self._resolve_project_id(inp, context)
