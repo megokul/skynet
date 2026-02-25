@@ -11,7 +11,7 @@ import logging
 import re
 
 from . import state
-from .helpers import _norm_project, _project_display
+from .helpers import _clean_entity, _norm_project, _project_display
 
 logger = logging.getLogger("skynet.telegram")
 
@@ -43,8 +43,6 @@ async def _resolve_project(
         return None, "No projects exist yet. Tell me the project name and I will create it."
 
     if reference:
-        from .helpers import _clean_entity
-
         ref = _clean_entity(reference)
         ref_norm = _norm_project(ref)
         if not ref_norm:

@@ -512,6 +512,21 @@ def _norm_project(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text.lower())
 
 
+def _clean_entity(value: str) -> str:
+    """
+    Normalize an extracted entity string for fuzzy matching.
+
+    Keeps semantic characters while removing wrapping quotes and
+    leading/trailing punctuation noise from LLM outputs.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.strip("`\"'")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(".,:;!?()[]{}")
+
+
 def _project_display(project: dict) -> str:
     return str(project.get("display_name") or project.get("name") or "project")
 

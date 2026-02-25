@@ -214,7 +214,20 @@ class BackgroundStorage:
         self._scheduler = BackgroundScheduler(s3=s3, db=db, gateway_api_url=gateway_api_url)
 
     async def backup_active_projects(self) -> None:
-        if not await self._is_executor_available():
+        status = await self._fetch_gateway_status()
+        if not status:
+            logger.info("Daily backup skipped: gateway status unavailable.")
+            return
+
+        # zip_project is currently unsupported when the API is forced into
+        # SSH tunnel execution mode. Skip cleanly to avoid noisy per-project
+        # failures and heartbeat timeouts.
+        execution_mode = str(status.get("execution_mode", "")).strip().lower()
+        if execution_mode == "ssh_tunnel":
+            logger.info("Daily backup skipped: zip_project is unavailable in ssh_tunnel mode.")
+            return
+
+        if not self._status_executor_available(status):
             logger.info("Daily backup skipped: no connected agent and SSH fallback is unhealthy.")
             return
 
@@ -246,7 +259,7 @@ class BackgroundStorage:
 
         logger.info("Daily backup finished: %d/%d projects backed up.", backed_up, attempted)
 
-    async def _is_executor_available(self) -> bool:
+    async def _fetch_gateway_status(self) -> dict[str, Any] | None:
         import aiohttp
 
         try:
@@ -257,8 +270,10 @@ class BackgroundStorage:
                 ) as resp:
                     data = await resp.json()
         except Exception:
-            return False
+            return None
+        return data if isinstance(data, dict) else None
 
+    def _status_executor_available(self, data: dict[str, Any]) -> bool:
         agent_connected = bool(data.get("agent_connected", False))
         ssh_ok = bool(data.get("ssh_fallback_enabled", False)) and bool(
             data.get("ssh_fallback_healthy", False)
