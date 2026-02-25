@@ -117,6 +117,12 @@ class Orchestrator:
             filtered_tools,
             user_text=text,
         )
+        requested_allowlist = ctx.allowed_providers
+        ctx.allowed_providers = self._resolve_allowed_providers(
+            mode=mode,
+            tools=ctx.tools,
+            requested_allowlist=requested_allowlist,
+        )
 
         # 6. Persist user message BEFORE execution (crash safety)
         await self._persist_message(update, role="user", content=text)
@@ -151,6 +157,88 @@ class Orchestrator:
 
         return response
 
+    def _resolve_allowed_providers(
+        self,
+        *,
+        mode: Mode,
+        tools: list[dict],
+        requested_allowlist: list[str] | None,
+    ) -> list[str] | None:
+        require_tools = bool(tools)
+        requested = self._dedupe_provider_names(requested_allowlist)
+        requested_candidates = self._available_provider_names(
+            allowed_providers=requested,
+            require_tools=require_tools,
+        )
+        if requested_candidates:
+            logger.info(
+                "Provider allowlist: mode=%s requested=%s candidates=%s",
+                mode.value,
+                requested,
+                requested_candidates,
+            )
+            return requested
+
+        if mode in {Mode.EXECUTION, Mode.RECOVERY}:
+            fallback_allowlist = self._dedupe_provider_names(
+                ["anthropic", "claude"] + list(self.chat_provider_allowlist or []) + ["ollama"]
+            )
+            fallback_candidates = self._available_provider_names(
+                allowed_providers=fallback_allowlist,
+                require_tools=require_tools,
+            )
+            if fallback_candidates:
+                logger.warning(
+                    "Provider allowlist fallback: mode=%s requested=%s fallback=%s candidates=%s",
+                    mode.value,
+                    requested,
+                    fallback_allowlist,
+                    fallback_candidates,
+                )
+                return fallback_allowlist
+            logger.warning(
+                "Provider allowlist fallback failed: mode=%s requested=%s fallback=%s",
+                mode.value,
+                requested,
+                fallback_allowlist,
+            )
+            return None
+
+        if requested is not None:
+            logger.warning(
+                "Provider allowlist unavailable: mode=%s requested=%s",
+                mode.value,
+                requested,
+            )
+        return requested
+
+    def _available_provider_names(
+        self,
+        *,
+        allowed_providers: list[str] | None,
+        require_tools: bool,
+    ) -> list[str]:
+        try:
+            if hasattr(self.provider_router, "available_provider_names"):
+                return self.provider_router.available_provider_names(
+                    allowed_providers=allowed_providers,
+                    require_tools=require_tools,
+                    task_type="general",
+                )
+        except Exception:
+            logger.exception("Failed provider availability introspection")
+        return []
+
+    def _dedupe_provider_names(self, names: list[str] | None) -> list[str] | None:
+        if names is None:
+            return None
+        deduped: list[str] = []
+        for name in names:
+            normalized = str(name).strip().lower()
+            if normalized and normalized not in deduped:
+                deduped.append(normalized)
+        return deduped
+
     async def _execute(self, text: str, ctx: ContextPackage, session: Session, mode: Mode) -> str:
         skill_context = self._build_skill_context(session)
         messages = ctx.messages + [{"role": "user", "content": text}]
@@ -175,7 +263,7 @@ class Orchestrator:
                     ctx.max_rounds,
                     e,
                 )
-                return "The AI provider encountered an error. Please try again."
+                return self._map_provider_failure(e)
 
             if not response.tool_calls:
                 return (response.text or "").strip()
@@ -220,6 +308,19 @@ class Orchestrator:
             rounds += 1
 
         return await self._force_summary(messages, ctx.system_prompt)
+
+    def _map_provider_failure(self, error: Exception) -> str:
+        message = str(error).lower()
+        if (
+            "no ai providers available" in message
+            or "all ai providers failed" in message
+            or "agent not connected" in message
+        ):
+            return (
+                "No AI provider is currently available. Connect the CHATHAN agent "
+                "for Ollama or configure a cloud API key (Gemini/Anthropic), then try again."
+            )
+        return "The AI provider encountered an error. Please try again."
 
     def _make_set_active_project_callback(self, session: Session):
         async def _set_active_project(project_id: str, phase: str):

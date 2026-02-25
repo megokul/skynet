@@ -151,6 +151,37 @@ class ProviderRouter:
         scored.sort(key=lambda x: x[1])
         return [p for p, _ in scored]
 
+    def available_provider_names(
+        self,
+        *,
+        require_tools: bool = False,
+        task_type: str = "general",
+        preferred_provider: str | None = None,
+        preferred_provider_only: bool = False,
+        allowed_providers: list[str] | set[str] | None = None,
+    ) -> list[str]:
+        """
+        Return currently available provider names for a routing shape.
+
+        This is a read-only introspection helper used by orchestration layers
+        to choose resilient allowlists before issuing a chat request.
+        """
+        if isinstance(allowed_providers, set):
+            allowlist = allowed_providers
+        elif allowed_providers is None:
+            allowlist = None
+        else:
+            allowlist = set(allowed_providers)
+
+        candidates = self._ranked_providers(
+            require_tools=require_tools,
+            task_type=task_type,
+            preferred_provider=preferred_provider,
+            preferred_provider_only=preferred_provider_only,
+            allowed_providers=allowlist,
+        )
+        return [provider.name for provider in candidates]
+
     async def chat(
         self,
         messages: list[dict[str, Any]],

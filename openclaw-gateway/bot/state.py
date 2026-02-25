@@ -135,7 +135,7 @@ _last_model_signature: str | None = None
 _CHAT_PROVIDER_ALLOWLIST = (
     ["gemini"]
     if cfg.GEMINI_ONLY_MODE
-    else ["claude", "gemini", "openai", "deepseek", "openrouter", "groq"]
+    else ["claude", "gemini", "openai", "deepseek", "openrouter", "groq", "ollama"]
 )
 _main_persona_agent = MainPersonaAgent()
 _NO_STORE_ONCE_MARKERS = {
