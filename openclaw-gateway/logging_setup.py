@@ -379,6 +379,19 @@ def configure_logging(
     flow_logger.setLevel(logging.DEBUG)
     flow_logger.propagate = True
 
+    # Human-readable trace mirror sink. The trace source writes raw blocks;
+    # this logger must preserve exact content (no timestamp/prefix formatting).
+    trace_mirror_logger = logging.getLogger("skynet.trace.mirror")
+    for handler in list(trace_mirror_logger.handlers):
+        trace_mirror_logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+    trace_mirror_logger.setLevel(logging.DEBUG)
+    trace_mirror_logger.propagate = False
+    trace_fmt = logging.Formatter("%(message)s")
+
     runtime_targets: list[Path] = []
     flow_targets: list[Path] = []
     if enable_local_file_targets:
@@ -408,9 +421,11 @@ def configure_logging(
 
     ssh_runtime_target = ""
     ssh_flow_target = ""
+    ssh_trace_target = ""
     if enable_ssh_mirror and mirror_log_dir and ssh_host and ssh_user:
         ssh_runtime_target = _join_windows_path(mirror_log_dir, "skynet-runtime.log")
         ssh_flow_target = _join_windows_path(mirror_log_dir, "skynet-control-flow.log")
+        ssh_trace_target = _join_windows_path(mirror_log_dir, "skynet.trace.log")
 
         ssh_runtime = _SSHMirrorFileHandler(
             host=ssh_host,
@@ -444,11 +459,29 @@ def configure_logging(
         flow_logger.addHandler(ssh_flow)
         atexit.register(_safe_close_handler, ssh_flow)
 
+        ssh_trace = _SSHMirrorFileHandler(
+            host=ssh_host,
+            port=int(ssh_port),
+            username=ssh_user,
+            key_path=ssh_key_path,
+            password=ssh_password,
+            strict_host_key=ssh_strict_host_key,
+            connect_timeout=ssh_connect_timeout,
+            command_timeout=ssh_command_timeout,
+            remote_windows_path=ssh_trace_target,
+        )
+        ssh_trace.setLevel(logging.DEBUG)
+        ssh_trace.setFormatter(trace_fmt)
+        trace_mirror_logger.addHandler(ssh_trace)
+        atexit.register(_safe_close_handler, ssh_trace)
+
     s3_runtime_target = ""
     s3_flow_target = ""
+    s3_trace_target = ""
     if enable_s3_logs and s3_bucket:
         s3_runtime_target = f"s3://{s3_bucket}/{s3_prefix.strip('/')}/runtime-logs/runtime/"
         s3_flow_target = f"s3://{s3_bucket}/{s3_prefix.strip('/')}/runtime-logs/control-flow/"
+        s3_trace_target = f"s3://{s3_bucket}/{s3_prefix.strip('/')}/runtime-logs/trace/"
 
         s3_runtime = _S3BatchHandler(
             bucket=s3_bucket,
@@ -476,14 +509,29 @@ def configure_logging(
         flow_logger.addHandler(s3_flow)
         atexit.register(_safe_close_handler, s3_flow)
 
+        s3_trace = _S3BatchHandler(
+            bucket=s3_bucket,
+            prefix=s3_prefix,
+            region=s3_region,
+            stream="trace",
+            flush_interval_seconds=5.0,
+            batch_size=80,
+        )
+        s3_trace.setLevel(logging.DEBUG)
+        s3_trace.setFormatter(trace_fmt)
+        trace_mirror_logger.addHandler(s3_trace)
+        atexit.register(_safe_close_handler, s3_trace)
+
     root.info(
-        "Logging configured level=%s local_file_targets=%s ssh_runtime_target=%s ssh_flow_target=%s s3_runtime_target=%s s3_flow_target=%s",
+        "Logging configured level=%s local_file_targets=%s ssh_runtime_target=%s ssh_flow_target=%s ssh_trace_target=%s s3_runtime_target=%s s3_flow_target=%s s3_trace_target=%s",
         logging.getLevelName(level),
         [str(p) for p in runtime_targets + flow_targets],
         ssh_runtime_target,
         ssh_flow_target,
+        ssh_trace_target,
         s3_runtime_target,
         s3_flow_target,
+        s3_trace_target,
     )
 
 

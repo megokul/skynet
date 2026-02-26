@@ -5,6 +5,7 @@ import dataclasses
 import functools
 import inspect
 import json
+import logging
 import threading
 import time
 from datetime import datetime, timezone
@@ -34,6 +35,21 @@ def _write_lines(lines: list[str]) -> None:
     with _WRITE_LOCK:
         with _TRACE_FILE.open("a", encoding="utf-8") as handle:
             handle.write(text)
+    _emit_mirror(text)
+
+
+def _emit_mirror(text: str) -> None:
+    logger = logging.getLogger("skynet.trace.mirror")
+    if not logger.handlers:
+        return
+    payload = text.rstrip("\n")
+    if not payload:
+        return
+    try:
+        logger.info("%s", payload)
+    except Exception:
+        # Mirror sinks must never break trace persistence.
+        pass
 
 
 def _clip_text(value: str, *, limit: int = _MAX_TEXT) -> str:
