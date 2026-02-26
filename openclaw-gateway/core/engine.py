@@ -12,6 +12,7 @@ from core.roles.registry import build_default_registry
 from core.router import Router
 from core.scheduler import BackgroundScheduler
 from core.trace import trace_flow
+from core.tracing import clear_current_trace, trace, trace_manager
 from db import store
 
 logger = logging.getLogger("skynet.core.engine")
@@ -52,6 +53,7 @@ class ConversationEngine:
         text: str,
         user_profile: dict[str, Any] | None = None,
         conversation_id: str | None = None,
+        entrypoint: str = "handle_text()",
     ) -> EngineResult:
         profile = user_profile or {}
         user = await store.ensure_user(
@@ -75,7 +77,10 @@ class ConversationEngine:
         reply = await self.inbox.append(
             conversation.id,
             text,
-            metadata={"telegram_user_id": int(telegram_user_id)},
+            metadata={
+                "telegram_user_id": int(telegram_user_id),
+                "entrypoint": entrypoint,
+            },
         )
         return EngineResult(conversation_id=conversation.id, text=reply)
 
@@ -107,47 +112,71 @@ class ConversationEngine:
 
     async def _process_batch(self, conversation_id: str, batch: list[InboxMessage]) -> str:
         merged_text = "\n".join(item.text for item in batch)
+        telegram_user_id = ""
+        entrypoint = "handle_text()"
+        if batch and isinstance(batch[0].metadata, dict):
+            telegram_user_id = str(batch[0].metadata.get("telegram_user_id") or "")
+            entrypoint = str(batch[0].metadata.get("entrypoint") or "handle_text()")
+
+        trace_logger, trace_token = trace_manager.start(
+            trace_id=conversation_id,
+            user_id=telegram_user_id or "unknown",
+            entrypoint=entrypoint,
+            input_text=merged_text,
+        )
         trace_flow(
             "engine.batch.start",
             conversation_id=conversation_id,
             batch_size=len(batch),
             merged_text=merged_text,
         )
-        conversation = await self.conversation_manager.get_conversation(conversation_id)
-        if not conversation:
-            trace_flow(
-                "engine.batch.error",
-                conversation_id=conversation_id,
-                reason="conversation_not_found",
+        try:
+            conversation = await self.conversation_manager.get_conversation(conversation_id)
+            if not conversation:
+                trace_flow(
+                    "engine.batch.error",
+                    conversation_id=conversation_id,
+                    reason="conversation_not_found",
+                )
+                return "ERROR: conversation not found."
+
+            await self.conversation_manager.add_message(
+                conversation_id,
+                role="user",
+                content=merged_text,
+                metadata={"source": "telegram"},
             )
-            return "ERROR: conversation not found."
 
-        await self.conversation_manager.add_message(
-            conversation_id,
-            role="user",
-            content=merged_text,
-            metadata={"source": "telegram"},
-        )
+            response_text = await self.run(conversation, merged_text)
 
-        response_text = await self._run_role_cycle(conversation, merged_text)
+            await self.conversation_manager.add_message(
+                conversation_id,
+                role="assistant",
+                content=response_text,
+                metadata={"source": "engine", "active_role": conversation.active_role},
+            )
+            trace_flow(
+                "engine.batch.complete",
+                conversation_id=conversation_id,
+                response=response_text,
+                active_role=conversation.active_role,
+            )
+            return response_text
+        finally:
+            trace_logger.end()
+            clear_current_trace(trace_token)
 
-        await self.conversation_manager.add_message(
-            conversation_id,
-            role="assistant",
-            content=response_text,
-            metadata={"source": "engine", "active_role": conversation.active_role},
-        )
-        trace_flow(
-            "engine.batch.complete",
-            conversation_id=conversation_id,
-            response=response_text,
-            active_role=conversation.active_role,
-        )
-        return response_text
+    @trace(role="engine", step_name="run")
+    async def run(self, conversation: Conversation, user_text: str) -> str:
+        return await self._run_role_cycle(conversation, user_text)
+
+    @trace(role="engine", step_name="select_role")
+    def select_role(self, role_name: str):
+        return self.role_registry.get(role_name)
 
     async def _run_role_cycle(self, conversation: Conversation, user_text: str) -> str:
         role_name = conversation.active_role or "igris"
-        role = self.role_registry.get(role_name)
+        role = self.select_role(role_name)
         trace_flow(
             "engine.role_cycle.start",
             conversation_id=conversation.id,
@@ -208,17 +237,7 @@ class ConversationEngine:
                 )
                 return "ERROR: conversation state lost."
 
-            specialist = self.role_registry.get(target_role)
-            spec_context = RoleContext(
-                db=self.db,
-                provider_router=self.provider_router,
-                conversation_manager=self.conversation_manager,
-                conversation=refreshed,
-                project_manager=self.project_manager,
-                scheduler=self.scheduler,
-                intent_extractor=self.intent_extractor,
-            )
-            specialist_output = await specialist.handle_message(spec_context, user_text)
+            specialist_output = await self.execute_specialist(refreshed, target_role, user_text)
             trace_flow(
                 "engine.specialist.output",
                 conversation_id=conversation.id,
@@ -248,6 +267,25 @@ class ConversationEngine:
             return text or "Task complete. Igris resumed control."
 
         return "Igris could not interpret the role response."
+
+    @trace(role="engine", step_name="execute_specialist")
+    async def execute_specialist(
+        self,
+        conversation: Conversation,
+        target_role: str,
+        user_text: str,
+    ) -> RoleOutput:
+        specialist = self.select_role(target_role)
+        spec_context = RoleContext(
+            db=self.db,
+            provider_router=self.provider_router,
+            conversation_manager=self.conversation_manager,
+            conversation=conversation,
+            project_manager=self.project_manager,
+            scheduler=self.scheduler,
+            intent_extractor=self.intent_extractor,
+        )
+        return await specialist.handle_message(spec_context, user_text)
 
     async def _apply_specialist_output(self, conversation: Conversation, output: RoleOutput) -> str:
         trace_flow(

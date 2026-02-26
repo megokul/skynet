@@ -6,6 +6,7 @@ import aiohttp
 from core.prompt_library import commander_prompt_block, load_prompt
 from core.roles.base import Role, RoleContext, RoleOutput
 from core.trace import trace_flow
+from core.tracing import trace
 
 logger = logging.getLogger("skynet.core.roles.weather")
 
@@ -15,6 +16,7 @@ class WeatherSpecialistRole(Role):
     _guidance = commander_prompt_block()
     _location_extract_instruction = load_prompt("core/roles/weather_location_extract_instruction.md")
 
+    @trace(role="weather_specialist", step_name="weather_specialist_handle")
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
         trace_flow(
             "role.weather.handle.start",
@@ -47,6 +49,11 @@ class WeatherSpecialistRole(Role):
                 response=f"I could not fetch weather for '{location}' right now: {exc}",
             )
 
+    @trace(
+        role="weather_specialist",
+        prompt="prompts/core/roles/weather_location_extract_instruction.md",
+        step_name="extract_weather_location",
+    )
     async def _extract_location(self, context: RoleContext, user_text: str) -> str:
         extractor = context.intent_extractor
         if extractor is None:
@@ -63,6 +70,7 @@ class WeatherSpecialistRole(Role):
             return location
         return (user_text or "").strip()
 
+    @trace(role="weather_specialist", step_name="fetch_weather")
     async def _fetch_weather(self, location: str) -> str:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
             async with session.get(

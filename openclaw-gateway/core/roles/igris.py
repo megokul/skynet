@@ -6,6 +6,7 @@ from typing import Any
 from core.prompt_library import commander_prompt_block, render_prompt
 from core.roles.base import Role, RoleContext, RoleOutput
 from core.trace import trace_flow
+from core.tracing import trace
 
 logger = logging.getLogger("skynet.core.roles.igris")
 
@@ -41,6 +42,7 @@ class IgrisRole(Role):
     name = "igris"
     _guidance = commander_prompt_block()
 
+    @trace(role="igris", step_name="igris_handle_message")
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
         trace_flow(
             "role.igris.handle.start",
@@ -58,7 +60,7 @@ class IgrisRole(Role):
             active_project_id=context.conversation.active_project_id,
         )
 
-        target = self._pick_target_role(intent.intent, intent.recommended_role, intent.confidence)
+        target = self.select_specialist(intent.intent, intent.recommended_role, intent.confidence)
         trace_flow(
             "role.igris.intent",
             conversation_id=context.conversation.id,
@@ -82,7 +84,8 @@ class IgrisRole(Role):
         )
         return RoleOutput(command="respond", response=response)
 
-    def _pick_target_role(self, intent_name: str, recommended_role: str | None, confidence: float) -> str | None:
+    @trace(role="igris", step_name="select_specialist")
+    def select_specialist(self, intent_name: str, recommended_role: str | None, confidence: float) -> str | None:
         normalized_recommended = (recommended_role or "").strip().lower()
         if normalized_recommended in _SPECIALIST_ROLES and confidence >= 0.45:
             return normalized_recommended
@@ -92,6 +95,11 @@ class IgrisRole(Role):
             return mapped
         return None
 
+    @trace(
+        role="igris",
+        prompt="prompts/core/roles/igris_direct_user.md",
+        step_name="compose_direct_response",
+    )
     async def _compose_direct_response(self, context: RoleContext, intent_name: str, user_text: str) -> str:
         prompt = render_prompt(
             "core/roles/igris_direct_user.md",

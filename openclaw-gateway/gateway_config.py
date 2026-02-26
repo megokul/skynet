@@ -30,6 +30,15 @@ def _int_env(*names: str, default: int) -> int:
     return default
 
 
+def _bool_env(*names: str, default: bool) -> bool:
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            continue
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return default
+
+
 # ---------------------------------------------------------------------------
 # Network
 # ---------------------------------------------------------------------------
@@ -105,4 +114,38 @@ LOG_BACKUP_COUNT: int = _int_env(
     "SKYNET_LOG_BACKUP_COUNT",
     "OPENCLAW_LOG_BACKUP_COUNT",
     default=10,
+)
+
+LOG_ENABLE_LOCAL_FILES: bool = _bool_env(
+    "SKYNET_LOG_ENABLE_LOCAL_FILES",
+    "OPENCLAW_LOG_ENABLE_LOCAL_FILES",
+    default=True,
+)
+
+LOG_ENABLE_SSH_MIRROR: bool = _bool_env(
+    "SKYNET_LOG_ENABLE_SSH_MIRROR",
+    "OPENCLAW_LOG_ENABLE_SSH_MIRROR",
+    default=False,
+)
+
+LOG_SSH_HOST: str = _str_env("OPENCLAW_SSH_HOST", default="127.0.0.1")
+LOG_SSH_PORT: int = _int_env("OPENCLAW_SSH_PORT", default=2222)
+LOG_SSH_USER: str = _str_env("OPENCLAW_SSH_USER", default="")
+LOG_SSH_KEY_PATH: str = _str_env("OPENCLAW_SSH_KEY_PATH", default="")
+LOG_SSH_PASSWORD: str = os.environ.get("OPENCLAW_SSH_PASSWORD", "")
+LOG_SSH_STRICT_HOST_KEY: bool = _bool_env("OPENCLAW_SSH_STRICT_HOST_KEY", default=False)
+LOG_SSH_CONNECT_TIMEOUT: int = _int_env("OPENCLAW_SSH_CONNECT_TIMEOUT", default=4)
+LOG_SSH_COMMAND_TIMEOUT: int = _int_env("OPENCLAW_SSH_COMMAND_TIMEOUT", default=180)
+
+LOG_S3_ENABLED: bool = _bool_env(
+    "SKYNET_LOG_S3_ENABLED",
+    "OPENCLAW_LOG_S3_ENABLED",
+    default=False,
+)
+LOG_S3_BUCKET: str = _str_env("SKYNET_S3_BUCKET", "OPENCLAW_S3_BUCKET", default="")
+LOG_S3_REGION: str = _str_env("AWS_REGION", "AWS_DEFAULT_REGION", default="us-east-1")
+LOG_S3_PREFIX: str = _str_env(
+    "SKYNET_LOG_S3_PREFIX",
+    "OPENCLAW_LOG_S3_PREFIX",
+    default="openclaw/logs",
 )

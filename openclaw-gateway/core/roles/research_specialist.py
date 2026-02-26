@@ -5,6 +5,7 @@ import logging
 from core.prompt_library import engineering_prompt_block, render_prompt
 from core.roles.base import Role, RoleContext, RoleOutput
 from core.trace import trace_flow
+from core.tracing import trace
 
 logger = logging.getLogger("skynet.core.roles.research")
 
@@ -13,6 +14,11 @@ class ResearchSpecialistRole(Role):
     name = "research_specialist"
     _guidance = engineering_prompt_block()
 
+    @trace(
+        role="research_specialist",
+        prompt="prompts/core/roles/research_user.md",
+        step_name="research_specialist_handle",
+    )
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
         trace_flow(
             "role.research.handle.start",

@@ -7,6 +7,7 @@ from typing import Any
 
 from core.prompt_library import commander_prompt_block, render_prompt
 from core.trace import trace_flow
+from core.tracing import trace
 
 logger = logging.getLogger("skynet.core.intent_extractor")
 
@@ -27,6 +28,11 @@ class IntentExtractor:
         self._allowed_providers = allowed_providers
         self._commander_guidance = commander_prompt_block()
 
+    @trace(
+        role="igris",
+        prompt="prompts/core/intent_extract_user.md",
+        step_name="classify_intent",
+    )
     async def extract(self, user_text: str, *, active_role: str, active_project_id: str | None) -> ExtractedIntent:
         prompt = render_prompt(
             "core/intent_extract_user.md",
@@ -82,6 +88,11 @@ class IntentExtractor:
             )
             return ExtractedIntent(intent="exploratory", confidence=0.0, entities={}, recommended_role="igris")
 
+    @trace(
+        role="igris",
+        prompt="prompts/core/payload_extract_user.md",
+        step_name="extract_payload",
+    )
     async def extract_payload(
         self,
         user_text: str,

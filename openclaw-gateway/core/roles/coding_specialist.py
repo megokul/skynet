@@ -4,6 +4,7 @@ import logging
 
 from core.roles.base import Role, RoleContext, RoleOutput
 from core.trace import trace_flow
+from core.tracing import trace
 from db import store
 
 logger = logging.getLogger("skynet.core.roles.coding")
@@ -11,6 +12,7 @@ logger = logging.getLogger("skynet.core.roles.coding")
 class CodingSpecialistRole(Role):
     name = "coding_specialist"
 
+    @trace(role="coding_specialist", step_name="coding_specialist_handle")
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
         project_id = context.conversation.active_project_id
         trace_flow(

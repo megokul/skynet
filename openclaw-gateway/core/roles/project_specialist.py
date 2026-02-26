@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
+import time
 from typing import Any
 
 from core.roles.base import Role, RoleContext, RoleOutput
 from core.trace import trace_flow
+from core.tracing import trace, trace_step
 from db import store
 
 logger = logging.getLogger("skynet.core.roles.project")
@@ -40,6 +42,7 @@ def _slugify_name(name: str) -> str:
 class ProjectSpecialistRole(Role):
     name = "project_specialist"
 
+    @trace(role="project_specialist", step_name="project_specialist_handle")
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
         conversation = context.conversation
         pending = conversation.pending_question or {}
@@ -80,6 +83,7 @@ class ProjectSpecialistRole(Role):
             response="What should I name the new project?",
         )
 
+    @trace(role="project_specialist", step_name="capture_project_name")
     async def _handle_project_name(self, context: RoleContext, user_text: str) -> RoleOutput:
         conversation = context.conversation
         proposed = (user_text or "").strip().strip(".!,?;:")
@@ -142,6 +146,7 @@ class ProjectSpecialistRole(Role):
             result={"project_id": project["id"]},
         )
 
+    @trace(role="project_specialist", step_name="capture_project_requirements")
     async def _handle_requirements(self, context: RoleContext, user_text: str) -> RoleOutput:
         conversation = context.conversation
         project_id = conversation.active_project_id
@@ -178,12 +183,38 @@ class ProjectSpecialistRole(Role):
         )
 
     async def _append_idea_to_active(self, context: RoleContext, user_text: str) -> RoleOutput:
+        started = time.perf_counter()
         project_id = context.conversation.active_project_id
         idea_text = (user_text or "").strip()
         if not idea_text:
             return RoleOutput(command="continue", response="What idea should I add to the active project?")
 
+        before_count = 0
+        try:
+            before_count = len(await store.get_ideas(context.db, project_id))
+        except Exception:
+            before_count = 0
         await store.add_idea(context.db, project_id, idea_text)
+        after_count = before_count + 1
+        try:
+            after_count = len(await store.get_ideas(context.db, project_id))
+        except Exception:
+            pass
+
+        trace_step(
+            function_name="append_project_idea",
+            file_name="project_specialist.py",
+            role="project_specialist",
+            prompt="prompts/project_specialist/append_idea.md",
+            parameters={
+                "project_id": project_id,
+                "idea_text": idea_text,
+            },
+            state_before={"project.idea_count": before_count},
+            state_after={"project.idea_count": after_count},
+            result={"success": True},
+            execution_time_ms=(time.perf_counter() - started) * 1000.0,
+        )
         trace_flow(
             "role.project.idea.appended",
             conversation_id=context.conversation.id,

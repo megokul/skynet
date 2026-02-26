@@ -1130,6 +1130,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             telegram_user_id=int(user.id),
             text=text,
             user_profile=profile,
+            entrypoint="handle_text()",
         )
         trace_flow(
             "telegram.handle_text.engine_result",

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import time
 from typing import Any
 
 from core.trace import trace_flow
+from core.tracing import trace_step
 from db import store
 
 
@@ -89,11 +91,23 @@ class ConversationManager:
         )
 
     async def set_active_role(self, conversation_id: str, role: str) -> None:
+        started = time.perf_counter()
+        before = await self.get_conversation(conversation_id)
         resolved = (role or "igris").strip() or "igris"
         await store.update_conversation_session(
             self.db,
             conversation_id=conversation_id,
             active_role=resolved,
+        )
+        trace_step(
+            function_name="set_active_role",
+            file_name="conversation_manager.py",
+            role="state",
+            parameters={"conversation_id": conversation_id, "role": resolved},
+            state_before={"active_role": before.active_role if before else None},
+            state_after={"active_role": resolved},
+            result={"success": True},
+            execution_time_ms=(time.perf_counter() - started) * 1000.0,
         )
         trace_flow(
             "conversation.role.set",
@@ -102,10 +116,22 @@ class ConversationManager:
         )
 
     async def set_active_project(self, conversation_id: str, project_id: str | None) -> None:
+        started = time.perf_counter()
+        before = await self.get_conversation(conversation_id)
         await store.update_conversation_session(
             self.db,
             conversation_id=conversation_id,
             active_project_id=project_id,
+        )
+        trace_step(
+            function_name="set_active_project",
+            file_name="conversation_manager.py",
+            role="state",
+            parameters={"conversation_id": conversation_id, "project_id": project_id},
+            state_before={"active_project_id": before.active_project_id if before else None},
+            state_after={"active_project_id": project_id},
+            result={"success": True},
+            execution_time_ms=(time.perf_counter() - started) * 1000.0,
         )
         trace_flow(
             "conversation.project.set",
@@ -175,12 +201,29 @@ class ConversationManager:
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> int:
+        started = time.perf_counter()
+        before_count = await self._count_messages(conversation_id)
         message_id = await store.add_session_message(
             self.db,
             conversation_id=conversation_id,
             role=role,
             content=content,
             metadata=metadata,
+        )
+        after_count = before_count + 1
+        trace_step(
+            function_name="add_message",
+            file_name="conversation_manager.py",
+            role="state",
+            parameters={
+                "conversation_id": conversation_id,
+                "role": role,
+                "content": content,
+            },
+            state_before={"conversation.message_count": before_count},
+            state_after={"conversation.message_count": after_count},
+            result={"message_id": message_id},
+            execution_time_ms=(time.perf_counter() - started) * 1000.0,
         )
         trace_flow(
             "conversation.message.add",
@@ -194,6 +237,19 @@ class ConversationManager:
 
     async def list_messages(self, conversation_id: str, limit: int = 100) -> list[dict[str, Any]]:
         return await store.list_session_messages(self.db, conversation_id=conversation_id, limit=int(limit))
+
+    async def _count_messages(self, conversation_id: str) -> int:
+        cursor = await self.db.execute(
+            "SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ?",
+            (conversation_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return 0
+        try:
+            return int(row["c"])
+        except Exception:
+            return int(row[0])
 
     def _to_conversation(self, row: dict[str, Any]) -> Conversation:
         return Conversation(

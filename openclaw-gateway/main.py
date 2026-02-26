@@ -48,6 +48,20 @@ def _configure_logging() -> None:
         mirror_log_dir=cfg.TRACE_MIRROR_LOG_DIR,
         max_bytes=cfg.LOG_MAX_BYTES,
         backup_count=cfg.LOG_BACKUP_COUNT,
+        enable_local_file_targets=cfg.LOG_ENABLE_LOCAL_FILES,
+        enable_ssh_mirror=cfg.LOG_ENABLE_SSH_MIRROR,
+        ssh_host=cfg.LOG_SSH_HOST,
+        ssh_port=cfg.LOG_SSH_PORT,
+        ssh_user=cfg.LOG_SSH_USER,
+        ssh_key_path=cfg.LOG_SSH_KEY_PATH,
+        ssh_password=cfg.LOG_SSH_PASSWORD,
+        ssh_strict_host_key=cfg.LOG_SSH_STRICT_HOST_KEY,
+        ssh_connect_timeout=cfg.LOG_SSH_CONNECT_TIMEOUT,
+        ssh_command_timeout=cfg.LOG_SSH_COMMAND_TIMEOUT,
+        enable_s3_logs=cfg.LOG_S3_ENABLED,
+        s3_bucket=cfg.LOG_S3_BUCKET,
+        s3_prefix=cfg.LOG_S3_PREFIX,
+        s3_region=cfg.LOG_S3_REGION,
     )
 
 

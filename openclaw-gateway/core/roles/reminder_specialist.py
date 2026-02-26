@@ -6,6 +6,7 @@ import logging
 from core.prompt_library import load_prompt
 from core.roles.base import Role, RoleContext, RoleOutput
 from core.trace import trace_flow
+from core.tracing import trace
 from db import store
 
 logger = logging.getLogger("skynet.core.roles.reminder")
@@ -14,6 +15,7 @@ class ReminderSpecialistRole(Role):
     name = "reminder_specialist"
     _payload_extract_instruction = load_prompt("core/roles/reminder_payload_extract_instruction.md")
 
+    @trace(role="reminder_specialist", step_name="reminder_specialist_handle")
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
         conversation = context.conversation
         pending = conversation.pending_question or {}
@@ -96,6 +98,11 @@ class ReminderSpecialistRole(Role):
             result={"reminder_id": reminder["id"]},
         )
 
+    @trace(
+        role="reminder_specialist",
+        prompt="prompts/core/roles/reminder_payload_extract_instruction.md",
+        step_name="extract_reminder_payload",
+    )
     async def _extract_payload(self, context: RoleContext, user_text: str) -> dict:
         extractor = context.intent_extractor
         if extractor is None:
