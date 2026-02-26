@@ -42,11 +42,13 @@ def _emit_mirror(text: str) -> None:
     logger = logging.getLogger("skynet.trace.mirror")
     if not logger.handlers:
         return
-    payload = text.rstrip("\n")
-    if not payload:
+    payload = text.replace("\r\n", "\n")
+    if not payload.strip():
         return
     try:
-        logger.info("%s", payload)
+        # Emit line-by-line to keep SSH mirror payloads small and reliable.
+        for line in payload.split("\n"):
+            logger.info("%s", line)
     except Exception:
         # Mirror sinks must never break trace persistence.
         pass
