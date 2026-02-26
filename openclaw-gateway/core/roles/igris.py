@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from core.prompt_library import commander_prompt_block, render_prompt
 from core.roles.base import Role, RoleContext, RoleOutput
+from core.trace import trace_flow
+
+logger = logging.getLogger("skynet.core.roles.igris")
 
 
 _SPECIALIST_ROLES = {
@@ -38,6 +42,12 @@ class IgrisRole(Role):
     _guidance = commander_prompt_block()
 
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
+        trace_flow(
+            "role.igris.handle.start",
+            conversation_id=context.conversation.id,
+            active_project_id=context.conversation.active_project_id or "",
+            text=user_text,
+        )
         extractor = context.intent_extractor
         if extractor is None:
             return RoleOutput(command="respond", response="Igris is unavailable right now.")
@@ -49,6 +59,14 @@ class IgrisRole(Role):
         )
 
         target = self._pick_target_role(intent.intent, intent.recommended_role, intent.confidence)
+        trace_flow(
+            "role.igris.intent",
+            conversation_id=context.conversation.id,
+            intent=intent.intent,
+            confidence=intent.confidence,
+            recommended_role=intent.recommended_role or "",
+            selected_target=target or "",
+        )
         if target:
             return RoleOutput(command="delegate", target_role=target)
 
@@ -57,6 +75,11 @@ class IgrisRole(Role):
             return RoleOutput(command="respond", response="Igris online. How should we proceed?")
 
         response = await self._compose_direct_response(context, intent.intent, user_text)
+        trace_flow(
+            "role.igris.respond",
+            conversation_id=context.conversation.id,
+            response=response,
+        )
         return RoleOutput(command="respond", response=response)
 
     def _pick_target_role(self, intent_name: str, recommended_role: str | None, confidence: float) -> str | None:
@@ -93,5 +116,5 @@ class IgrisRole(Role):
             if text:
                 return text
         except Exception:
-            pass
+            logger.exception("Igris direct response generation failed")
         return "Igris acknowledged. Please provide the next concrete instruction."

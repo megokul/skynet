@@ -3,8 +3,13 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass, field
+import logging
 import time
 from typing import Any, Awaitable, Callable
+
+from core.trace import trace_flow
+
+logger = logging.getLogger("skynet.core.inbox")
 
 
 @dataclass(slots=True)
@@ -48,10 +53,22 @@ class InboxManager:
             future=future,
             metadata=metadata or {},
         )
+        trace_flow(
+            "inbox.append.received",
+            conversation_id=conversation_id,
+            text=message,
+            metadata=metadata or {},
+        )
         state = await self._ensure(conversation_id)
         async with state.lock:
             state.queue.append(item)
             state.event.set()
+            queue_size = len(state.queue)
+        trace_flow(
+            "inbox.append.queued",
+            conversation_id=conversation_id,
+            queue_size=queue_size,
+        )
         return await future
 
     async def process(self, conversation_id: str) -> None:
@@ -71,6 +88,7 @@ class InboxManager:
             if state is None:
                 state = _QueueState()
                 self._state[conversation_id] = state
+                trace_flow("inbox.state.created", conversation_id=conversation_id)
 
             worker = self._workers.get(conversation_id)
             if worker is None or worker.done():
@@ -78,6 +96,7 @@ class InboxManager:
                     self._drain(conversation_id, state),
                     name=f"inbox-{conversation_id}",
                 )
+                trace_flow("inbox.worker.started", conversation_id=conversation_id)
             return state
 
     async def _drain(self, conversation_id: str, state: _QueueState) -> None:
@@ -97,9 +116,21 @@ class InboxManager:
                     batch = await self._take_batch(state)
                     if not batch:
                         break
+                    trace_flow(
+                        "inbox.batch.processing",
+                        conversation_id=conversation_id,
+                        batch_size=len(batch),
+                        merged_text="\\n".join(item.text for item in batch),
+                    )
                     try:
                         response = await self._processor(conversation_id, batch)
                     except Exception as exc:
+                        logger.exception("Inbox processing failed conversation=%s", conversation_id)
+                        trace_flow(
+                            "inbox.batch.error",
+                            conversation_id=conversation_id,
+                            error=str(exc),
+                        )
                         response = f"ERROR: inbox processing failed: {exc}"
 
                     self._resolve(batch[0].future, response)
@@ -114,6 +145,7 @@ class InboxManager:
                     async with state.lock:
                         if not state.queue:
                             self._state.pop(conversation_id, None)
+                            trace_flow("inbox.state.removed", conversation_id=conversation_id)
 
     async def _take_batch(self, state: _QueueState) -> list[InboxMessage]:
         async with state.lock:
@@ -142,6 +174,11 @@ class InboxManager:
                     batch.append(state.queue.popleft())
                 if not state.queue:
                     state.event.clear()
+        trace_flow(
+            "inbox.batch.taken",
+            batch_size=len(batch),
+            first_message=first.text,
+        )
         return batch
 
     def _can_coalesce(self, previous: InboxMessage, current: InboxMessage) -> bool:

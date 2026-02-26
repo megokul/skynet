@@ -82,3 +82,27 @@ WS_PING_TIMEOUT: int = 10
 LOG_LEVEL: str = os.environ.get(
     "SKYNET_LOG_LEVEL", os.environ.get("OPENCLAW_LOG_LEVEL", "INFO"),
 )
+
+LOG_DIR: str = _str_env(
+    "SKYNET_LOG_DIR",
+    "OPENCLAW_LOG_DIR",
+    default=os.path.join(os.path.dirname(__file__), "logs"),
+)
+
+TRACE_MIRROR_LOG_DIR: str = _str_env(
+    "SKYNET_TRACE_MIRROR_LOG_DIR",
+    "OPENCLAW_TRACE_MIRROR_LOG_DIR",
+    default=r"E:\SKYNET-SANDBOX\logs",
+)
+
+LOG_MAX_BYTES: int = _int_env(
+    "SKYNET_LOG_MAX_BYTES",
+    "OPENCLAW_LOG_MAX_BYTES",
+    default=25 * 1024 * 1024,
+)
+
+LOG_BACKUP_COUNT: int = _int_env(
+    "SKYNET_LOG_BACKUP_COUNT",
+    "OPENCLAW_LOG_BACKUP_COUNT",
+    default=10,
+)

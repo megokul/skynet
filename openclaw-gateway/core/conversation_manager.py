@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from core.trace import trace_flow
 from db import store
 
 
@@ -43,6 +44,12 @@ class ConversationManager:
             user_id=int(user_id),
             conversation_id=row["conversation_id"],
         )
+        trace_flow(
+            "conversation.create",
+            user_id=user_id,
+            conversation_id=row["conversation_id"],
+            title=safe_title,
+        )
         return self._to_conversation(row)
 
     async def list_conversations(self, user_id: int, limit: int = 50) -> list[Conversation]:
@@ -75,12 +82,23 @@ class ConversationManager:
             user_id=int(user_id),
             conversation_id=conversation_id,
         )
+        trace_flow(
+            "conversation.active.set",
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
 
     async def set_active_role(self, conversation_id: str, role: str) -> None:
+        resolved = (role or "igris").strip() or "igris"
         await store.update_conversation_session(
             self.db,
             conversation_id=conversation_id,
-            active_role=(role or "igris").strip() or "igris",
+            active_role=resolved,
+        )
+        trace_flow(
+            "conversation.role.set",
+            conversation_id=conversation_id,
+            active_role=resolved,
         )
 
     async def set_active_project(self, conversation_id: str, project_id: str | None) -> None:
@@ -88,6 +106,11 @@ class ConversationManager:
             self.db,
             conversation_id=conversation_id,
             active_project_id=project_id,
+        )
+        trace_flow(
+            "conversation.project.set",
+            conversation_id=conversation_id,
+            active_project_id=project_id or "",
         )
 
     async def set_pending_question(self, conversation_id: str, question: dict[str, Any]) -> None:
@@ -100,12 +123,21 @@ class ConversationManager:
             conversation_id=conversation_id,
             pending_question=payload,
         )
+        trace_flow(
+            "conversation.pending_question.set",
+            conversation_id=conversation_id,
+            pending_question=payload,
+        )
 
     async def clear_pending_question(self, conversation_id: str) -> None:
         await store.update_conversation_session(
             self.db,
             conversation_id=conversation_id,
             pending_question={},
+        )
+        trace_flow(
+            "conversation.pending_question.clear",
+            conversation_id=conversation_id,
         )
 
     async def set_pending_action(self, conversation_id: str, action: dict[str, Any]) -> None:
@@ -118,12 +150,21 @@ class ConversationManager:
             conversation_id=conversation_id,
             pending_action=payload,
         )
+        trace_flow(
+            "conversation.pending_action.set",
+            conversation_id=conversation_id,
+            pending_action=payload,
+        )
 
     async def clear_pending_action(self, conversation_id: str) -> None:
         await store.update_conversation_session(
             self.db,
             conversation_id=conversation_id,
             pending_action={},
+        )
+        trace_flow(
+            "conversation.pending_action.clear",
+            conversation_id=conversation_id,
         )
 
     async def add_message(
@@ -134,13 +175,22 @@ class ConversationManager:
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> int:
-        return await store.add_session_message(
+        message_id = await store.add_session_message(
             self.db,
             conversation_id=conversation_id,
             role=role,
             content=content,
             metadata=metadata,
         )
+        trace_flow(
+            "conversation.message.add",
+            conversation_id=conversation_id,
+            message_id=message_id,
+            role=role,
+            content=content,
+            metadata=metadata or {},
+        )
+        return message_id
 
     async def list_messages(self, conversation_id: str, limit: int = 100) -> list[dict[str, Any]]:
         return await store.list_session_messages(self.db, conversation_id=conversation_id, limit=int(limit))

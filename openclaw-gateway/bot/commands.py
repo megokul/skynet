@@ -22,6 +22,7 @@ from telegram.ext import (
 )
 
 import bot_config as cfg
+from core.trace import trace_flow
 from . import state
 from .helpers import (
     _action_result_ok,
@@ -1060,6 +1061,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = update.message.text.strip()
     if not text:
         return
+    trace_flow(
+        "telegram.handle_text.received",
+        telegram_user_id=getattr(update.effective_user, "id", ""),
+        text=text,
+    )
     lowered = text.lower()
 
     if lowered in {"switch conversation", "switch conv", "continue conversation"}:
@@ -1068,6 +1074,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await update.message.reply_text(
                 "Select a conversation to continue:",
                 reply_markup=markup,
+            )
+            trace_flow(
+                "telegram.handle_text.switch_conversation_prompted",
+                telegram_user_id=getattr(update.effective_user, "id", ""),
             )
         except Exception as exc:
             await update.message.reply_text(f"Error: {exc}")
@@ -1079,6 +1089,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await update.message.reply_text(
                 f"Started new conversation: <b>{html.escape(created.get('title') or 'Conversation')}</b>",
                 parse_mode="HTML",
+            )
+            trace_flow(
+                "telegram.handle_text.new_conversation_created",
+                telegram_user_id=getattr(update.effective_user, "id", ""),
+                conversation_id=created.get("conversation_id", ""),
+                title=created.get("title", ""),
             )
         except Exception as exc:
             await update.message.reply_text(f"Error: {exc}")
@@ -1115,6 +1131,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             text=text,
             user_profile=profile,
         )
+        trace_flow(
+            "telegram.handle_text.engine_result",
+            telegram_user_id=int(user.id),
+            conversation_id=result.conversation_id,
+            response=result.text or "",
+        )
         if result.text:
             await update.message.reply_text(result.text)
         return
@@ -1122,6 +1144,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Backward compatibility fallback.
     if state._orchestrator:
         reply = await state._orchestrator.handle(update, text)
+        trace_flow(
+            "telegram.handle_text.orchestrator_result",
+            telegram_user_id=getattr(update.effective_user, "id", ""),
+            response=reply or "",
+        )
         if reply:
             await update.message.reply_text(reply)
         return

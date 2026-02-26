@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from typing import Any
 
 from core.roles.base import Role, RoleContext, RoleOutput
+from core.trace import trace_flow
 from db import store
 
+logger = logging.getLogger("skynet.core.roles.project")
 
 _INVALID_NAMES = {
     "today",
@@ -41,6 +44,13 @@ class ProjectSpecialistRole(Role):
         conversation = context.conversation
         pending = conversation.pending_question or {}
         pending_type = str(pending.get("type") or "")
+        trace_flow(
+            "role.project.handle.start",
+            conversation_id=conversation.id,
+            active_project_id=conversation.active_project_id or "",
+            pending_type=pending_type,
+            text=user_text,
+        )
 
         if pending_type == "need_project_name":
             return await self._handle_project_name(context, user_text)
@@ -49,6 +59,11 @@ class ProjectSpecialistRole(Role):
             return await self._handle_requirements(context, user_text)
 
         if conversation.active_project_id:
+            trace_flow(
+                "role.project.branch.append_idea_active",
+                conversation_id=conversation.id,
+                active_project_id=conversation.active_project_id,
+            )
             return await self._append_idea_to_active(context, user_text)
 
         await context.conversation_manager.set_pending_question(
@@ -72,6 +87,12 @@ class ProjectSpecialistRole(Role):
             return RoleOutput(command="continue", response="Please share a project name.")
 
         normalized = _slugify_name(proposed)
+        trace_flow(
+            "role.project.name.proposed",
+            conversation_id=conversation.id,
+            proposed=proposed,
+            normalized=normalized,
+        )
         if not normalized or normalized in _INVALID_NAMES:
             return RoleOutput(
                 command="continue",
@@ -81,8 +102,19 @@ class ProjectSpecialistRole(Role):
         project = await store.get_project_by_name(context.db, normalized)
         if project is None:
             if context.project_manager is not None and hasattr(context.project_manager, "create_project"):
+                trace_flow(
+                    "role.project.create_project.manager",
+                    conversation_id=conversation.id,
+                    project_name=proposed,
+                )
                 project = await context.project_manager.create_project(proposed)
             else:
+                trace_flow(
+                    "role.project.create_project.store",
+                    conversation_id=conversation.id,
+                    project_name=proposed,
+                    normalized=normalized,
+                )
                 project = await store.create_project(
                     context.db,
                     name=normalized,
@@ -132,6 +164,12 @@ class ProjectSpecialistRole(Role):
         await store.add_idea(context.db, project_id, requirements)
         await store.update_project(context.db, project_id, description=requirements)
         await context.conversation_manager.clear_pending_question(conversation.id)
+        trace_flow(
+            "role.project.requirements.captured",
+            conversation_id=conversation.id,
+            project_id=project_id,
+            requirements=requirements,
+        )
 
         return RoleOutput(
             command="complete",
@@ -146,6 +184,12 @@ class ProjectSpecialistRole(Role):
             return RoleOutput(command="continue", response="What idea should I add to the active project?")
 
         await store.add_idea(context.db, project_id, idea_text)
+        trace_flow(
+            "role.project.idea.appended",
+            conversation_id=context.conversation.id,
+            project_id=project_id,
+            idea_text=idea_text,
+        )
         project = await store.get_project(context.db, project_id)
         name = (project or {}).get("display_name") or (project or {}).get("name") or "the active project"
         return RoleOutput(

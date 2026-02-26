@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from core.conversation_manager import Conversation, ConversationManager
+from core.trace import trace_flow
 
 
 WRITE_INTENTS = {
@@ -60,17 +61,38 @@ class Router:
             existing = await self._conversation_manager.get_conversation(requested_conversation_id)
             if existing and existing.user_id == int(user_id):
                 await self._conversation_manager.set_active_conversation(int(user_id), existing.id)
+                trace_flow(
+                    "router.conversation_scope.requested",
+                    user_id=user_id,
+                    requested_conversation_id=requested_conversation_id,
+                    resolved_conversation_id=existing.id,
+                )
                 return existing
-        return await self._conversation_manager.get_or_create_active_conversation(int(user_id))
+        resolved = await self._conversation_manager.get_or_create_active_conversation(int(user_id))
+        trace_flow(
+            "router.conversation_scope.active",
+            user_id=user_id,
+            resolved_conversation_id=resolved.id,
+            requested_conversation_id=requested_conversation_id or "",
+        )
+        return resolved
 
     def resolve_project_scope(self, *, conversation: Conversation, user_text: str) -> ScopeResolution:
         lowered = (user_text or "").strip().lower()
         switch_requested = any(phrase in lowered for phrase in _SWITCH_PROJECT_PHRASES)
-        return ScopeResolution(
+        resolution = ScopeResolution(
             conversation_id=conversation.id,
             active_project_id=conversation.active_project_id,
             switch_requested=switch_requested,
         )
+        trace_flow(
+            "router.project_scope.resolved",
+            conversation_id=conversation.id,
+            active_project_id=conversation.active_project_id or "",
+            switch_requested=switch_requested,
+            user_text=user_text,
+        )
+        return resolution
 
     def route_intent(
         self,
@@ -84,12 +106,52 @@ class Router:
 
         if intent in WRITE_INTENTS:
             if conversation.active_project_id and payload:
-                return RoutingDecision(intent=intent, execute_now=True, requires_question=False, question_type=None)
+                decision = RoutingDecision(intent=intent, execute_now=True, requires_question=False, question_type=None)
+                trace_flow(
+                    "router.intent.route",
+                    conversation_id=conversation.id,
+                    intent=intent,
+                    execute_now=decision.execute_now,
+                    requires_question=decision.requires_question,
+                    question_type=decision.question_type or "",
+                    has_payload=bool(payload),
+                )
+                return decision
             if conversation.active_project_id:
-                return RoutingDecision(intent=intent, execute_now=False, requires_question=True, question_type="need_payload")
-            return RoutingDecision(intent=intent, execute_now=False, requires_question=True, question_type="choose_project")
+                decision = RoutingDecision(intent=intent, execute_now=False, requires_question=True, question_type="need_payload")
+                trace_flow(
+                    "router.intent.route",
+                    conversation_id=conversation.id,
+                    intent=intent,
+                    execute_now=decision.execute_now,
+                    requires_question=decision.requires_question,
+                    question_type=decision.question_type or "",
+                    has_payload=bool(payload),
+                )
+                return decision
+            decision = RoutingDecision(intent=intent, execute_now=False, requires_question=True, question_type="choose_project")
+            trace_flow(
+                "router.intent.route",
+                conversation_id=conversation.id,
+                intent=intent,
+                execute_now=decision.execute_now,
+                requires_question=decision.requires_question,
+                question_type=decision.question_type or "",
+                has_payload=bool(payload),
+            )
+            return decision
 
-        return RoutingDecision(intent=intent, execute_now=False, requires_question=False, question_type=None)
+        decision = RoutingDecision(intent=intent, execute_now=False, requires_question=False, question_type=None)
+        trace_flow(
+            "router.intent.route",
+            conversation_id=conversation.id,
+            intent=intent,
+            execute_now=decision.execute_now,
+            requires_question=decision.requires_question,
+            question_type=decision.question_type or "",
+            has_payload=bool(payload),
+        )
+        return decision
 
     async def execute_write_intent(self, *, intent: str, payload: dict[str, Any], context: Any) -> str:
         if not self._execute_write_intent:

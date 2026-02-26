@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import logging
 from typing import Any
 
 from core.prompt_library import commander_prompt_block, render_prompt
+from core.trace import trace_flow
+
+logger = logging.getLogger("skynet.core.intent_extractor")
 
 
 @dataclass(slots=True)
@@ -35,6 +39,12 @@ class IntentExtractor:
             commander_guidance=self._commander_guidance,
         ).strip()
         try:
+            trace_flow(
+                "intent_extract.request",
+                active_role=active_role,
+                active_project_id=active_project_id or "",
+                user_text=user_text[:300],
+            )
             response = await self._provider_router.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
@@ -49,13 +59,27 @@ class IntentExtractor:
             entities = data.get("entities") if isinstance(data.get("entities"), dict) else {}
             recommended = data.get("recommended_role")
             recommended_role = str(recommended).strip() if recommended else None
+            trace_flow(
+                "intent_extract.response",
+                intent=intent,
+                confidence=confidence,
+                recommended_role=recommended_role or "",
+                entities=entities,
+            )
             return ExtractedIntent(
                 intent=intent,
                 confidence=max(0.0, min(confidence, 1.0)),
                 entities=entities,
                 recommended_role=recommended_role,
             )
-        except Exception:
+        except Exception as exc:
+            logger.exception("Intent extraction failed")
+            trace_flow(
+                "intent_extract.error",
+                error=str(exc),
+                active_role=active_role,
+                active_project_id=active_project_id or "",
+            )
             return ExtractedIntent(intent="exploratory", confidence=0.0, entities={}, recommended_role="igris")
 
     async def extract_payload(
@@ -76,6 +100,12 @@ class IntentExtractor:
             commander_guidance=self._commander_guidance,
         ).strip()
         try:
+            trace_flow(
+                "payload_extract.request",
+                instruction=instruction,
+                schema=schema,
+                user_text=user_text[:300],
+            )
             response = await self._provider_router.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
@@ -85,8 +115,19 @@ class IntentExtractor:
                 allowed_providers=self._allowed_providers,
             )
             data = self._load_json(response.text or "")
+            trace_flow(
+                "payload_extract.response",
+                keys=sorted(data.keys()) if isinstance(data, dict) else [],
+                payload=data if isinstance(data, dict) else {},
+            )
             return data if isinstance(data, dict) else {}
-        except Exception:
+        except Exception as exc:
+            logger.exception("Payload extraction failed")
+            trace_flow(
+                "payload_extract.error",
+                error=str(exc),
+                instruction=instruction,
+            )
             return {}
 
     @staticmethod

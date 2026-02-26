@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from core.prompt_library import engineering_prompt_block, render_prompt
 from core.roles.base import Role, RoleContext, RoleOutput
+from core.trace import trace_flow
+
+logger = logging.getLogger("skynet.core.roles.research")
 
 
 class ResearchSpecialistRole(Role):
@@ -9,6 +14,11 @@ class ResearchSpecialistRole(Role):
     _guidance = engineering_prompt_block()
 
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
+        trace_flow(
+            "role.research.handle.start",
+            conversation_id=context.conversation.id,
+            question=user_text,
+        )
         prompt = render_prompt(
             "core/roles/research_user.md",
             question=user_text[:1500],
@@ -28,5 +38,16 @@ class ResearchSpecialistRole(Role):
             )
             text = (response.text or "").strip() or "I need a bit more detail for research."
         except Exception as exc:
+            logger.exception("Research specialist failed")
+            trace_flow(
+                "role.research.handle.error",
+                conversation_id=context.conversation.id,
+                error=str(exc),
+            )
             text = f"Research failed right now: {exc}"
+        trace_flow(
+            "role.research.handle.complete",
+            conversation_id=context.conversation.id,
+            response=text,
+        )
         return RoleOutput(command="complete", response=text)

@@ -37,14 +37,17 @@ import gateway_config as cfg
 import bot_config
 from gateway import start_ws_server
 from api import start_http_api
+from logging_setup import configure_logging
+from core.trace import trace_flow
 
 
 def _configure_logging() -> None:
-    level = getattr(logging, cfg.LOG_LEVEL.upper(), logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S",
+    configure_logging(
+        level_name=cfg.LOG_LEVEL,
+        log_dir=cfg.LOG_DIR,
+        mirror_log_dir=cfg.TRACE_MIRROR_LOG_DIR,
+        max_bytes=cfg.LOG_MAX_BYTES,
+        backup_count=cfg.LOG_BACKUP_COUNT,
     )
 
 
@@ -76,6 +79,7 @@ def _print_banner() -> None:
 async def _main() -> None:
     _configure_logging()
     _print_banner()
+    trace_flow("main.start")
 
     logger = logging.getLogger("skynet")
 
@@ -102,6 +106,7 @@ async def _main() -> None:
 
     db = await init_db(bot_config.DB_PATH)
     logger.info("Database initialized at %s", bot_config.DB_PATH)
+    trace_flow("main.database.initialized", db_path=bot_config.DB_PATH)
 
     # ---- Build AI provider router ----
     from ai.provider_router import ProviderRouter, build_providers, parse_provider_priority
@@ -127,6 +132,7 @@ async def _main() -> None:
     )
     await router.restore_usage()
     logger.info("AI router ready with %d provider(s).", len(providers))
+    trace_flow("main.ai_router.ready", provider_count=len(providers))
 
     # ---- Web search ----
     from search.web_search import WebSearcher
@@ -138,6 +144,7 @@ async def _main() -> None:
 
     policy_engine = PolicyEngine()
     logger.info("Policy engine online.")
+    trace_flow("main.policy.ready")
 
     # ---- SKYNET Skill Registry ----
     from skills.registry import build_default_registry
@@ -152,6 +159,11 @@ async def _main() -> None:
         "Skill registry loaded (%d total; %d prompt-only).",
         skill_registry.skill_count,
         skill_registry.prompt_skill_count,
+    )
+    trace_flow(
+        "main.skills.ready",
+        skill_count=skill_registry.skill_count,
+        prompt_skill_count=skill_registry.prompt_skill_count,
     )
 
     # ---- SKYNET Memory Manager ----
@@ -196,6 +208,7 @@ async def _main() -> None:
     )
     alert_dispatcher = AlertDispatcher()
     logger.info("Sentinel monitor online.")
+    trace_flow("main.sentinel.ready")
 
     # ---- SKYNET Heartbeat Scheduler ----
     from heartbeat.scheduler import HeartbeatScheduler, HeartbeatTask
@@ -250,6 +263,7 @@ async def _main() -> None:
     )
 
     logger.info("Project orchestrator ready (max %d parallel).", scheduler.max_parallel)
+    trace_flow("main.project_orchestrator.ready", max_parallel=scheduler.max_parallel)
 
     # ---- Inject dependencies into Telegram bot ----
     telegram_bot.set_dependencies(
@@ -268,6 +282,7 @@ async def _main() -> None:
     # ---- Start Heartbeat Scheduler ----
     await heartbeat.start()
     logger.info("Heartbeat scheduler started (%d tasks).", heartbeat.task_count)
+    trace_flow("main.heartbeat.started", task_count=heartbeat.task_count)
 
     # ---- Start Telegram bot (non-blocking polling) ----
     bot_app = telegram_bot.build_app()
@@ -275,6 +290,7 @@ async def _main() -> None:
     await bot_app.start()
     await bot_app.updater.start_polling(drop_pending_updates=True)
     logger.info("Telegram bot polling started.")
+    trace_flow("main.telegram.started")
 
     logger.info("SKYNET initializing...")
     logger.info("Codename: CHATHAN active.")
@@ -290,6 +306,7 @@ async def _main() -> None:
     finally:
         # Graceful shutdown.
         logger.info("Shutting down…")
+        trace_flow("main.shutdown.start")
 
         # Stop Heartbeat scheduler.
         await heartbeat.stop()
@@ -314,6 +331,7 @@ async def _main() -> None:
         await db.close()
 
         logger.info("SKYNET shut down.")
+        trace_flow("main.shutdown.complete")
 
 
 if __name__ == "__main__":

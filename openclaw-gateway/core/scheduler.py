@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import logging
 from typing import Any
 import uuid
 
+from core.trace import trace_flow
 from db import store
 
+logger = logging.getLogger("skynet.core.scheduler")
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -44,8 +47,17 @@ class BackgroundScheduler:
         )
         self._jobs[job.id] = job
         await self._queue.put(job)
+        trace_flow(
+            "scheduler.job.enqueued",
+            job_id=job.id,
+            project_id=project_id,
+            requested_by=requested_by,
+            instructions=instructions,
+            queue_size=self._queue.qsize(),
+        )
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(self._run(), name="background-scheduler")
+            trace_flow("scheduler.worker.started", queue_size=self._queue.qsize())
         return job.id
 
     def get_job(self, job_id: str) -> CodingJob | None:
@@ -67,6 +79,12 @@ class BackgroundScheduler:
     async def _run(self) -> None:
         while True:
             job = await self._queue.get()
+            trace_flow(
+                "scheduler.job.dequeued",
+                job_id=job.id,
+                project_id=job.project_id,
+                queue_size=self._queue.qsize(),
+            )
             try:
                 await self._execute_job(job)
             finally:
@@ -75,12 +93,24 @@ class BackgroundScheduler:
     async def _execute_job(self, job: CodingJob) -> None:
         job.status = "running"
         job.started_at = _now_iso()
+        trace_flow(
+            "scheduler.job.execution.start",
+            job_id=job.id,
+            project_id=job.project_id,
+            instructions=job.instructions,
+        )
 
         pm = self._project_manager
         if pm is None:
             job.status = "failed"
             job.error = "project manager unavailable"
             job.finished_at = _now_iso()
+            trace_flow(
+                "scheduler.job.execution.failed",
+                job_id=job.id,
+                project_id=job.project_id,
+                error=job.error,
+            )
             return
 
         try:
@@ -107,9 +137,21 @@ class BackgroundScheduler:
                 detail=job.instructions[:500],
             )
             job.status = "completed"
+            trace_flow(
+                "scheduler.job.execution.completed",
+                job_id=job.id,
+                project_id=job.project_id,
+            )
         except Exception as exc:
             job.status = "failed"
             job.error = str(exc)
+            logger.exception("Coding job failed job_id=%s project_id=%s", job.id, job.project_id)
+            trace_flow(
+                "scheduler.job.execution.failed",
+                job_id=job.id,
+                project_id=job.project_id,
+                error=str(exc),
+            )
             try:
                 await store.add_event(
                     pm.db,
@@ -122,3 +164,10 @@ class BackgroundScheduler:
                 pass
         finally:
             job.finished_at = _now_iso()
+            trace_flow(
+                "scheduler.job.execution.end",
+                job_id=job.id,
+                project_id=job.project_id,
+                status=job.status,
+                error=job.error,
+            )

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import bot_config as cfg
 from agents.main_persona import MainPersonaAgent
 from core.prompt_library import load_prompt
+from core.trace import trace_flow
 
 if TYPE_CHECKING:
     from .orchestrator import Orchestrator
@@ -154,8 +155,10 @@ def set_dependencies(
             provider_router=_provider_router,
             project_manager=_project_manager,
         )
+        trace_flow("bot.state.dependencies.engine_initialized")
     else:
         _conversation_engine = None
+        trace_flow("bot.state.dependencies.engine_unavailable")
 
     # Legacy orchestrator is kept nullable for backward compatibility.
     _orchestrator = None

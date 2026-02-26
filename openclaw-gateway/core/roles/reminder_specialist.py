@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 
 from core.prompt_library import load_prompt
 from core.roles.base import Role, RoleContext, RoleOutput
+from core.trace import trace_flow
 from db import store
 
+logger = logging.getLogger("skynet.core.roles.reminder")
 
 class ReminderSpecialistRole(Role):
     name = "reminder_specialist"
@@ -14,6 +17,12 @@ class ReminderSpecialistRole(Role):
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
         conversation = context.conversation
         pending = conversation.pending_question or {}
+        trace_flow(
+            "role.reminder.handle.start",
+            conversation_id=conversation.id,
+            pending_type=str(pending.get("type") or ""),
+            text=user_text,
+        )
         if str(pending.get("type") or "") == "need_reminder_title":
             title = (user_text or "").strip()
             if not title:
@@ -27,6 +36,12 @@ class ReminderSpecialistRole(Role):
                 notes="",
             )
             await context.conversation_manager.clear_pending_question(conversation.id)
+            trace_flow(
+                "role.reminder.saved_from_pending",
+                conversation_id=conversation.id,
+                reminder_id=reminder["id"],
+                title=title,
+            )
             return RoleOutput(
                 command="complete",
                 response=f"Reminder saved: {reminder['title']}.",
@@ -49,6 +64,12 @@ class ReminderSpecialistRole(Role):
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
+            trace_flow(
+                "role.reminder.ask_title",
+                conversation_id=conversation.id,
+                confidence=confidence,
+                extracted_title=title,
+            )
             return RoleOutput(command="continue", response="What reminder should I create?")
 
         reminder = await store.create_reminder(
@@ -60,6 +81,13 @@ class ReminderSpecialistRole(Role):
             notes=notes,
         )
         await context.conversation_manager.clear_pending_question(conversation.id)
+        trace_flow(
+            "role.reminder.created",
+            conversation_id=conversation.id,
+            reminder_id=reminder["id"],
+            title=title,
+            due_at=due_at or "",
+        )
 
         when = reminder.get("due_at") or "no due time"
         return RoleOutput(

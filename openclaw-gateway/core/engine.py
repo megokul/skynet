@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 from core.conversation_manager import Conversation, ConversationManager
@@ -10,7 +11,10 @@ from core.roles.base import RoleContext, RoleOutput
 from core.roles.registry import build_default_registry
 from core.router import Router
 from core.scheduler import BackgroundScheduler
+from core.trace import trace_flow
 from db import store
+
+logger = logging.getLogger("skynet.core.engine")
 
 
 @dataclass(slots=True)
@@ -61,6 +65,13 @@ class ConversationEngine:
             user_id=int(user["id"]),
             requested_conversation_id=conversation_id,
         )
+        trace_flow(
+            "engine.user_message.received",
+            telegram_user_id=telegram_user_id,
+            conversation_id=conversation.id,
+            text=text,
+            requested_conversation_id=conversation_id,
+        )
         reply = await self.inbox.append(
             conversation.id,
             text,
@@ -96,8 +107,19 @@ class ConversationEngine:
 
     async def _process_batch(self, conversation_id: str, batch: list[InboxMessage]) -> str:
         merged_text = "\n".join(item.text for item in batch)
+        trace_flow(
+            "engine.batch.start",
+            conversation_id=conversation_id,
+            batch_size=len(batch),
+            merged_text=merged_text,
+        )
         conversation = await self.conversation_manager.get_conversation(conversation_id)
         if not conversation:
+            trace_flow(
+                "engine.batch.error",
+                conversation_id=conversation_id,
+                reason="conversation_not_found",
+            )
             return "ERROR: conversation not found."
 
         await self.conversation_manager.add_message(
@@ -115,11 +137,23 @@ class ConversationEngine:
             content=response_text,
             metadata={"source": "engine", "active_role": conversation.active_role},
         )
+        trace_flow(
+            "engine.batch.complete",
+            conversation_id=conversation_id,
+            response=response_text,
+            active_role=conversation.active_role,
+        )
         return response_text
 
     async def _run_role_cycle(self, conversation: Conversation, user_text: str) -> str:
         role_name = conversation.active_role or "igris"
         role = self.role_registry.get(role_name)
+        trace_flow(
+            "engine.role_cycle.start",
+            conversation_id=conversation.id,
+            role=role_name,
+            text=user_text,
+        )
 
         context = RoleContext(
             db=self.db,
@@ -132,10 +166,24 @@ class ConversationEngine:
         )
 
         output = await role.handle_message(context, user_text)
+        trace_flow(
+            "engine.role_cycle.output",
+            conversation_id=conversation.id,
+            role=role_name,
+            command=output.command,
+            target_role=output.target_role,
+            response=output.response or "",
+        )
         return await self._apply_role_output(conversation, user_text, output)
 
     async def _apply_role_output(self, conversation: Conversation, user_text: str, output: RoleOutput) -> str:
         command = output.command
+        trace_flow(
+            "engine.role_output.apply",
+            conversation_id=conversation.id,
+            command=command,
+            target_role=output.target_role,
+        )
 
         if command == "respond":
             text = (output.response or "").strip()
@@ -143,9 +191,21 @@ class ConversationEngine:
 
         if command == "delegate":
             target_role = (output.target_role or "igris").strip() or "igris"
+            trace_flow(
+                "engine.role_output.delegate",
+                conversation_id=conversation.id,
+                target_role=target_role,
+                from_role=conversation.active_role,
+                text=user_text,
+            )
             await self.conversation_manager.set_active_role(conversation.id, target_role)
             refreshed = await self.conversation_manager.get_conversation(conversation.id)
             if not refreshed:
+                trace_flow(
+                    "engine.role_output.error",
+                    conversation_id=conversation.id,
+                    reason="state_lost_after_delegate",
+                )
                 return "ERROR: conversation state lost."
 
             specialist = self.role_registry.get(target_role)
@@ -159,6 +219,13 @@ class ConversationEngine:
                 intent_extractor=self.intent_extractor,
             )
             specialist_output = await specialist.handle_message(spec_context, user_text)
+            trace_flow(
+                "engine.specialist.output",
+                conversation_id=conversation.id,
+                specialist_role=target_role,
+                command=specialist_output.command,
+                response=specialist_output.response or "",
+            )
             return await self._apply_specialist_output(refreshed, specialist_output)
 
         if command == "continue":
@@ -172,12 +239,24 @@ class ConversationEngine:
                     conversation.id,
                     str(output.result["active_project_id"]),
                 )
+            trace_flow(
+                "engine.role_output.complete",
+                conversation_id=conversation.id,
+                result=output.result or {},
+            )
             text = (output.response or "").strip()
             return text or "Task complete. Igris resumed control."
 
         return "Igris could not interpret the role response."
 
     async def _apply_specialist_output(self, conversation: Conversation, output: RoleOutput) -> str:
+        trace_flow(
+            "engine.specialist_output.apply",
+            conversation_id=conversation.id,
+            command=output.command,
+            target_role=output.target_role,
+            result=output.result or {},
+        )
         if output.command == "complete":
             await self.conversation_manager.set_active_role(conversation.id, "igris")
             if output.result and output.result.get("active_project_id"):
