@@ -204,6 +204,7 @@ class ProjectSpecialistRole(Role):
         trace_step(
             function_name="append_project_idea",
             file_name="project_specialist.py",
+            function_path="openclaw-gateway/core/roles/project_specialist.py",
             role="project_specialist",
             prompt="prompts/project_specialist/append_idea.md",
             parameters={

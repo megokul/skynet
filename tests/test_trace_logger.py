@@ -48,6 +48,7 @@ def test_trace_logger_writes_required_structure(tmp_path: Path, monkeypatch) -> 
     assert 'input: "user message"' in content
     assert "[STEP 1] classify_intent()" in content
     assert "file: test_trace_logger.py" in content
+    assert "path: tests/test_trace_logger.py" in content
     assert "role: igris" in content
     assert "prompt: prompts/supervisor/intent_classifier.md" in content
     assert "parameters:" in content

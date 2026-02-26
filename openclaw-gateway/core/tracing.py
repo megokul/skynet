@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 
 _TRACE_FILE = Path(__file__).resolve().parents[1] / "logs" / "skynet.trace.log"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _WRITE_LOCK = threading.Lock()
 _SEPARATOR = "=" * 80
 _STEP_SEPARATOR = "-" * 80
@@ -109,6 +110,13 @@ def _format_mapping(title: str, data: dict[str, Any] | None) -> list[str]:
     return lines
 
 
+def _to_repo_relative(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(_REPO_ROOT).as_posix()
+    except Exception:
+        return path.resolve().as_posix()
+
+
 class TraceLogger:
     """Human-readable execution trace logger."""
 
@@ -156,6 +164,7 @@ class TraceLogger:
         *,
         function_name: str,
         file_name: str,
+        function_path: str | None = None,
         role: str,
         parameters: dict[str, Any] | None = None,
         result: dict[str, Any] | None = None,
@@ -170,6 +179,8 @@ class TraceLogger:
             f"file: {file_name}",
             f"role: {role}",
         ]
+        if function_path:
+            lines.insert(2, f"path: {function_path}")
         if prompt:
             lines.append(f"prompt: {prompt}")
         lines.append("")
@@ -258,6 +269,7 @@ def trace_step(
     *,
     function_name: str,
     file_name: str,
+    function_path: str | None = None,
     role: str,
     parameters: dict[str, Any] | None = None,
     result: dict[str, Any] | None = None,
@@ -272,6 +284,7 @@ def trace_step(
     current.log_step(
         function_name=function_name,
         file_name=file_name,
+        function_path=function_path,
         role=role,
         parameters=parameters,
         result=result,
@@ -323,7 +336,9 @@ def trace(
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         signature = inspect.signature(func)
-        file_name = Path(func.__code__.co_filename).name
+        file_path = Path(func.__code__.co_filename)
+        file_name = file_path.name
+        function_path = _to_repo_relative(file_path)
         traced_name = (step_name or func.__name__).strip() or func.__name__
 
         if inspect.iscoroutinefunction(func):
@@ -342,6 +357,7 @@ def trace(
                     current.log_step(
                         function_name=traced_name,
                         file_name=file_name,
+                        function_path=function_path,
                         role=role,
                         prompt=prompt,
                         parameters=params,
@@ -353,6 +369,7 @@ def trace(
                 current.log_step(
                     function_name=traced_name,
                     file_name=file_name,
+                    function_path=function_path,
                     role=role,
                     prompt=prompt,
                     parameters=params,
@@ -377,6 +394,7 @@ def trace(
                 current.log_step(
                     function_name=traced_name,
                     file_name=file_name,
+                    function_path=function_path,
                     role=role,
                     prompt=prompt,
                     parameters=params,
@@ -388,6 +406,7 @@ def trace(
             current.log_step(
                 function_name=traced_name,
                 file_name=file_name,
+                function_path=function_path,
                 role=role,
                 prompt=prompt,
                 parameters=params,
