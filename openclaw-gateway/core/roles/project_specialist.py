@@ -1,18 +1,24 @@
+"""
+Project specialist role for project bootstrap and idea capture.
+
+This role handles typed pending-question state transitions and project-scoped
+writes (project creation, requirement capture, idea append).
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import logging
+import re
 import time
-from typing import Any
 
 from core.roles.base import Role, RoleContext, RoleOutput
 from core.trace import trace_flow
 from core.tracing import trace, trace_step
 from db import store
 
-logger = logging.getLogger("skynet.core.roles.project")
-
 _INVALID_NAMES = {
+    # Reject vague names that usually indicate the user has not provided a
+    # concrete project identifier yet.
     "today",
     "tomorrow",
     "now",
@@ -24,8 +30,29 @@ _INVALID_NAMES = {
     "it",
 }
 
+_NEW_PROJECT_RE = re.compile(
+    r"\b(?:start|create|make|begin|initiate)\b.{0,35}\bproject\b"
+    r"|\bnew\s+(?:project|app|application)\b"
+    r"|\bproject\b.{0,20}\b(?:start|create|make|begin)\b",
+    re.IGNORECASE,
+)
+
+_PROJECT_NAME_PATTERNS = (
+    re.compile(r"\b(?:called|named)\s+([a-zA-Z0-9][a-zA-Z0-9_\- ]{1,63})", re.IGNORECASE),
+    re.compile(
+        r"\b(?:start|create|make|begin|initiate)\s+(?:a\s+)?(?:new\s+)?(?:project|app|application)\s+([a-zA-Z0-9][a-zA-Z0-9_\- ]{1,63})",
+        re.IGNORECASE,
+    ),
+)
+
 
 def _slugify_name(name: str) -> str:
+    """
+    Normalize user-provided project names to stable slug form.
+
+    This slug is used for uniqueness lookups while preserving original display
+    name for user-facing responses.
+    """
     raw = (name or "").strip().lower()
     chars: list[str] = []
     for ch in raw:
@@ -40,10 +67,34 @@ def _slugify_name(name: str) -> str:
 
 
 class ProjectSpecialistRole(Role):
+    """
+    ProjectSpecialistRole.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `ProjectSpecialistRole`.
+    """
+
     name = "project_specialist"
 
     @trace(role="project_specialist", step_name="project_specialist_handle")
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
+        """
+        Main project-specialist state machine.
+
+        Branch order matters:
+        1. Pending question handlers (typed state continuation).
+        2. Active project path (append idea to current project).
+        3. New-project bootstrap question.
+        """
         conversation = context.conversation
         pending = conversation.pending_question or {}
         pending_type = str(pending.get("type") or "")
@@ -60,6 +111,26 @@ class ProjectSpecialistRole(Role):
 
         if pending_type == "need_project_requirements":
             return await self._handle_requirements(context, user_text)
+
+        # Explicit "start/create new project" requests should preempt active
+        # project append behavior so users can switch scope naturally.
+        if _is_new_project_intent(user_text):
+            hinted_name = _extract_project_name_hint(user_text)
+            if hinted_name:
+                return await self._handle_project_name(context, hinted_name)
+            await context.conversation_manager.set_pending_question(
+                conversation.id,
+                {
+                    "type": "need_project_name",
+                    "choices": [],
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "metadata": {},
+                },
+            )
+            return RoleOutput(
+                command="continue",
+                response="What should I name the new project?",
+            )
 
         if conversation.active_project_id:
             trace_flow(
@@ -85,6 +156,12 @@ class ProjectSpecialistRole(Role):
 
     @trace(role="project_specialist", step_name="capture_project_name")
     async def _handle_project_name(self, context: RoleContext, user_text: str) -> RoleOutput:
+        """
+        Capture/validate project name and prepare requirements collection.
+
+        If project already exists by normalized slug, it is reused; otherwise
+        one is created.
+        """
         conversation = context.conversation
         proposed = (user_text or "").strip().strip(".!,?;:")
         if not proposed:
@@ -148,6 +225,11 @@ class ProjectSpecialistRole(Role):
 
     @trace(role="project_specialist", step_name="capture_project_requirements")
     async def _handle_requirements(self, context: RoleContext, user_text: str) -> RoleOutput:
+        """
+        Persist initial project requirements as both idea and description.
+
+        Completing this step returns control to `igris`.
+        """
         conversation = context.conversation
         project_id = conversation.active_project_id
         if not project_id:
@@ -183,6 +265,12 @@ class ProjectSpecialistRole(Role):
         )
 
     async def _append_idea_to_active(self, context: RoleContext, user_text: str) -> RoleOutput:
+        """
+        Deterministically append user message as an idea on active project.
+
+        This is used when a conversation already has project scope and no typed
+        pending-question branch is active.
+        """
         started = time.perf_counter()
         project_id = context.conversation.active_project_id
         idea_text = (user_text or "").strip()
@@ -229,3 +317,35 @@ class ProjectSpecialistRole(Role):
             response=f"Idea added to {name}. Igris is back in command.",
             result={"project_id": project_id, "idea_text": idea_text},
         )
+
+
+def _is_new_project_intent(text: str) -> bool:
+    """Return True when text explicitly asks to start a new project."""
+    value = (text or "").strip()
+    if not value:
+        return False
+    return bool(_NEW_PROJECT_RE.search(value))
+
+
+def _extract_project_name_hint(text: str) -> str:
+    """
+    Extract inline project name hints from creation phrases.
+
+    Examples:
+    - "create project beepapp"
+    - "start a project called my app"
+    """
+    value = (text or "").strip()
+    if not value:
+        return ""
+    for pattern in _PROJECT_NAME_PATTERNS:
+        match = pattern.search(value)
+        if not match:
+            continue
+        name = match.group(1).strip().strip(".!,?;:")
+        if not name:
+            continue
+        if name.lower() in _INVALID_NAMES:
+            continue
+        return name
+    return ""

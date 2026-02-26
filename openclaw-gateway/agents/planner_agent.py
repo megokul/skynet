@@ -23,6 +23,29 @@ class PlannerAgent:
         router: ProviderRouter,
         run_agent_action: Callable[[str, dict[str, Any], bool], Awaitable[tuple[bool, str]]],
     ) -> None:
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `router`: input used by this function to compute or route work.
+        - `run_agent_action`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         self.router = router
         self._run_agent_action = run_agent_action
 

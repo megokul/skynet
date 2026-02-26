@@ -201,6 +201,28 @@ async def file_read(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _read_file_sync(filepath: str) -> str:
+    """
+    Read file sync.
+    
+    Purpose:
+    - Implement `_read_file_sync` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `filepath`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
         content = fh.read()
     if len(content) > 65536:
@@ -250,6 +272,30 @@ async def web_search(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _brave_web_search_sync(query: str, num_results: int, api_key: str) -> str:
+    """
+    Brave web search sync.
+    
+    Purpose:
+    - Implement `_brave_web_search_sync` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `query`: input used by this function to compute or route work.
+    - `num_results`: input used by this function to compute or route work.
+    - `api_key`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     url = (
         "https://api.search.brave.com/res/v1/web/search?"
         f"q={parse.quote_plus(query)}&count={num_results}"
@@ -280,6 +326,29 @@ def _brave_web_search_sync(query: str, num_results: int, api_key: str) -> str:
 
 
 def _ddg_web_search_sync(query: str, num_results: int) -> str:
+    """
+    Ddg web search sync.
+    
+    Purpose:
+    - Implement `_ddg_web_search_sync` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `query`: input used by this function to compute or route work.
+    - `num_results`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     url = f"https://lite.duckduckgo.com/lite/?q={parse.quote_plus(query)}"
     req = request.Request(url, headers={"User-Agent": "SKYNET-Worker/1.0"})
     with request.urlopen(req, timeout=_WEB_SEARCH_TIMEOUT_SECONDS) as resp:
@@ -349,6 +418,30 @@ def _normalize_ddg_result_url(raw_link: str) -> str:
 
 
 def _list_dir_sync(directory: str, recursive: bool, depth: int) -> str:
+    """
+    List dir sync.
+    
+    Purpose:
+    - Implement `_list_dir_sync` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `directory`: input used by this function to compute or route work.
+    - `recursive`: input used by this function to compute or route work.
+    - `depth`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     MAX_DEPTH = 3
     MAX_ENTRIES = 500
     entries: list[str] = []
@@ -434,6 +527,29 @@ async def file_write(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _write_file_sync(filepath: str, content: str) -> None:
+    """
+    Write file sync.
+    
+    Purpose:
+    - Implement `_write_file_sync` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `filepath`: input used by this function to compute or route work.
+    - `content`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, "w", encoding="utf-8") as fh:
         fh.write(content)

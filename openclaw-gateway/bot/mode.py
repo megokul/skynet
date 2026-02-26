@@ -1,3 +1,20 @@
+"""Conversation mode selection and tool-policy enforcement.
+
+Purpose:
+- Map classified intents to runtime interaction modes.
+- Gate which tools are callable under each mode.
+- Restrict providers for modes that require specific tool-result formats.
+
+How it works:
+- Selects mode with confidence thresholds plus contextual overrides.
+- Filters declared tools through allowlist policies per mode.
+- Exposes provider allowlist hints for execution/recovery compatibility.
+
+Why this exists:
+- Prevents over-permissive tool access in conversational flows.
+- Encapsulates policy in one place so behavior changes stay auditable.
+- Reduces runtime failures from incompatible provider/tool protocols."""
+
 from __future__ import annotations
 
 import logging
@@ -10,6 +27,22 @@ logger = logging.getLogger(__name__)
 
 
 class Mode(str, Enum):
+    """
+    Mode.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `Mode`.
+    """
+
     CONVERSATION = "conversation"
     PLANNING = "planning"
     EXECUTION = "execution"
@@ -40,6 +73,29 @@ INTENT_MODE_MAP: dict[str, Mode] = {
 
 
 def select_mode(intent: ClassifiedIntent, session: Session) -> Mode:
+    """
+    Select mode.
+    
+    Purpose:
+    - Implement `select_mode` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `intent`: input used by this function to compute or route work.
+    - `session`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `Mode` when available; otherwise side effects only.
+    """
+
     if intent.confidence < 0.7:
         return Mode.CONVERSATION
     mode = INTENT_MODE_MAP.get(intent.intent, Mode.CONVERSATION)
@@ -85,7 +141,46 @@ MODE_PROVIDER_ALLOWLIST: dict[Mode, list[str] | None] = {
 
 
 class ToolPolicyGate:
+    """
+    ToolPolicyGate.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `ToolPolicyGate`.
+    """
+
     def filter(self, mode: Mode, all_tools: list[dict]) -> list[dict]:
+        """
+        Filter.
+        
+        Purpose:
+        - Implement `filter` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `mode`: input used by this function to compute or route work.
+        - `all_tools`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `list[dict]` when available; otherwise side effects only.
+        """
+
         allowed = TOOL_POLICY[mode]
         if allowed == "*":
             return all_tools

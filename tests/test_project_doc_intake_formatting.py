@@ -7,6 +7,28 @@ import sys
 
 
 def _ensure_gateway_path() -> None:
+    """
+    Ensure gateway path.
+    
+    Purpose:
+    - Implement `_ensure_gateway_path` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     repo_root = Path(__file__).parent.parent
     gateway_root = str(repo_root / "openclaw-gateway")
     if gateway_root not in sys.path:
@@ -14,6 +36,28 @@ def _ensure_gateway_path() -> None:
 
 
 def test_project_doc_intake_sanitizes_and_formats_natural_language() -> None:
+    """
+    Test scenario `test_project_doc_intake_sanitizes_and_formats_natural_language`.
+    
+    Purpose:
+    - Implement `test_project_doc_intake_sanitizes_and_formats_natural_language` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_gateway_path()
     from bot import doc_intake as bot
 
@@ -48,6 +92,28 @@ def test_project_doc_intake_sanitizes_and_formats_natural_language() -> None:
 
 
 def test_has_minimum_doc_context_requires_problem_and_requirements() -> None:
+    """
+    Test scenario `test_has_minimum_doc_context_requires_problem_and_requirements`.
+    
+    Purpose:
+    - Implement `test_has_minimum_doc_context_requires_problem_and_requirements` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_gateway_path()
     from bot import doc_intake as bot
 

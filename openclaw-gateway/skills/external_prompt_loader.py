@@ -21,6 +21,22 @@ logger = logging.getLogger("skynet.skills.external_loader")
 
 @dataclass
 class ExternalPromptSkill:
+    """
+    ExternalPromptSkill.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `ExternalPromptSkill`.
+    """
+
     name: str
     description: str
     content: str
@@ -31,6 +47,28 @@ _GITHUB_HOSTS = {"github.com", "www.github.com", "raw.githubusercontent.com"}
 
 
 def _safe_name(value: str) -> str:
+    """
+    Safe name.
+    
+    Purpose:
+    - Implement `_safe_name` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `value`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     out = re.sub(r"[^a-zA-Z0-9._-]+", "-", value).strip("-").lower()
     if out:
         return out[:80]
@@ -116,6 +154,29 @@ def _github_url_to_raw_skill(url: str) -> tuple[str, str] | None:
 
 
 def _download_text(url: str, timeout_seconds: int = 15) -> str:
+    """
+    Download text.
+    
+    Purpose:
+    - Implement `_download_text` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `url`: input used by this function to compute or route work.
+    - `timeout_seconds`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     req = Request(
         url,
         headers={"User-Agent": "skynet-openclaw-gateway/1.0"},
@@ -165,6 +226,29 @@ def sync_remote_skill_urls(skill_urls: list[str], cache_root: str) -> list[Path]
 
 
 def _read_skill_file(path: Path, max_chars: int) -> ExternalPromptSkill | None:
+    """
+    Read skill file.
+    
+    Purpose:
+    - Implement `_read_skill_file` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `path`: input used by this function to compute or route work.
+    - `max_chars`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `ExternalPromptSkill | None` when available; otherwise side effects only.
+    """
+
     try:
         raw = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:

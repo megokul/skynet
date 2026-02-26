@@ -1,3 +1,10 @@
+"""
+Human-readable execution trace framework.
+
+Trace entries are buffered per conversation turn and flushed atomically to
+`logs/skynet.trace.log` to keep step narratives contiguous and debuggable.
+"""
+
 from __future__ import annotations
 
 import contextvars
@@ -27,10 +34,16 @@ _trace_context: contextvars.ContextVar["TraceLogger | None"] = contextvars.Conte
 
 
 def _utc_now_z() -> str:
+    """UTC timestamp in compact Zulu format for trace headers."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _write_lines(lines: list[str]) -> None:
+    """
+    Append trace lines to canonical trace file and mirror sinks.
+
+    File write is lock-protected to avoid interleaving across threads.
+    """
     _TRACE_FILE.parent.mkdir(parents=True, exist_ok=True)
     text = "\n".join(lines) + "\n"
     with _WRITE_LOCK:
@@ -40,6 +53,12 @@ def _write_lines(lines: list[str]) -> None:
 
 
 def _emit_mirror(text: str) -> None:
+    """
+    Send trace text to configured logging mirror handlers.
+
+    Mirror failures are intentionally non-fatal because local trace persistence
+    is the primary source of truth.
+    """
     logger = logging.getLogger("skynet.trace.mirror")
     if not logger.handlers:
         return
@@ -56,12 +75,14 @@ def _emit_mirror(text: str) -> None:
 
 
 def _clip_text(value: str, *, limit: int = _MAX_TEXT) -> str:
+    """Cap long strings to avoid oversized trace payloads."""
     if len(value) <= limit:
         return value
     return value[:limit] + "...<truncated>"
 
 
 def _sanitize(value: Any) -> Any:
+    """Recursive sanitizer used by trace formatter/serializer."""
     if isinstance(value, str):
         return _clip_text(value.replace("\r", " ").replace("\n", "\\n"))
     if isinstance(value, (int, float, bool)) or value is None:
@@ -88,6 +109,7 @@ def _sanitize(value: Any) -> Any:
 
 
 def _format_value(value: Any) -> str:
+    """Render a sanitized value as trace-friendly text."""
     sanitized = _sanitize(value)
     if isinstance(sanitized, str):
         return json.dumps(sanitized, ensure_ascii=False)
@@ -101,6 +123,7 @@ def _format_value(value: Any) -> str:
 
 
 def _format_mapping(title: str, data: dict[str, Any] | None) -> list[str]:
+    """Format key/value section blocks (parameters/result/state)."""
     lines = [f"{title}:"]
     if not data:
         lines.append("  (none)")
@@ -111,6 +134,7 @@ def _format_mapping(title: str, data: dict[str, Any] | None) -> list[str]:
 
 
 def _to_repo_relative(path: Path) -> str:
+    """Best-effort conversion to repository-relative display path."""
     try:
         return path.resolve().relative_to(_REPO_ROOT).as_posix()
     except Exception:
@@ -118,7 +142,14 @@ def _to_repo_relative(path: Path) -> str:
 
 
 class TraceLogger:
-    """Human-readable execution trace logger."""
+    """
+    Human-readable execution trace logger.
+
+    Each instance represents one conversation turn:
+    - starts at `TRACE START`
+    - accumulates ordered steps in memory
+    - flushes atomically at `TRACE END`
+    """
 
     def __init__(
         self,
@@ -128,6 +159,31 @@ class TraceLogger:
         entrypoint: str,
         input_text: str,
     ) -> None:
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `trace_id`: input used by this function to compute or route work.
+        - `user_id`: input used by this function to compute or route work.
+        - `entrypoint`: input used by this function to compute or route work.
+        - `input_text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         self.trace_id = str(trace_id)
         self.user_id = str(user_id)
         self.entrypoint = entrypoint
@@ -141,6 +197,7 @@ class TraceLogger:
         self._write_start()
 
     def _write_start(self) -> None:
+        """Initialize trace header in the in-memory buffer."""
         self._append_lines(
             [
                 _SEPARATOR,
@@ -156,6 +213,7 @@ class TraceLogger:
         )
 
     def _append_lines(self, lines: list[str]) -> None:
+        """Thread-safe append into per-trace line buffer."""
         with self._buffer_lock:
             self._lines.extend(lines)
 
@@ -173,6 +231,7 @@ class TraceLogger:
         state_after: dict[str, Any] | None = None,
         execution_time_ms: float | int = 0.0,
     ) -> None:
+        """Append one formatted step into this trace."""
         self._step += 1
         lines: list[str] = [
             f"[STEP {self._step}] {function_name}()",
@@ -201,6 +260,7 @@ class TraceLogger:
         self._append_lines(lines)
 
     def end(self) -> None:
+        """Close trace and flush entire buffered trace atomically."""
         if self._ended:
             return
         self._ended = True
@@ -221,7 +281,12 @@ class TraceLogger:
 
 
 class TraceManager:
-    """Global trace context manager using contextvars."""
+    """
+    Lightweight trace lifecycle manager backed by contextvars.
+
+    Contextvars keep async task-local trace isolation without global mutable
+    cross-talk.
+    """
 
     def start(
         self,
@@ -231,6 +296,31 @@ class TraceManager:
         entrypoint: str,
         input_text: str,
     ) -> tuple[TraceLogger, contextvars.Token]:
+        """
+        Start.
+        
+        Purpose:
+        - Implement `start` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `trace_id`: input used by this function to compute or route work.
+        - `user_id`: input used by this function to compute or route work.
+        - `entrypoint`: input used by this function to compute or route work.
+        - `input_text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `tuple[TraceLogger, contextvars.Token]` when available; otherwise side effects only.
+        """
+
         logger = TraceLogger(
             trace_id=trace_id,
             user_id=user_id,
@@ -241,9 +331,53 @@ class TraceManager:
         return logger, token
 
     def current(self) -> TraceLogger | None:
+        """
+        Current.
+        
+        Purpose:
+        - Implement `current` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `TraceLogger | None` when available; otherwise side effects only.
+        """
+
         return get_current_trace()
 
     def clear(self, token: contextvars.Token | None = None) -> None:
+        """
+        Clear.
+        
+        Purpose:
+        - Implement `clear` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `token`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         clear_current_trace(token)
 
 
@@ -251,14 +385,17 @@ trace_manager = TraceManager()
 
 
 def set_current_trace(trace_logger: TraceLogger | None) -> contextvars.Token:
+    """Bind current trace in task-local context."""
     return _trace_context.set(trace_logger)
 
 
 def get_current_trace() -> TraceLogger | None:
+    """Get current task-local trace logger, if any."""
     return _trace_context.get()
 
 
 def clear_current_trace(token: contextvars.Token | None = None) -> None:
+    """Clear/reset current task-local trace binding."""
     if token is not None:
         _trace_context.reset(token)
     else:
@@ -278,6 +415,7 @@ def trace_step(
     state_after: dict[str, Any] | None = None,
     execution_time_ms: float | int = 0.0,
 ) -> None:
+    """Manual trace-step helper for non-decorated code paths."""
     current = get_current_trace()
     if current is None:
         return
@@ -300,6 +438,7 @@ def _extract_parameters(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
 ) -> dict[str, Any]:
+    """Extract call arguments while hiding `self/cls`."""
     try:
         bound = signature.bind_partial(*args, **kwargs)
     except Exception:
@@ -314,6 +453,7 @@ def _extract_parameters(
 
 
 def _result_payload(value: Any) -> dict[str, Any]:
+    """Normalize arbitrary return value into mapping form."""
     if isinstance(value, dict):
         return {str(k): _sanitize(v) for k, v in value.items()}
     if dataclasses.is_dataclass(value):
@@ -332,9 +472,34 @@ def trace(
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Decorator for automatic trace step logging.
+
+    Supports sync and async functions. On exceptions, logs failure result block
+    before re-raising.
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        """
+        Decorator.
+        
+        Purpose:
+        - Implement `decorator` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `func`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `Callable[..., Any]` when available; otherwise side effects only.
+        """
+
         signature = inspect.signature(func)
         file_path = Path(func.__code__.co_filename)
         file_name = file_path.name
@@ -345,6 +510,29 @@ def trace(
 
             @functools.wraps(func)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                """
+                Async wrapper.
+                
+                Purpose:
+                - Implement `async_wrapper` within this module's workflow.
+                - Keep behavior localized so callers have one stable entrypoint.
+                
+                How it works:
+                - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+                - Produces deterministic return data or side effects expected by calling code.
+                
+                Why this exists:
+                - Prevents duplicated logic in upstream orchestration paths.
+                - Improves debuggability by centralizing this behavior in one named function.
+                
+                Parameters:
+                - `*args`: input used by this function to compute or route work.
+                - `**kwargs`: input used by this function to compute or route work.
+                
+                Returns:
+                - Return value typed as `Any` when available; otherwise side effects only.
+                """
+
                 current = get_current_trace()
                 if current is None:
                     return await func(*args, **kwargs)
@@ -382,6 +570,29 @@ def trace(
 
         @functools.wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            """
+            Sync wrapper.
+            
+            Purpose:
+            - Implement `sync_wrapper` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - `*args`: input used by this function to compute or route work.
+            - `**kwargs`: input used by this function to compute or route work.
+            
+            Returns:
+            - Return value typed as `Any` when available; otherwise side effects only.
+            """
+
             current = get_current_trace()
             if current is None:
                 return func(*args, **kwargs)

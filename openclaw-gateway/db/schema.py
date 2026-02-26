@@ -357,6 +357,29 @@ async def _migrate_legacy_conversations(db: aiosqlite.Connection) -> None:
 
 
 async def _table_exists(db: aiosqlite.Connection, table_name: str) -> bool:
+    """
+    Table exists.
+    
+    Purpose:
+    - Implement `_table_exists` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `table_name`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
         (table_name,),
@@ -366,6 +389,30 @@ async def _table_exists(db: aiosqlite.Connection, table_name: str) -> bool:
 
 
 async def _table_has_column(db: aiosqlite.Connection, table_name: str, column_name: str) -> bool:
+    """
+    Table has column.
+    
+    Purpose:
+    - Implement `_table_has_column` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `table_name`: input used by this function to compute or route work.
+    - `column_name`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     async with db.execute(f"PRAGMA table_info({table_name})") as cur:
         rows = await cur.fetchall()
     return any(str(row[1]) == column_name for row in rows)

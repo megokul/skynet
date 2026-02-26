@@ -11,6 +11,29 @@ import os
 
 
 def _str_env(*names: str, default: str) -> str:
+    """
+    Str env.
+    
+    Purpose:
+    - Implement `_str_env` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `*names`: input used by this function to compute or route work.
+    - `default`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     for name in names:
         value = os.environ.get(name)
         if value is not None and value.strip():
@@ -19,6 +42,29 @@ def _str_env(*names: str, default: str) -> str:
 
 
 def _int_env(*names: str, default: int) -> int:
+    """
+    Int env.
+    
+    Purpose:
+    - Implement `_int_env` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `*names`: input used by this function to compute or route work.
+    - `default`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     for name in names:
         raw = os.environ.get(name)
         if raw is None or not raw.strip():
@@ -31,6 +77,29 @@ def _int_env(*names: str, default: int) -> int:
 
 
 def _bool_env(*names: str, default: bool) -> bool:
+    """
+    Bool env.
+    
+    Purpose:
+    - Implement `_bool_env` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `*names`: input used by this function to compute or route work.
+    - `default`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     for name in names:
         raw = os.environ.get(name)
         if raw is None or not raw.strip():

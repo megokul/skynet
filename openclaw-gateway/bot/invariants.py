@@ -1,3 +1,20 @@
+"""Deterministic continuity and scope invariants for orchestrator routing.
+
+Purpose:
+- Resolve project scope from text, pending state, and session context.
+- Enforce write-intent guardrails before tool execution.
+- Provide typed decision records for debugging and tests.
+
+How it works:
+- Parses scope-switch phrases and explicit project references via regex rules.
+- Interprets pending-question answers with expiration checks.
+- Produces RoutingDecision objects indicating execute-vs-ask behavior.
+
+Why this exists:
+- Avoids accidental writes to wrong project scope.
+- Keeps safety-critical routing deterministic and independent from LLM variance.
+- Makes continuity behavior transparent and regression-test friendly."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,6 +28,22 @@ ScopeType = Literal["active", "new", "unknown", "explicit_project"]
 
 @dataclass
 class PendingQuestion:
+    """
+    PendingQuestion.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `PendingQuestion`.
+    """
+
     type: str
     choices: list[str]
     turn_id: str
@@ -21,6 +54,22 @@ class PendingQuestion:
 
 @dataclass
 class PendingAction:
+    """
+    PendingAction.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `PendingAction`.
+    """
+
     type: str
     project_id: str
     plan_id: int | None = None
@@ -30,6 +79,22 @@ class PendingAction:
 
 @dataclass
 class ScopeResolution:
+    """
+    ScopeResolution.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `ScopeResolution`.
+    """
+
     scope: ScopeType
     project_id: str | None
     explicit_project_ref: str | None
@@ -40,6 +105,22 @@ class ScopeResolution:
 
 @dataclass
 class RoutingDecision:
+    """
+    RoutingDecision.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `RoutingDecision`.
+    """
+
     target_project_id: str | None
     execute_write_intent: bool
     ask_question: bool
@@ -62,6 +143,28 @@ _EXISTING_SCOPE_ANSWER = {"existing", "current", "same", "same one", "this one",
 
 
 def detect_switch_intent(user_text: str) -> bool:
+    """
+    Detect switch intent.
+    
+    Purpose:
+    - Implement `detect_switch_intent` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `user_text`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     text = (user_text or "").strip()
     if not text:
         return False
@@ -69,6 +172,28 @@ def detect_switch_intent(user_text: str) -> bool:
 
 
 def normalize_scope_answer(user_text: str) -> Literal["new", "existing"] | None:
+    """
+    Normalize scope answer.
+    
+    Purpose:
+    - Implement `normalize_scope_answer` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `user_text`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `Literal['new', 'existing'] | None` when available; otherwise side effects only.
+    """
+
     text = re.sub(r"\s+", " ", (user_text or "").strip().lower())
     if text in _NEW_SCOPE_ANSWER:
         return "new"
@@ -78,6 +203,30 @@ def normalize_scope_answer(user_text: str) -> Literal["new", "existing"] | None:
 
 
 def resolve_scope(session: Any, user_text: str, last_bot_turn: str) -> ScopeResolution:
+    """
+    Resolve scope.
+    
+    Purpose:
+    - Implement `resolve_scope` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `session`: input used by this function to compute or route work.
+    - `user_text`: input used by this function to compute or route work.
+    - `last_bot_turn`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `ScopeResolution` when available; otherwise side effects only.
+    """
+
     text = (user_text or "").strip()
     metadata = getattr(session, "metadata", {}) or {}
     pending_question = metadata.get("pending_question")
@@ -170,6 +319,30 @@ def resolve_scope(session: Any, user_text: str, last_bot_turn: str) -> ScopeReso
 
 
 def enforce_continuity(intent: Any, scope_resolution: ScopeResolution, session: Any) -> RoutingDecision:
+    """
+    Enforce continuity.
+    
+    Purpose:
+    - Implement `enforce_continuity` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `intent`: input used by this function to compute or route work.
+    - `scope_resolution`: input used by this function to compute or route work.
+    - `session`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `RoutingDecision` when available; otherwise side effects only.
+    """
+
     intent_name = str(getattr(intent, "intent", "unclear"))
     is_write_intent = intent_name == "propose_idea"
 
@@ -229,6 +402,28 @@ def enforce_continuity(intent: Any, scope_resolution: ScopeResolution, session: 
 
 
 def _is_not_expired(expires_at: Any) -> bool:
+    """
+    Is not expired.
+    
+    Purpose:
+    - Implement `_is_not_expired` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `expires_at`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     if not expires_at:
         return True
     try:

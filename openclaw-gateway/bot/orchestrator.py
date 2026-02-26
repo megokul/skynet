@@ -1,3 +1,20 @@
+"""Primary LLM-first orchestrator for Telegram conversation handling.
+
+Purpose:
+- Coordinate session loading, intent classification, context building, and tool execution.
+- Manage per-user/per-conversation inbox batching and sequential processing.
+- Enforce write gating, pending questions/actions, and persistence of conversation turns.
+
+How it works:
+- Queues inbound messages and drains them in deterministic worker loops.
+- Resolves scope/invariants before executing write intents.
+- Runs iterative model/tool rounds, persists outcomes, and updates session metadata.
+
+Why this exists:
+- Central orchestration keeps safety rules and side effects consistent.
+- Inbox serialization prevents race conditions in rapid multi-message bursts.
+- Explicit state transitions make production debugging and audits practical."""
+
 from __future__ import annotations
 
 import asyncio
@@ -70,12 +87,44 @@ _INVALID_PROJECT_NAME_HINTS: set[str] = {
 
 @dataclass
 class _ExecutionResult:
+    """
+    ExecutionResult.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `_ExecutionResult`.
+    """
+
     text: str
     tool_outcomes: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
 class _InboundMessage:
+    """
+    InboundMessage.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `_InboundMessage`.
+    """
+
     update: Any
     text: str
     future: asyncio.Future[str]
@@ -85,6 +134,22 @@ class _InboundMessage:
 
 @dataclass
 class _UserInbox:
+    """
+    UserInbox.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `_UserInbox`.
+    """
+
     queue: deque[_InboundMessage] = field(default_factory=deque)
     event: asyncio.Event = field(default_factory=asyncio.Event)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -92,6 +157,22 @@ class _UserInbox:
 
 
 class Orchestrator:
+    """
+    Orchestrator.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `Orchestrator`.
+    """
+
     def __init__(
         self,
         db,
@@ -101,6 +182,33 @@ class Orchestrator:
         gateway_api_url,
         chat_provider_allowlist,
     ):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `db`: input used by this function to compute or route work.
+        - `project_manager`: input used by this function to compute or route work.
+        - `provider_router`: input used by this function to compute or route work.
+        - `skill_registry`: input used by this function to compute or route work.
+        - `gateway_api_url`: input used by this function to compute or route work.
+        - `chat_provider_allowlist`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.db = db
         self.provider_router = provider_router
         self.skill_registry = skill_registry
@@ -117,6 +225,29 @@ class Orchestrator:
         self._coalesce_window_seconds = COALESCE_WINDOW_SECONDS
 
     async def handle(self, update, text: str) -> str:
+        """
+        Handle.
+        
+        Purpose:
+        - Implement `handle` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        - `text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         user_id = str(update.effective_user.id)
         inbox_key = await self._resolve_inbox_key(update)
         loop = asyncio.get_running_loop()
@@ -142,12 +273,56 @@ class Orchestrator:
             return "Something went wrong. Please try again."
 
     async def _resolve_inbox_key(self, update) -> str:
+        """
+        Resolve inbox key.
+        
+        Purpose:
+        - Implement `_resolve_inbox_key` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         conversation_id = await self._get_or_create_active_conversation_id(update)
         if conversation_id:
             return f"conv:{conversation_id}"
         return f"user:{update.effective_user.id}"
 
     async def _get_or_create_active_conversation_id(self, update) -> str | None:
+        """
+        Get or create active conversation id.
+        
+        Purpose:
+        - Implement `_get_or_create_active_conversation_id` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str | None` when available; otherwise side effects only.
+        """
+
         if self.db is None:
             return None
 
@@ -191,6 +366,28 @@ class Orchestrator:
             return None
 
     async def _ensure_user_inbox(self, user_id: str) -> _UserInbox:
+        """
+        Ensure user inbox.
+        
+        Purpose:
+        - Implement `_ensure_user_inbox` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `user_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `_UserInbox` when available; otherwise side effects only.
+        """
+
         async with self._inbox_map_lock:
             inbox = self._user_inboxes.get(user_id)
             if inbox is None:
@@ -206,6 +403,29 @@ class Orchestrator:
             return inbox
 
     async def _drain_user_inbox(self, user_id: str, inbox: _UserInbox) -> None:
+        """
+        Drain user inbox.
+        
+        Purpose:
+        - Implement `_drain_user_inbox` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `user_id`: input used by this function to compute or route work.
+        - `inbox`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         this_task = asyncio.current_task()
         try:
             while True:
@@ -246,6 +466,28 @@ class Orchestrator:
                             self._user_inboxes.pop(user_id, None)
 
     async def _take_batch(self, inbox: _UserInbox) -> list[_InboundMessage]:
+        """
+        Take batch.
+        
+        Purpose:
+        - Implement `_take_batch` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `inbox`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `list[_InboundMessage]` when available; otherwise side effects only.
+        """
+
         async with inbox.lock:
             if not inbox.queue:
                 inbox.event.clear()
@@ -273,6 +515,29 @@ class Orchestrator:
         return batch
 
     def _can_coalesce(self, previous: _InboundMessage, current: _InboundMessage) -> bool:
+        """
+        Can coalesce.
+        
+        Purpose:
+        - Implement `_can_coalesce` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `previous`: input used by this function to compute or route work.
+        - `current`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         if previous.is_command or current.is_command:
             return False
         if detect_switch_intent(previous.text) or detect_switch_intent(current.text):
@@ -282,10 +547,56 @@ class Orchestrator:
         return True
 
     def _resolve_future(self, future: asyncio.Future[str], value: str) -> None:
+        """
+        Resolve future.
+        
+        Purpose:
+        - Implement `_resolve_future` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `future`: input used by this function to compute or route work.
+        - `value`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         if future.done():
             return
         future.set_result(value)
     async def _handle_internal(self, update, text: str) -> str:
+        """
+        Handle internal.
+        
+        Purpose:
+        - Implement `_handle_internal` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        - `text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         session = await self.session_loader.load(update.effective_user.id)
         pending_question = get_pending_question(session)
         pending_action = get_pending_action(session)
@@ -446,6 +757,33 @@ class Orchestrator:
         decision: RoutingDecision,
         scope_resolution: ScopeResolution,
     ) -> str:
+        """
+        Handle write intent.
+        
+        Purpose:
+        - Implement `_handle_write_intent` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        - `text`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        - `intent`: input used by this function to compute or route work.
+        - `decision`: input used by this function to compute or route work.
+        - `scope_resolution`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         if decision.ask_question and decision.question_type == "need_project_name":
             hinted_name = self._extract_project_name_hint(text)
             if hinted_name:
@@ -546,6 +884,30 @@ class Orchestrator:
         return response
 
     async def _handle_greeting(self, update, session: Session, user_text: str) -> str:
+        """
+        Handle greeting.
+        
+        Purpose:
+        - Implement `_handle_greeting` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        - `user_text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         await self._persist_message(update, role="user", content=user_text)
         project_name = (session.project or {}).get("display_name") or (session.project or {}).get("name")
         if project_name:
@@ -574,6 +936,31 @@ class Orchestrator:
         text: str,
         pending_question: PendingQuestion,
     ) -> str | None:
+        """
+        Maybe handle need idea text.
+        
+        Purpose:
+        - Implement `_maybe_handle_need_idea_text` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        - `text`: input used by this function to compute or route work.
+        - `pending_question`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str | None` when available; otherwise side effects only.
+        """
+
         idea_text = (text or "").strip()
         if not idea_text:
             return None
@@ -612,6 +999,32 @@ class Orchestrator:
         pending_question: PendingQuestion,
         scope_resolution: ScopeResolution,
     ) -> str | None:
+        """
+        Maybe handle scope question answer.
+        
+        Purpose:
+        - Implement `_maybe_handle_scope_question_answer` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        - `text`: input used by this function to compute or route work.
+        - `pending_question`: input used by this function to compute or route work.
+        - `scope_resolution`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str | None` when available; otherwise side effects only.
+        """
+
         if scope_resolution.scope_answer == "new":
             question = "What would you like to name the new project?"
             pending = self._build_pending_question(
@@ -654,6 +1067,30 @@ class Orchestrator:
         session: Session,
         text: str,
     ) -> str | None:
+        """
+        Maybe handle project name answer.
+        
+        Purpose:
+        - Implement `_maybe_handle_project_name_answer` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        - `text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str | None` when available; otherwise side effects only.
+        """
+
         project_name = (text or "").strip()
         if not project_name:
             return None
@@ -739,6 +1176,31 @@ class Orchestrator:
         text: str,
         pending_action: PendingAction | None,
     ) -> str | None:
+        """
+        Maybe handle pending action.
+        
+        Purpose:
+        - Implement `_maybe_handle_pending_action` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        - `text`: input used by this function to compute or route work.
+        - `pending_action`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str | None` when available; otherwise side effects only.
+        """
+
         if not pending_action or pending_action.type != "approve_plan":
             return None
 
@@ -797,6 +1259,34 @@ class Orchestrator:
         intent_name: str,
         mode: Mode,
     ) -> str:
+        """
+        Reply with pending question.
+        
+        Purpose:
+        - Implement `_reply_with_pending_question` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        - `user_text`: input used by this function to compute or route work.
+        - `assistant_text`: input used by this function to compute or route work.
+        - `pending_question`: input used by this function to compute or route work.
+        - `intent_name`: input used by this function to compute or route work.
+        - `mode`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         await self._persist_message(update, role="user", content=user_text)
         response = state._main_persona_agent.compose_final_response((assistant_text or "").strip())
         await self._persist_message(update, role="assistant", content=response)
@@ -822,6 +1312,30 @@ class Orchestrator:
         )
         return response
     async def _execute_deterministic_tool(self, tool_name: str, tool_input: dict[str, Any], session: Session) -> str:
+        """
+        Execute deterministic tool.
+        
+        Purpose:
+        - Implement `_execute_deterministic_tool` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `tool_name`: input used by this function to compute or route work.
+        - `tool_input`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         skill = self.skill_registry.get_skill_for_tool(tool_name)
         if not skill:
             return f"Unknown tool: {tool_name}"
@@ -834,6 +1348,28 @@ class Orchestrator:
             return f"ERROR: tool {tool_name} failed: {exc}"
 
     async def _extract_idea_payload(self, user_text: str) -> dict[str, Any]:
+        """
+        Extract idea payload.
+        
+        Purpose:
+        - Implement `_extract_idea_payload` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `user_text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         if self._looks_like_idea_text(user_text) and not detect_switch_intent(user_text):
             fallback = {
                 "idea_text": user_text.strip(),
@@ -872,6 +1408,28 @@ class Orchestrator:
             return fallback
 
     def _looks_like_idea_text(self, text: str) -> bool:
+        """
+        Looks like idea text.
+        
+        Purpose:
+        - Implement `_looks_like_idea_text` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         value = (text or "").strip().lower()
         if not value:
             return False
@@ -884,6 +1442,28 @@ class Orchestrator:
         return True
 
     def _extract_project_name_hint(self, text: str) -> str:
+        """
+        Extract project name hint.
+        
+        Purpose:
+        - Implement `_extract_project_name_hint` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         value = (text or "").strip()
         if not value:
             return ""
@@ -915,6 +1495,30 @@ class Orchestrator:
         choices: list[str],
         payload: dict[str, Any] | None,
     ) -> PendingQuestion:
+        """
+        Build pending question.
+        
+        Purpose:
+        - Implement `_build_pending_question` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `q_type`: input used by this function to compute or route work.
+        - `choices`: input used by this function to compute or route work.
+        - `payload`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `PendingQuestion` when available; otherwise side effects only.
+        """
+
         now = datetime.now(timezone.utc)
         return PendingQuestion(
             type=q_type,
@@ -932,6 +1536,31 @@ class Orchestrator:
         response_text: str,
         session: Session,
     ) -> dict[str, Any] | None:
+        """
+        Build pending action update.
+        
+        Purpose:
+        - Implement `_build_pending_action_update` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `intent`: input used by this function to compute or route work.
+        - `execution`: input used by this function to compute or route work.
+        - `response_text`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+        """
+
         if intent.intent in {"approve_plan", "approve_execution", "request_stop"}:
             return None
 
@@ -965,6 +1594,28 @@ class Orchestrator:
         }
 
     async def clear_pending_action_for_user(self, user_id: str) -> None:
+        """
+        Clear pending action for user.
+        
+        Purpose:
+        - Implement `clear_pending_action_for_user` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `user_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         try:
             session = await self.session_loader.load(int(user_id))
             await self.session_loader.clear_pending_action(session)
@@ -977,6 +1628,30 @@ class Orchestrator:
         tools: list[dict],
         requested_allowlist: list[str] | None,
     ) -> list[str] | None:
+        """
+        Resolve allowed providers.
+        
+        Purpose:
+        - Implement `_resolve_allowed_providers` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `mode`: input used by this function to compute or route work.
+        - `tools`: input used by this function to compute or route work.
+        - `requested_allowlist`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `list[str] | None` when available; otherwise side effects only.
+        """
+
         require_tools = bool(tools)
         requested = self._dedupe_provider_names(requested_allowlist)
         requested_candidates = self._available_provider_names(
@@ -1031,6 +1706,29 @@ class Orchestrator:
         allowed_providers: list[str] | None,
         require_tools: bool,
     ) -> list[str]:
+        """
+        Available provider names.
+        
+        Purpose:
+        - Implement `_available_provider_names` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `allowed_providers`: input used by this function to compute or route work.
+        - `require_tools`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `list[str]` when available; otherwise side effects only.
+        """
+
         try:
             if hasattr(self.provider_router, "available_provider_names"):
                 return self.provider_router.available_provider_names(
@@ -1043,6 +1741,28 @@ class Orchestrator:
         return []
 
     def _dedupe_provider_names(self, names: list[str] | None) -> list[str] | None:
+        """
+        Dedupe provider names.
+        
+        Purpose:
+        - Implement `_dedupe_provider_names` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `names`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `list[str] | None` when available; otherwise side effects only.
+        """
+
         if names is None:
             return None
         deduped: list[str] = []
@@ -1053,6 +1773,31 @@ class Orchestrator:
         return deduped
 
     async def _execute(self, text: str, ctx: ContextPackage, session: Session, mode: Mode) -> _ExecutionResult:
+        """
+        Execute.
+        
+        Purpose:
+        - Implement `_execute` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `text`: input used by this function to compute or route work.
+        - `ctx`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        - `mode`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `_ExecutionResult` when available; otherwise side effects only.
+        """
+
         skill_context = self._build_skill_context(session)
         messages = ctx.messages + [{"role": "user", "content": text}]
         rounds = 0
@@ -1126,6 +1871,28 @@ class Orchestrator:
         return _ExecutionResult(text=summary, tool_outcomes=tool_outcomes)
 
     def _map_provider_failure(self, error: Exception) -> str:
+        """
+        Map provider failure.
+        
+        Purpose:
+        - Implement `_map_provider_failure` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `error`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         message = str(error).lower()
         if (
             "no ai providers available" in message
@@ -1138,7 +1905,52 @@ class Orchestrator:
             )
         return "The AI provider encountered an error. Please try again."
     def _make_set_active_project_callback(self, session: Session):
+        """
+        Make set active project callback.
+        
+        Purpose:
+        - Implement `_make_set_active_project_callback` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `session`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         async def _set_active_project(project_id: str, phase: str):
+            """
+            Set active project.
+            
+            Purpose:
+            - Implement `_set_active_project` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - `project_id`: input used by this function to compute or route work.
+            - `phase`: input used by this function to compute or route work.
+            
+            Returns:
+            - Function-specific value or side effects consumed by upstream callers.
+            """
+
             session.project_id = project_id
             session.conversation_phase = phase
             from db import store
@@ -1154,6 +1966,28 @@ class Orchestrator:
         return _set_active_project
 
     def _build_skill_context(self, session: Session) -> SkillContext:
+        """
+        Build skill context.
+        
+        Purpose:
+        - Implement `_build_skill_context` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `session`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `SkillContext` when available; otherwise side effects only.
+        """
+
         from bot.commands import request_worker_approval
 
         project_id = session.project_id or "telegram_chat"
@@ -1172,6 +2006,28 @@ class Orchestrator:
         )
 
     def _build_assistant_content(self, response) -> object:
+        """
+        Build assistant content.
+        
+        Purpose:
+        - Implement `_build_assistant_content` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `response`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `object` when available; otherwise side effects only.
+        """
+
         parts: list[dict[str, Any]] = []
         if response.text:
             parts.append({"type": "text", "text": response.text})
@@ -1187,6 +2043,29 @@ class Orchestrator:
         return parts if parts else response.text
 
     async def _force_summary(self, messages: list[dict], system_prompt: str) -> str:
+        """
+        Force summary.
+        
+        Purpose:
+        - Implement `_force_summary` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `messages`: input used by this function to compute or route work.
+        - `system_prompt`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         try:
             summary = await self.provider_router.chat(
                 messages
@@ -1207,6 +2086,30 @@ class Orchestrator:
             return ""
 
     def _infer_phase(self, intent: ClassifiedIntent, mode: Mode, session: Session) -> str:
+        """
+        Infer phase.
+        
+        Purpose:
+        - Implement `_infer_phase` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `intent`: input used by this function to compute or route work.
+        - `mode`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         if not session.project_id:
             return "discovery"
         if mode == Mode.PLANNING:
@@ -1224,6 +2127,31 @@ class Orchestrator:
         response: str,
         session: Session,
     ) -> dict[str, Any]:
+        """
+        Build metadata update.
+        
+        Purpose:
+        - Implement `_build_metadata_update` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `intent`: input used by this function to compute or route work.
+        - `mode`: input used by this function to compute or route work.
+        - `response`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         metadata: dict[str, Any] = {"last_mode": mode.value}
         if intent.intent in {"approve_plan", "approve_execution"}:
             metadata["waiting_for"] = ""
@@ -1232,6 +2160,30 @@ class Orchestrator:
         return metadata
 
     async def _persist_message(self, update, *, role: str, content: str) -> None:
+        """
+        Persist message.
+        
+        Purpose:
+        - Implement `_persist_message` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        - `role`: input used by this function to compute or route work.
+        - `content`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         if role not in {"user", "assistant"}:
             return
 
@@ -1262,10 +2214,54 @@ class Orchestrator:
         _trim_chat_history()
 
     async def _load_recent_for_classifier(self, update) -> list[dict]:
+        """
+        Load recent for classifier.
+        
+        Purpose:
+        - Implement `_load_recent_for_classifier` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `list[dict]` when available; otherwise side effects only.
+        """
+
         history = await _load_recent_conversation_messages(update, gap_tier=GapTier.ACTIVE)
         return history[-2:]
 
     async def _load_last_assistant_text(self, update) -> str:
+        """
+        Load last assistant text.
+        
+        Purpose:
+        - Implement `_load_last_assistant_text` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `update`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         history = await _load_recent_conversation_messages(update, gap_tier=GapTier.ACTIVE)
         for msg in reversed(history):
             if msg.get("role") != "assistant":

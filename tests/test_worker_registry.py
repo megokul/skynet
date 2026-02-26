@@ -12,6 +12,28 @@ from skynet.ledger.worker_registry import WorkerRegistry
 
 @pytest.mark.asyncio
 async def test_worker_registry_flow() -> None:
+    """
+    Test scenario `test_worker_registry_flow`.
+    
+    Purpose:
+    - Implement `test_worker_registry_flow` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     db = await init_db(":memory:")
     registry = WorkerRegistry(db, heartbeat_timeout_seconds=1)
 

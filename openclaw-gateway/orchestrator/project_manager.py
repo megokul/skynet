@@ -40,6 +40,29 @@ def _slugify(name: str) -> str:
 
 
 def _join_path(base: str, leaf: str) -> str:
+    """
+    Join path.
+    
+    Purpose:
+    - Implement `_join_path` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `base`: input used by this function to compute or route work.
+    - `leaf`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     sep = "\\" if ("\\" in base or ":" in base) else "/"
     return base.rstrip("\\/") + sep + leaf
 
@@ -55,6 +78,32 @@ class ProjectManager:
         scheduler: Scheduler,
         project_base_dir: str,
     ):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `db`: input used by this function to compute or route work.
+        - `router`: input used by this function to compute or route work.
+        - `searcher`: input used by this function to compute or route work.
+        - `scheduler`: input used by this function to compute or route work.
+        - `project_base_dir`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.db = db
         self.router = router
         self.searcher = searcher
@@ -282,16 +331,82 @@ class ProjectManager:
         await self.scheduler.submit(project_id)
 
     async def pause_project(self, project_id: str) -> None:
+        """
+        Pause project.
+        
+        Purpose:
+        - Implement `pause_project` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         if not self.scheduler.pause(project_id):
             raise ValueError("Project is not currently running.")
         await store.update_project(self.db, project_id, status="paused")
 
     async def resume_project(self, project_id: str) -> None:
+        """
+        Resume project.
+        
+        Purpose:
+        - Implement `resume_project` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         if not self.scheduler.resume(project_id):
             raise ValueError("Project is not currently paused.")
         await store.update_project(self.db, project_id, status="coding")
 
     async def cancel_project(self, project_id: str) -> None:
+        """
+        Cancel project.
+        
+        Purpose:
+        - Implement `cancel_project` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         self.scheduler.cancel(project_id)
         await store.update_project(self.db, project_id, status="cancelled")
         await store.add_event(self.db, project_id, "cancelled", "Project cancelled by user")
@@ -312,9 +427,53 @@ class ProjectManager:
         return project
 
     async def list_projects(self) -> list[dict[str, Any]]:
+        """
+        List projects.
+        
+        Purpose:
+        - Implement `list_projects` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+        """
+
         return await store.list_projects(self.db)
 
     async def get_status(self, project_id: str) -> dict[str, Any]:
+        """
+        Get status.
+        
+        Purpose:
+        - Implement `get_status` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         project = await store.get_project(self.db, project_id)
         if not project:
             raise ValueError("Project not found.")
@@ -580,6 +739,32 @@ class ProjectManager:
         retry_on_transient: bool = False,
         max_attempts: int = 2,
     ) -> tuple[bool, str]:
+        """
+        Run agent action.
+        
+        Purpose:
+        - Implement `_run_agent_action` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `action`: input used by this function to compute or route work.
+        - `params`: input used by this function to compute or route work.
+        - `confirmed`: input used by this function to compute or route work.
+        - `retry_on_transient`: input used by this function to compute or route work.
+        - `max_attempts`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `tuple[bool, str]` when available; otherwise side effects only.
+        """
+
         attempts = max(1, max_attempts if retry_on_transient else 1)
         last_error = "unknown error"
 
@@ -616,6 +801,30 @@ class ProjectManager:
         params: dict[str, Any],
         confirmed: bool,
     ) -> tuple[bool, str]:
+        """
+        Run agent action once.
+        
+        Purpose:
+        - Implement `_run_agent_action_once` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `action`: input used by this function to compute or route work.
+        - `params`: input used by this function to compute or route work.
+        - `confirmed`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `tuple[bool, str]` when available; otherwise side effects only.
+        """
+
         payload = {"action": action, "params": params, "confirmed": confirmed}
         try:
             async with aiohttp.ClientSession() as session:
@@ -652,10 +861,56 @@ class ProjectManager:
         params: dict[str, Any],
         confirmed: bool,
     ) -> tuple[bool, str]:
+        """
+        Run agent action for planner.
+        
+        Purpose:
+        - Implement `_run_agent_action_for_planner` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `action`: input used by this function to compute or route work.
+        - `params`: input used by this function to compute or route work.
+        - `confirmed`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `tuple[bool, str]` when available; otherwise side effects only.
+        """
+
         return await self._run_agent_action(action, params, confirmed=confirmed)
 
     @staticmethod
     def _extract_github_url(text: str) -> str | None:
+        """
+        Extract github url.
+        
+        Purpose:
+        - Implement `_extract_github_url` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str | None` when available; otherwise side effects only.
+        """
+
         if not text:
             return None
         match = re.search(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", text)
@@ -663,6 +918,28 @@ class ProjectManager:
 
     @staticmethod
     def _is_transient_agent_error(message: str) -> bool:
+        """
+        Is transient agent error.
+        
+        Purpose:
+        - Implement `_is_transient_agent_error` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `message`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         text = (message or "").lower()
         markers = (
             "no existing session",

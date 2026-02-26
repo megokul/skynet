@@ -1,3 +1,15 @@
+"""Integration-style tests for commander engine and specialist delegation flows.
+
+Purpose:
+- Validate role delegation, conversation switching, and project lifecycle behavior.
+- Exercise inbox sequencing and specialist interactions with deterministic fake routers.
+- Catch regressions in end-to-end engine orchestration semantics.
+
+How it works:
+- Builds in-memory DB fixtures and lightweight fake provider/project-manager collaborators.
+- Sends user messages through real engine entrypoints.
+- Asserts DB state and role transitions after each scenario."""
+
 from __future__ import annotations
 
 import asyncio
@@ -9,6 +21,28 @@ import pytest
 
 
 def _ensure_paths() -> None:
+    """
+    Ensure paths.
+    
+    Purpose:
+    - Implement `_ensure_paths` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     repo_root = Path(__file__).parent.parent
     gateway_root = str(repo_root / "openclaw-gateway")
     if gateway_root not in sys.path:
@@ -16,17 +50,120 @@ def _ensure_paths() -> None:
 
 
 class _ProviderResponse:
+    """
+    ProviderResponse.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `_ProviderResponse`.
+    """
+
     def __init__(self, text: str):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.text = text
         self.tool_calls = []
 
 
 class _FakeProviderRouter:
+    """
+    FakeProviderRouter.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `_FakeProviderRouter`.
+    """
+
     def __init__(self, scripted_text: list[str] | None = None):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `scripted_text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self._scripted = deque(scripted_text or [])
         self.calls: list[dict] = []
 
     async def chat(self, messages, *, tools=None, system=None, max_tokens=0, task_type="general", allowed_providers=None):
+        """
+        Chat.
+        
+        Purpose:
+        - Implement `chat` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `messages`: input used by this function to compute or route work.
+        - `tools`: input used by this function to compute or route work.
+        - `system`: input used by this function to compute or route work.
+        - `max_tokens`: input used by this function to compute or route work.
+        - `task_type`: input used by this function to compute or route work.
+        - `allowed_providers`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.calls.append({
             "messages": messages,
             "tools": tools,
@@ -40,11 +177,71 @@ class _FakeProviderRouter:
 
 
 class _FakeProjectManager:
+    """
+    FakeProjectManager.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `_FakeProjectManager`.
+    """
+
     def __init__(self, db):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `db`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.db = db
         self.started: list[str] = []
 
     async def create_project(self, name: str):
+        """
+        Create project.
+        
+        Purpose:
+        - Implement `create_project` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `name`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         from db import store
 
         normalized = "".join(ch for ch in name.lower().replace(" ", "-") if ch.isalnum() or ch in {"-", "_"}).strip("-")
@@ -55,11 +252,55 @@ class _FakeProjectManager:
         return await store.create_project(self.db, name=normalized, display_name=name, local_path="")
 
     async def start_execution(self, project_id: str):
+        """
+        Start execution.
+        
+        Purpose:
+        - Implement `start_execution` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.started.append(project_id)
 
 
 @pytest.mark.asyncio
 async def test_igris_delegates_to_project_specialist() -> None:
+    """
+    Test scenario `test_igris_delegates_to_project_specialist`.
+    
+    Purpose:
+    - Implement `test_igris_delegates_to_project_specialist` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_paths()
     from core.engine import ConversationEngine
     from db import schema
@@ -84,6 +325,28 @@ async def test_igris_delegates_to_project_specialist() -> None:
 
 @pytest.mark.asyncio
 async def test_conversation_switching_keeps_project_isolation() -> None:
+    """
+    Test scenario `test_conversation_switching_keeps_project_isolation`.
+    
+    Purpose:
+    - Implement `test_conversation_switching_keeps_project_isolation` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_paths()
     from core.engine import ConversationEngine
     from db import schema, store
@@ -119,6 +382,28 @@ async def test_conversation_switching_keeps_project_isolation() -> None:
 
 @pytest.mark.asyncio
 async def test_project_specialist_full_creation_flow_returns_to_igris() -> None:
+    """
+    Test scenario `test_project_specialist_full_creation_flow_returns_to_igris`.
+    
+    Purpose:
+    - Implement `test_project_specialist_full_creation_flow_returns_to_igris` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_paths()
     from core.engine import ConversationEngine
     from db import schema, store
@@ -152,6 +437,28 @@ async def test_project_specialist_full_creation_flow_returns_to_igris() -> None:
 
 @pytest.mark.asyncio
 async def test_weather_specialist_invocation_without_network(monkeypatch) -> None:
+    """
+    Test scenario `test_weather_specialist_invocation_without_network`.
+    
+    Purpose:
+    - Implement `test_weather_specialist_invocation_without_network` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `monkeypatch`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_paths()
     from core.engine import ConversationEngine
     from core.roles.weather_specialist import WeatherSpecialistRole
@@ -167,6 +474,28 @@ async def test_weather_specialist_invocation_without_network(monkeypatch) -> Non
         engine = ConversationEngine(db, router, project_manager=pm)
 
         async def _fake_fetch(self, location: str) -> str:
+            """
+            Fake fetch.
+            
+            Purpose:
+            - Implement `_fake_fetch` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - `location`: input used by this function to compute or route work.
+            
+            Returns:
+            - Return value typed as `str` when available; otherwise side effects only.
+            """
+
             return f"Weather for {location}: sunny"
 
         monkeypatch.setattr(WeatherSpecialistRole, "_fetch_weather", _fake_fetch)
@@ -182,6 +511,28 @@ async def test_weather_specialist_invocation_without_network(monkeypatch) -> Non
 
 @pytest.mark.asyncio
 async def test_reminder_specialist_creates_db_reminder() -> None:
+    """
+    Test scenario `test_reminder_specialist_creates_db_reminder`.
+    
+    Purpose:
+    - Implement `test_reminder_specialist_creates_db_reminder` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_paths()
     from core.engine import ConversationEngine
     from db import schema, store
@@ -208,6 +559,28 @@ async def test_reminder_specialist_creates_db_reminder() -> None:
 
 @pytest.mark.asyncio
 async def test_coding_specialist_queues_background_execution() -> None:
+    """
+    Test scenario `test_coding_specialist_queues_background_execution`.
+    
+    Purpose:
+    - Implement `test_coding_specialist_queues_background_execution` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_paths()
     from core.engine import ConversationEngine
     from db import schema, store
@@ -241,6 +614,28 @@ async def test_coding_specialist_queues_background_execution() -> None:
 
 @pytest.mark.asyncio
 async def test_inbox_messages_are_sequential_and_not_dropped() -> None:
+    """
+    Test scenario `test_inbox_messages_are_sequential_and_not_dropped`.
+    
+    Purpose:
+    - Implement `test_inbox_messages_are_sequential_and_not_dropped` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_paths()
     from core.engine import ConversationEngine
     from db import schema
@@ -255,6 +650,29 @@ async def test_inbox_messages_are_sequential_and_not_dropped() -> None:
         calls: list[str] = []
 
         async def _fake_run(conversation, text: str) -> str:
+            """
+            Fake run.
+            
+            Purpose:
+            - Implement `_fake_run` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - `conversation`: input used by this function to compute or route work.
+            - `text`: input used by this function to compute or route work.
+            
+            Returns:
+            - Return value typed as `str` when available; otherwise side effects only.
+            """
+
             calls.append(text)
             await asyncio.sleep(0.02)
             return f"ack:{text}"

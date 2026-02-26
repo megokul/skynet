@@ -13,6 +13,29 @@ import os
 
 
 def _str_env(name: str, default: str) -> str:
+    """
+    Str env.
+    
+    Purpose:
+    - Implement `_str_env` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `name`: input used by this function to compute or route work.
+    - `default`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     value = os.environ.get(name)
     if value is None:
         return default
@@ -21,6 +44,29 @@ def _str_env(name: str, default: str) -> str:
 
 
 def _int_env(name: str, default: int) -> int:
+    """
+    Int env.
+    
+    Purpose:
+    - Implement `_int_env` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `name`: input used by this function to compute or route work.
+    - `default`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     value = os.environ.get(name)
     if value is None:
         return default

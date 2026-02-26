@@ -35,6 +35,30 @@ class BackgroundScheduler:
         db: aiosqlite.Connection,
         gateway_api_url: str,
     ):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `s3`: input used by this function to compute or route work.
+        - `db`: input used by this function to compute or route work.
+        - `gateway_api_url`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.s3 = s3
         self.db = db
         self.gateway_url = gateway_api_url
@@ -208,12 +232,58 @@ class BackgroundStorage:
         s3: S3Storage,
         gateway_api_url: str,
     ) -> None:
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `db`: input used by this function to compute or route work.
+        - `s3`: input used by this function to compute or route work.
+        - `gateway_api_url`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         self.db = db
         self.s3 = s3
         self.gateway_api_url = gateway_api_url
         self._scheduler = BackgroundScheduler(s3=s3, db=db, gateway_api_url=gateway_api_url)
 
     async def backup_active_projects(self) -> None:
+        """
+        Backup active projects.
+        
+        Purpose:
+        - Implement `backup_active_projects` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         status = await self._fetch_gateway_status()
         if not status:
             logger.info("Daily backup skipped: gateway status unavailable.")
@@ -260,6 +330,28 @@ class BackgroundStorage:
         logger.info("Daily backup finished: %d/%d projects backed up.", backed_up, attempted)
 
     async def _fetch_gateway_status(self) -> dict[str, Any] | None:
+        """
+        Fetch gateway status.
+        
+        Purpose:
+        - Implement `_fetch_gateway_status` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+        """
+
         import aiohttp
 
         try:
@@ -274,6 +366,28 @@ class BackgroundStorage:
         return data if isinstance(data, dict) else None
 
     def _status_executor_available(self, data: dict[str, Any]) -> bool:
+        """
+        Status executor available.
+        
+        Purpose:
+        - Implement `_status_executor_available` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `data`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         agent_connected = bool(data.get("agent_connected", False))
         ssh_ok = bool(data.get("ssh_fallback_enabled", False)) and bool(
             data.get("ssh_fallback_healthy", False)

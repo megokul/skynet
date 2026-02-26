@@ -1,3 +1,10 @@
+"""Trace logger structure regression tests.
+
+Purpose:
+- Validate required start/step/end fields in human-readable trace output.
+- Ensure decorator-based trace steps include parameters, prompt refs, and timing.
+- Guard the trace log contract consumed by debugging workflows."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -5,6 +12,28 @@ import sys
 
 
 def _ensure_paths() -> None:
+    """
+    Ensure paths.
+    
+    Purpose:
+    - Implement `_ensure_paths` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     repo_root = Path(__file__).parent.parent
     gateway_root = str(repo_root / "openclaw-gateway")
     if gateway_root not in sys.path:
@@ -17,6 +46,29 @@ from core import tracing
 
 
 def test_trace_logger_writes_required_structure(tmp_path: Path, monkeypatch) -> None:
+    """
+    Test scenario `test_trace_logger_writes_required_structure`.
+    
+    Purpose:
+    - Implement `test_trace_logger_writes_required_structure` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `tmp_path`: input used by this function to compute or route work.
+    - `monkeypatch`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     trace_file = tmp_path / "logs" / "skynet.trace.log"
     monkeypatch.setattr(tracing, "_TRACE_FILE", trace_file)
 
@@ -34,6 +86,28 @@ def test_trace_logger_writes_required_structure(tmp_path: Path, monkeypatch) -> 
             step_name="classify_intent",
         )
         def classify_intent(text: str) -> dict[str, str]:
+            """
+            Classify intent.
+            
+            Purpose:
+            - Implement `classify_intent` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - `text`: input used by this function to compute or route work.
+            
+            Returns:
+            - Return value typed as `dict[str, str]` when available; otherwise side effects only.
+            """
+
             return {"intent": "project.create"}
 
         classify_intent("user message")

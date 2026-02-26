@@ -22,6 +22,28 @@ logger = logging.getLogger("skynet.sentinel")
 
 
 def _is_missing_s3_credentials_error(exc: Exception) -> bool:
+    """
+    Is missing s3 credentials error.
+    
+    Purpose:
+    - Implement `_is_missing_s3_credentials_error` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `exc`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     text = str(exc or "").lower()
     return (
         "unable to locate credentials" in text
@@ -43,6 +65,28 @@ class HealthStatus:
     checked_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        To dict.
+        
+        Purpose:
+        - Implement `to_dict` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         return {
             "component": self.component,
             "healthy": self.healthy,
@@ -70,6 +114,32 @@ class SentinelMonitor:
         s3: Any = None,
         startup_grace_seconds: int = 60,
     ):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `gateway_api_url`: input used by this function to compute or route work.
+        - `scheduler`: input used by this function to compute or route work.
+        - `db`: input used by this function to compute or route work.
+        - `s3`: input used by this function to compute or route work.
+        - `startup_grace_seconds`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.gateway_api_url = gateway_api_url
         self.scheduler = scheduler
         self.db = db

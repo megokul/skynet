@@ -15,6 +15,28 @@ from skynet.ledger.task_queue import TaskQueueManager
 
 @pytest.mark.asyncio
 async def test_dependency_order_is_enforced() -> None:
+    """
+    Test scenario `test_dependency_order_is_enforced`.
+    
+    Purpose:
+    - Implement `test_dependency_order_is_enforced` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     db = await init_db(":memory:")
     q = TaskQueueManager(db)
 
@@ -57,6 +79,28 @@ async def test_dependency_order_is_enforced() -> None:
 
 @pytest.mark.asyncio
 async def test_file_ownership_blocks_conflicts() -> None:
+    """
+    Test scenario `test_file_ownership_blocks_conflicts`.
+    
+    Purpose:
+    - Implement `test_file_ownership_blocks_conflicts` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     db = await init_db(":memory:")
     q = TaskQueueManager(db)
 
@@ -94,6 +138,28 @@ async def test_file_ownership_blocks_conflicts() -> None:
 
 @pytest.mark.asyncio
 async def test_claim_is_exclusive() -> None:
+    """
+    Test scenario `test_claim_is_exclusive`.
+    
+    Purpose:
+    - Implement `test_claim_is_exclusive` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     db = await init_db(":memory:")
     q = TaskQueueManager(db)
     await q.enqueue_task(task_id="only-task", action="echo")
@@ -110,6 +176,28 @@ async def test_claim_is_exclusive() -> None:
 
 @pytest.mark.asyncio
 async def test_illegal_transition_complete_without_running_is_rejected() -> None:
+    """
+    Test scenario `test_illegal_transition_complete_without_running_is_rejected`.
+    
+    Purpose:
+    - Implement `test_illegal_transition_complete_without_running_is_rejected` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     db = await init_db(":memory:")
     q = TaskQueueManager(db)
     await q.enqueue_task(task_id="t-illegal", action="echo")
@@ -129,6 +217,28 @@ async def test_illegal_transition_complete_without_running_is_rejected() -> None
 
 @pytest.mark.asyncio
 async def test_release_after_success_is_rejected() -> None:
+    """
+    Test scenario `test_release_after_success_is_rejected`.
+    
+    Purpose:
+    - Implement `test_release_after_success_is_rejected` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     db = await init_db(":memory:")
     q = TaskQueueManager(db)
     await q.enqueue_task(task_id="t-release", action="echo")

@@ -38,6 +38,28 @@ class PolicyDecision:
     blocked_steps: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        To dict.
+        
+        Purpose:
+        - Implement `to_dict` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         return {
             "allowed": self.allowed,
             "requires_approval": self.requires_approval,
@@ -56,6 +78,28 @@ class PolicyEngine:
     """
 
     def __init__(self, auto_approve_read_only: bool = True):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `auto_approve_read_only`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.auto_approve_read_only = auto_approve_read_only
 
     def classify_risk(self, plan_spec: PlanSpec) -> str:

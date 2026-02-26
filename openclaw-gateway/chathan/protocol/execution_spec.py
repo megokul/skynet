@@ -27,10 +27,54 @@ class ExecutionStep:
     description: str = ""         # human-readable description
 
     def __post_init__(self) -> None:
+        """
+        Post init.
+        
+        Purpose:
+        - Implement `__post_init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         if not self.id:
             self.id = uuid.uuid4().hex[:8]
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        To dict.
+        
+        Purpose:
+        - Implement `to_dict` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         return {
             "id": self.id,
             "action": self.action,
@@ -42,6 +86,28 @@ class ExecutionStep:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ExecutionStep:
+        """
+        From dict.
+        
+        Purpose:
+        - Implement `from_dict` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `d`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `ExecutionStep` when available; otherwise side effects only.
+        """
+
         return cls(
             id=d.get("id", ""),
             action=d["action"],
@@ -73,6 +139,28 @@ class ExecutionSpec:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        To dict.
+        
+        Purpose:
+        - Implement `to_dict` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         return {
             "job_id": self.job_id,
             "project_id": self.project_id,
@@ -87,6 +175,28 @@ class ExecutionSpec:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ExecutionSpec:
+        """
+        From dict.
+        
+        Purpose:
+        - Implement `from_dict` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `d`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `ExecutionSpec` when available; otherwise side effects only.
+        """
+
         steps = [ExecutionStep.from_dict(s) for s in d.get("steps", [])]
         return cls(
             job_id=d.get("job_id", ""),
@@ -116,9 +226,53 @@ class ExecutionResult:
 
     @property
     def succeeded(self) -> bool:
+        """
+        Succeeded.
+        
+        Purpose:
+        - Implement `succeeded` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         return self.status == "succeeded"
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        To dict.
+        
+        Purpose:
+        - Implement `to_dict` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         return {
             "job_id": self.job_id,
             "plan_step_index": self.plan_step_index,
@@ -132,6 +286,28 @@ class ExecutionResult:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ExecutionResult:
+        """
+        From dict.
+        
+        Purpose:
+        - Implement `from_dict` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `d`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `ExecutionResult` when available; otherwise side effects only.
+        """
+
         return cls(
             job_id=d.get("job_id", ""),
             plan_step_index=d.get("plan_step_index", 0),

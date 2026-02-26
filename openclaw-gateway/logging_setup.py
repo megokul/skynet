@@ -1,3 +1,20 @@
+"""Gateway logging bootstrap and transport fan-out.
+
+Purpose:
+- Configure rotating local log files and structured formatting.
+- Optionally mirror logs to remote Windows hosts over SSH.
+- Keep log writes non-blocking so runtime latency stays stable.
+
+How it works:
+- Uses async queue-backed handlers for batch flushing in worker threads.
+- Encodes payloads safely for remote command transport.
+- Falls back to stderr diagnostics if mirror sinks fail.
+
+Why this exists:
+- Centralized setup keeps every process emitting consistent log shape.
+- Non-blocking handlers prevent user-facing operations from stalling on IO.
+- Mirror support allows debugging from remote operator workstations."""
+
 from __future__ import annotations
 
 import atexit
@@ -30,6 +47,30 @@ class _AsyncBatchHandler(logging.Handler):
         batch_size: int,
         queue_size: int = 20000,
     ) -> None:
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `flush_interval_seconds`: input used by this function to compute or route work.
+        - `batch_size`: input used by this function to compute or route work.
+        - `queue_size`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         super().__init__()
         self._flush_interval_seconds = max(0.1, float(flush_interval_seconds))
         self._batch_size = max(1, int(batch_size))
@@ -44,6 +85,28 @@ class _AsyncBatchHandler(logging.Handler):
         self._worker.start()
 
     def emit(self, record: logging.LogRecord) -> None:
+        """
+        Emit.
+        
+        Purpose:
+        - Implement `emit` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `record`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         try:
             line = self.format(record)
             self._queue.put_nowait(line)
@@ -53,11 +116,55 @@ class _AsyncBatchHandler(logging.Handler):
             self.handleError(record)
 
     def close(self) -> None:
+        """
+        Close.
+        
+        Purpose:
+        - Implement `close` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         self._stop.set()
         self._worker.join(timeout=3.0)
         super().close()
 
     def _run(self) -> None:
+        """
+        Run.
+        
+        Purpose:
+        - Implement `_run` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         pending: list[str] = []
         while not self._stop.is_set() or not self._queue.empty():
             try:
@@ -80,16 +187,82 @@ class _AsyncBatchHandler(logging.Handler):
             )
 
     def _flush_safe(self, batch: list[str]) -> None:
+        """
+        Flush safe.
+        
+        Purpose:
+        - Implement `_flush_safe` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `batch`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         try:
             self._flush_batch(batch)
         except Exception:
             self._stderr("Log sink flush failed:\n" + traceback.format_exc())
 
     def _flush_batch(self, batch: list[str]) -> None:
+        """
+        Flush batch.
+        
+        Purpose:
+        - Implement `_flush_batch` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `batch`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         raise NotImplementedError
 
     @staticmethod
     def _stderr(message: str) -> None:
+        """
+        Stderr.
+        
+        Purpose:
+        - Implement `_stderr` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `message`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         sys.stderr.write(message.rstrip() + "\n")
         sys.stderr.flush()
 
@@ -112,6 +285,38 @@ class _SSHMirrorFileHandler(_AsyncBatchHandler):
         flush_interval_seconds: float = 1.0,
         batch_size: int = 20,
     ) -> None:
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `host`: input used by this function to compute or route work.
+        - `port`: input used by this function to compute or route work.
+        - `username`: input used by this function to compute or route work.
+        - `key_path`: input used by this function to compute or route work.
+        - `password`: input used by this function to compute or route work.
+        - `strict_host_key`: input used by this function to compute or route work.
+        - `connect_timeout`: input used by this function to compute or route work.
+        - `command_timeout`: input used by this function to compute or route work.
+        - `remote_windows_path`: input used by this function to compute or route work.
+        - `flush_interval_seconds`: input used by this function to compute or route work.
+        - `batch_size`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         super().__init__(flush_interval_seconds=flush_interval_seconds, batch_size=batch_size)
         self._host = host
         self._port = port
@@ -126,10 +331,54 @@ class _SSHMirrorFileHandler(_AsyncBatchHandler):
         self._mkdir_done = False
 
     def close(self) -> None:
+        """
+        Close.
+        
+        Purpose:
+        - Implement `close` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         super().close()
         self._close_client()
 
     def _close_client(self) -> None:
+        """
+        Close client.
+        
+        Purpose:
+        - Implement `_close_client` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         if self._client is not None:
             try:
                 self._client.close()
@@ -139,6 +388,28 @@ class _SSHMirrorFileHandler(_AsyncBatchHandler):
             self._mkdir_done = False
 
     def _connect(self) -> paramiko.SSHClient:
+        """
+        Connect.
+        
+        Purpose:
+        - Implement `_connect` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `paramiko.SSHClient` when available; otherwise side effects only.
+        """
+
         if self._client is not None:
             return self._client
         client = paramiko.SSHClient()
@@ -167,6 +438,28 @@ class _SSHMirrorFileHandler(_AsyncBatchHandler):
         return client
 
     def _flush_batch(self, batch: list[str]) -> None:
+        """
+        Flush batch.
+        
+        Purpose:
+        - Implement `_flush_batch` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `batch`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         if not self._mkdir_done:
             client = self._connect()
             parent = self._remote_windows_path.replace("/", "\\")
@@ -196,6 +489,28 @@ class _SSHMirrorFileHandler(_AsyncBatchHandler):
             self._append_chunk_with_retry(chunk)
 
     def _append_chunk_with_retry(self, lines: list[str]) -> None:
+        """
+        Append chunk with retry.
+        
+        Purpose:
+        - Implement `_append_chunk_with_retry` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `lines`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         for attempt in range(2):
             client = self._connect()
             try:
@@ -213,6 +528,29 @@ class _SSHMirrorFileHandler(_AsyncBatchHandler):
                     raise
 
     def _append_chunk(self, client: paramiko.SSHClient, lines: list[str]) -> None:
+        """
+        Append chunk.
+        
+        Purpose:
+        - Implement `_append_chunk` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `client`: input used by this function to compute or route work.
+        - `lines`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         payload = "".join(f"{line}\n" for line in lines)
         encoded_payload = base64.b64encode(payload.encode("utf-8")).decode("ascii")
         script = (
@@ -234,6 +572,30 @@ class _SSHMirrorFileHandler(_AsyncBatchHandler):
         script: str,
         timeout: int | None = None,
     ) -> None:
+        """
+        Exec powershell.
+        
+        Purpose:
+        - Implement `_exec_powershell` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `client`: input used by this function to compute or route work.
+        - `script`: input used by this function to compute or route work.
+        - `timeout`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
         command = (
             "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass "
@@ -271,6 +633,33 @@ class _S3BatchHandler(_AsyncBatchHandler):
         flush_interval_seconds: float = 5.0,
         batch_size: int = 300,
     ) -> None:
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `bucket`: input used by this function to compute or route work.
+        - `prefix`: input used by this function to compute or route work.
+        - `region`: input used by this function to compute or route work.
+        - `stream`: input used by this function to compute or route work.
+        - `flush_interval_seconds`: input used by this function to compute or route work.
+        - `batch_size`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         super().__init__(flush_interval_seconds=flush_interval_seconds, batch_size=batch_size)
         self._bucket = bucket
         self._prefix = prefix.strip().strip("/")
@@ -282,6 +671,28 @@ class _S3BatchHandler(_AsyncBatchHandler):
         self._disable_reason = ""
 
     def _get_client(self):
+        """
+        Get client.
+        
+        Purpose:
+        - Implement `_get_client` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         if self._client is None:
             import boto3
 
@@ -289,6 +700,28 @@ class _S3BatchHandler(_AsyncBatchHandler):
         return self._client
 
     def _flush_batch(self, batch: list[str]) -> None:
+        """
+        Flush batch.
+        
+        Purpose:
+        - Implement `_flush_batch` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `batch`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         if self._disabled:
             return
         now = datetime.now(timezone.utc)
@@ -536,6 +969,28 @@ def configure_logging(
 
 
 def _safe_close_handler(handler: logging.Handler) -> None:
+    """
+    Safe close handler.
+    
+    Purpose:
+    - Implement `_safe_close_handler` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `handler`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     try:
         handler.close()
     except Exception:
@@ -547,6 +1002,30 @@ def _resolve_targets(
     mirror_log_dir: str | None,
     filename: str,
 ) -> list[Path]:
+    """
+    Resolve targets.
+    
+    Purpose:
+    - Implement `_resolve_targets` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `log_dir`: input used by this function to compute or route work.
+    - `mirror_log_dir`: input used by this function to compute or route work.
+    - `filename`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[Path]` when available; otherwise side effects only.
+    """
+
     targets: list[Path] = []
     for directory in _iter_dirs(log_dir, mirror_log_dir):
         try:
@@ -561,6 +1040,29 @@ def _resolve_targets(
 
 
 def _iter_dirs(primary: str, mirror: str | None) -> Iterable[Path]:
+    """
+    Iter dirs.
+    
+    Purpose:
+    - Implement `_iter_dirs` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `primary`: input used by this function to compute or route work.
+    - `mirror`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `Iterable[Path]` when available; otherwise side effects only.
+    """
+
     seen: set[str] = set()
     for raw in (primary, mirror):
         value = (raw or "").strip()
@@ -574,6 +1076,29 @@ def _iter_dirs(primary: str, mirror: str | None) -> Iterable[Path]:
 
 
 def _join_windows_path(base: str, filename: str) -> str:
+    """
+    Join windows path.
+    
+    Purpose:
+    - Implement `_join_windows_path` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `base`: input used by this function to compute or route work.
+    - `filename`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     clean_base = (base or "").strip().rstrip("\\/")
     if not clean_base:
         return filename
@@ -581,4 +1106,26 @@ def _join_windows_path(base: str, filename: str) -> str:
 
 
 def _ps_quote(value: str) -> str:
+    """
+    Ps quote.
+    
+    Purpose:
+    - Implement `_ps_quote` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `value`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     return "'" + value.replace("'", "''") + "'"

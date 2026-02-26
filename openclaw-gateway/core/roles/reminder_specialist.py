@@ -1,7 +1,13 @@
+"""
+Reminder specialist role.
+
+This role extracts reminder payloads, manages missing-field follow-up prompts,
+and persists reminders into conversation-linked storage.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-import logging
 
 from core.prompt_library import load_prompt
 from core.roles.base import Role, RoleContext, RoleOutput
@@ -9,14 +15,35 @@ from core.trace import trace_flow
 from core.tracing import trace
 from db import store
 
-logger = logging.getLogger("skynet.core.roles.reminder")
 
 class ReminderSpecialistRole(Role):
+    """
+    ReminderSpecialistRole.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `ReminderSpecialistRole`.
+    """
+
     name = "reminder_specialist"
     _payload_extract_instruction = load_prompt("core/roles/reminder_payload_extract_instruction.md")
 
     @trace(role="reminder_specialist", step_name="reminder_specialist_handle")
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
+        """
+        Reminder role state machine.
+
+        - If waiting for missing title, consume title and save reminder.
+        - Otherwise extract structured payload and either save or ask follow-up.
+        """
         conversation = context.conversation
         pending = conversation.pending_question or {}
         trace_flow(
@@ -104,6 +131,11 @@ class ReminderSpecialistRole(Role):
         step_name="extract_reminder_payload",
     )
     async def _extract_payload(self, context: RoleContext, user_text: str) -> dict:
+        """
+        Extract reminder payload with confidence score.
+
+        Fallback behavior always returns a dict so caller logic remains simple.
+        """
         extractor = context.intent_extractor
         if extractor is None:
             return {"title": (user_text or "").strip(), "confidence": 0.5}

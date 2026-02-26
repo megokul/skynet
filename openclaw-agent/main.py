@@ -34,6 +34,28 @@ from connection.websocket_client import run_agent  # noqa: E402
 
 
 def _configure_logging() -> None:
+    """
+    Configure logging.
+    
+    Purpose:
+    - Implement `_configure_logging` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     level = getattr(logging, config.LOG_LEVEL.upper(), logging.INFO)
     logging.basicConfig(
         level=level,
@@ -43,6 +65,28 @@ def _configure_logging() -> None:
 
 
 def _print_banner() -> None:
+    """
+    Print banner.
+    
+    Purpose:
+    - Implement `_print_banner` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     print(
         r"""
    ____ _   _    _  _____ _   _    _    _   _
@@ -68,6 +112,28 @@ def _print_banner() -> None:
 def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
     """Graceful shutdown on Ctrl+C / SIGTERM."""
     def _shutdown(sig: signal.Signals) -> None:
+        """
+        Shutdown.
+        
+        Purpose:
+        - Implement `_shutdown` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `sig`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         logging.getLogger("chathan").info("Received %s — shutting down.", sig.name)
         for task in asyncio.all_tasks(loop):
             task.cancel()
@@ -82,6 +148,28 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
 
 
 async def _main() -> None:
+    """
+    Main.
+    
+    Purpose:
+    - Implement `_main` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _configure_logging()
     _print_banner()
 

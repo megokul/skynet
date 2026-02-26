@@ -31,6 +31,30 @@ class SecurityViolation(Exception):
     """Raised when a request fails any security gate."""
 
     def __init__(self, reason: str, *, action: str = "", tier: str = ""):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `reason`: input used by this function to compute or route work.
+        - `action`: input used by this function to compute or route work.
+        - `tier`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         super().__init__(reason)
         self.reason = reason
         self.action = action

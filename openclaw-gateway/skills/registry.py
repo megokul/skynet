@@ -21,6 +21,28 @@ class SkillRegistry:
     """Central registry for all available skills."""
 
     def __init__(self):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self._skills: dict[str, BaseSkill] = {}
         self._prompt_skills: list[dict[str, str]] = []
         self._always_on_prompt_skill_names: list[str] = []
@@ -28,6 +50,28 @@ class SkillRegistry:
 
     @staticmethod
     def _norm_skill_name(value: str) -> str:
+        """
+        Norm skill name.
+        
+        Purpose:
+        - Implement `_norm_skill_name` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `value`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         return re.sub(r"[\s_]+", "-", (value or "").strip().lower())
 
     def register(self, skill: BaseSkill) -> None:
@@ -224,10 +268,54 @@ class SkillRegistry:
 
     @property
     def skill_count(self) -> int:
+        """
+        Skill count.
+        
+        Purpose:
+        - Implement `skill_count` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `int` when available; otherwise side effects only.
+        """
+
         return len(self._skills) + len(self._prompt_skills)
 
     @property
     def prompt_skill_count(self) -> int:
+        """
+        Prompt skill count.
+        
+        Purpose:
+        - Implement `prompt_skill_count` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `int` when available; otherwise side effects only.
+        """
+
         return len(self._prompt_skills)
 
 

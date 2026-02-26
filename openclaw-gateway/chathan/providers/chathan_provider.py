@@ -27,6 +27,28 @@ class ChathanProvider(BaseExecutionProvider):
     name = "chathan"
 
     def __init__(self, gateway_api_url: str = "http://127.0.0.1:8766"):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `gateway_api_url`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.gateway_api_url = gateway_api_url
 
     async def execute(self, spec: ExecutionSpec) -> ExecutionResult:

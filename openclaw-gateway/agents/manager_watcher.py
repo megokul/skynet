@@ -27,6 +27,29 @@ class ManagerWatcherAgent:
         db: aiosqlite.Connection,
         on_progress: Callable[[str, str, str], Awaitable[None]] | None = None,
     ) -> None:
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `db`: input used by this function to compute or route work.
+        - `on_progress`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         self.db = db
         self.on_progress = on_progress
 
@@ -39,6 +62,32 @@ class ManagerWatcherAgent:
         agent_id: str,
         agent_role: str,
     ) -> int:
+        """
+        Start run.
+        
+        Purpose:
+        - Implement `start_run` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        - `task_id`: input used by this function to compute or route work.
+        - `task_title`: input used by this function to compute or route work.
+        - `agent_id`: input used by this function to compute or route work.
+        - `agent_role`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `int` when available; otherwise side effects only.
+        """
+
         run_id = await store.create_agent_run(
             self.db,
             project_id=project_id,
@@ -57,6 +106,28 @@ class ManagerWatcherAgent:
         return run_id
 
     async def heartbeat(self, *, run_id: int) -> None:
+        """
+        Heartbeat.
+        
+        Purpose:
+        - Implement `heartbeat` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `run_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         await store.heartbeat_agent_run(self.db, run_id=run_id)
 
     async def heartbeat_loop(
@@ -69,6 +140,33 @@ class ManagerWatcherAgent:
         interval_seconds: float = 20.0,
         nudge_after_seconds: float = 120.0,
     ) -> None:
+        """
+        Heartbeat loop.
+        
+        Purpose:
+        - Implement `heartbeat_loop` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        - `run_id`: input used by this function to compute or route work.
+        - `task_title`: input used by this function to compute or route work.
+        - `stop_event`: input used by this function to compute or route work.
+        - `interval_seconds`: input used by this function to compute or route work.
+        - `nudge_after_seconds`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         started = time.monotonic()
         nudged = False
 
@@ -102,6 +200,30 @@ class ManagerWatcherAgent:
         run_id: int,
         summary: str,
     ) -> None:
+        """
+        Finish run success.
+        
+        Purpose:
+        - Implement `finish_run_success` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        - `run_id`: input used by this function to compute or route work.
+        - `summary`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         await store.finish_agent_run(
             self.db,
             run_id=run_id,
@@ -123,6 +245,30 @@ class ManagerWatcherAgent:
         run_id: int,
         error_message: str,
     ) -> None:
+        """
+        Finish run failed.
+        
+        Purpose:
+        - Implement `finish_run_failed` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        - `run_id`: input used by this function to compute or route work.
+        - `error_message`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         await store.finish_agent_run(
             self.db,
             run_id=run_id,

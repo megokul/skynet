@@ -7,6 +7,22 @@ from .base import BaseSkill, SkillContext
 
 
 class GitSkill(BaseSkill):
+    """
+    GitSkill.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `GitSkill`.
+    """
+
     name = "git"
     description = "Git version control and GitHub operations"
     allowed_roles = []  # All agents can use git
@@ -14,6 +30,28 @@ class GitSkill(BaseSkill):
     plan_auto_approved = {"git_init", "git_status", "git_add_all", "git_commit"}
 
     def get_tools(self) -> list[dict[str, Any]]:
+        """
+        Get tools.
+        
+        Purpose:
+        - Implement `get_tools` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+        """
+
         return [
             {
                 "name": "git_init",
@@ -90,6 +128,30 @@ class GitSkill(BaseSkill):
         ]
 
     async def execute(self, tool_name: str, tool_input: dict[str, Any], context: SkillContext) -> str:
+        """
+        Execute.
+        
+        Purpose:
+        - Implement `execute` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `tool_name`: input used by this function to compute or route work.
+        - `tool_input`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         needs_manual_approval = (
             tool_name in self.requires_approval and not cfg.AUTO_APPROVE_GIT_ACTIONS
         )

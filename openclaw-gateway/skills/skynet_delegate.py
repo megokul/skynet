@@ -42,17 +42,83 @@ class SkynetDelegateSkill(BaseSkill):
     }
 
     def __init__(self):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.skynet_api_url = os.getenv("SKYNET_ORCHESTRATOR_URL", "http://localhost:8000")
         self.skynet_api_key = os.getenv("SKYNET_API_KEY", "").strip()
         logger.info(f"SKYNET Delegate initialized (API: {self.skynet_api_url})")
 
     def _headers(self) -> dict[str, str]:
+        """
+        Headers.
+        
+        Purpose:
+        - Implement `_headers` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `dict[str, str]` when available; otherwise side effects only.
+        """
+
         headers = {"Content-Type": "application/json"}
         if self.skynet_api_key:
             headers["X-API-Key"] = self.skynet_api_key
         return headers
 
     def get_tools(self) -> list[dict[str, Any]]:
+        """
+        Get tools.
+        
+        Purpose:
+        - Implement `get_tools` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+        """
+
         return [
             {
                 "name": "skynet_route_task",
@@ -95,6 +161,30 @@ class SkynetDelegateSkill(BaseSkill):
         tool_input: dict[str, Any],
         context: SkillContext,
     ) -> str:
+        """
+        Execute.
+        
+        Purpose:
+        - Implement `execute` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `tool_name`: input used by this function to compute or route work.
+        - `tool_input`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         del context  # Context currently unused for these stateless API calls.
 
         if tool_name == "skynet_route_task":
@@ -104,6 +194,28 @@ class SkynetDelegateSkill(BaseSkill):
         return f"ERROR: Unknown tool '{tool_name}'"
 
     async def _route_task(self, tool_input: dict[str, Any]) -> str:
+        """
+        Route task.
+        
+        Purpose:
+        - Implement `_route_task` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `tool_input`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         try:
             payload = {
                 "task_id": tool_input.get("task_id") or f"task-{uuid4().hex[:12]}",
@@ -142,6 +254,28 @@ class SkynetDelegateSkill(BaseSkill):
             return f"ERROR: Route task failed: {exc}"
 
     async def _get_system_state(self) -> str:
+        """
+        Get system state.
+        
+        Purpose:
+        - Implement `_get_system_state` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         try:
             async with aiohttp.ClientSession(headers=self._headers()) as session:
                 async with session.get(

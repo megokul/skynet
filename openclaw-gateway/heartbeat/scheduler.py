@@ -44,6 +44,28 @@ class HeartbeatScheduler:
     """
 
     def __init__(self, tick_interval: int = 60):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `tick_interval`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self._tasks: dict[str, HeartbeatTask] = {}
         self._running = False
         self._task: asyncio.Task | None = None
@@ -120,10 +142,54 @@ class HeartbeatScheduler:
 
     @property
     def is_running(self) -> bool:
+        """
+        Is running.
+        
+        Purpose:
+        - Implement `is_running` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         return self._running
 
     @property
     def task_count(self) -> int:
+        """
+        Task count.
+        
+        Purpose:
+        - Implement `task_count` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `int` when available; otherwise side effects only.
+        """
+
         return len(self._tasks)
 
     async def _loop(self) -> None:

@@ -1,3 +1,20 @@
+"""Prompt-context assembly for orchestrator turns.
+
+Purpose:
+- Build the complete model context package for each bot turn.
+- Select history depth, token budgets, and provider allowlists by mode.
+- Inject profile, project, gap, and skill-guidance context blocks.
+
+How it works:
+- Computes a gap tier from session inactivity.
+- Renders mode-specific prompt fragments and merges them into a system prompt.
+- Returns a typed ContextPackage consumed by orchestrator execution.
+
+Why this exists:
+- Keeps orchestration deterministic and testable by separating context building.
+- Prevents scattered prompt composition logic across unrelated modules.
+- Makes token/round limits explicit for each interaction mode."""
+
 from __future__ import annotations
 
 import json
@@ -51,12 +68,50 @@ MODE_INSTRUCTIONS: dict[Mode, str] = {
 
 
 def compute_session_gap(time_gap: timedelta | None) -> GapTier:
+    """
+    Compute session gap.
+    
+    Purpose:
+    - Implement `compute_session_gap` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `time_gap`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `GapTier` when available; otherwise side effects only.
+    """
+
     seconds = None if time_gap is None else max(0.0, float(time_gap.total_seconds()))
     return _compute_gap_tier(seconds)
 
 
 @dataclass
 class ContextPackage:
+    """
+    ContextPackage.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `ContextPackage`.
+    """
+
     system_prompt: str
     messages: list[dict]
     tools: list[dict]
@@ -66,7 +121,47 @@ class ContextPackage:
 
 
 class ContextBuilder:
+    """
+    ContextBuilder.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `ContextBuilder`.
+    """
+
     def __init__(self, db, skill_registry, chat_provider_allowlist: list[str] | None):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `db`: input used by this function to compute or route work.
+        - `skill_registry`: input used by this function to compute or route work.
+        - `chat_provider_allowlist`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.db = db
         self.skill_registry = skill_registry
         self.chat_provider_allowlist = chat_provider_allowlist
@@ -81,6 +176,33 @@ class ContextBuilder:
         *,
         user_text: str = "",
     ) -> ContextPackage:
+        """
+        Build.
+        
+        Purpose:
+        - Implement `build` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `mode`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        - `intent`: input used by this function to compute or route work.
+        - `update`: input used by this function to compute or route work.
+        - `filtered_tools`: input used by this function to compute or route work.
+        - `user_text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `ContextPackage` when available; otherwise side effects only.
+        """
+
         depth_cfg = HISTORY_DEPTH[mode]
         gap_tier = compute_session_gap(session.time_gap)
 
@@ -153,6 +275,29 @@ class ContextBuilder:
         )
 
     async def _build_project_context(self, mode: Mode, session: Session) -> str:
+        """
+        Build project context.
+        
+        Purpose:
+        - Implement `_build_project_context` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `mode`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         if not session.project:
             return load_prompt("bot/context/project_none.md")
 

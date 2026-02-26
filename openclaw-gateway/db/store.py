@@ -16,10 +16,54 @@ import aiosqlite
 
 
 def _now() -> str:
+    """
+    Now.
+    
+    Purpose:
+    - Implement `_now` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _uuid() -> str:
+    """
+    Uuid.
+    
+    Purpose:
+    - Implement `_uuid` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     return uuid.uuid4().hex[:12]
 
 
@@ -33,6 +77,31 @@ async def create_project(
     display_name: str,
     local_path: str,
 ) -> dict[str, Any]:
+    """
+    Create project.
+    
+    Purpose:
+    - Implement `create_project` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `name`: input used by this function to compute or route work.
+    - `display_name`: input used by this function to compute or route work.
+    - `local_path`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+    """
+
     project_id = _uuid()
     await db.execute(
         "INSERT INTO projects (id, name, display_name, local_path) VALUES (?, ?, ?, ?)",
@@ -43,18 +112,86 @@ async def create_project(
 
 
 async def get_project(db: aiosqlite.Connection, project_id: str) -> dict[str, Any] | None:
+    """
+    Get project.
+    
+    Purpose:
+    - Implement `get_project` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     async with db.execute("SELECT * FROM projects WHERE id = ?", (project_id,)) as cur:
         row = await cur.fetchone()
         return dict(row) if row else None
 
 
 async def get_project_by_name(db: aiosqlite.Connection, name: str) -> dict[str, Any] | None:
+    """
+    Get project by name.
+    
+    Purpose:
+    - Implement `get_project_by_name` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `name`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     async with db.execute("SELECT * FROM projects WHERE name = ?", (name,)) as cur:
         row = await cur.fetchone()
         return dict(row) if row else None
 
 
 async def list_projects(db: aiosqlite.Connection) -> list[dict[str, Any]]:
+    """
+    List projects.
+    
+    Purpose:
+    - Implement `list_projects` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     async with db.execute("SELECT * FROM projects ORDER BY created_at DESC") as cur:
         return [dict(row) for row in await cur.fetchall()]
 
@@ -78,6 +215,30 @@ async def update_project(
     project_id: str,
     **fields: Any,
 ) -> None:
+    """
+    Update project.
+    
+    Purpose:
+    - Implement `update_project` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `**fields`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     invalid = set(fields) - _PROJECTS_UPDATABLE_COLUMNS
     if invalid:
         raise ValueError(f"update_project: unknown column(s): {sorted(invalid)}")
@@ -118,6 +279,29 @@ async def get_projects_by_status(
     db: aiosqlite.Connection,
     status: str,
 ) -> list[dict[str, Any]]:
+    """
+    Get projects by status.
+    
+    Purpose:
+    - Implement `get_projects_by_status` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `status`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         "SELECT * FROM projects WHERE status = ? ORDER BY created_at DESC",
         (status,),
@@ -134,6 +318,30 @@ async def add_idea(
     project_id: str,
     message_text: str,
 ) -> int:
+    """
+    Add idea.
+    
+    Purpose:
+    - Implement `add_idea` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `message_text`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         "INSERT INTO ideas (project_id, message_text) VALUES (?, ?)",
         (project_id, message_text),
@@ -144,6 +352,29 @@ async def add_idea(
 
 
 async def get_ideas(db: aiosqlite.Connection, project_id: str) -> list[dict[str, Any]]:
+    """
+    Get ideas.
+    
+    Purpose:
+    - Implement `get_ideas` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         "SELECT * FROM ideas WHERE project_id = ? ORDER BY created_at",
         (project_id,),
@@ -163,6 +394,32 @@ async def create_plan(
     milestones: list[dict],
 ) -> int:
     # Deactivate any previous active plans.
+    """
+    Create plan.
+    
+    Purpose:
+    - Implement `create_plan` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `summary`: input used by this function to compute or route work.
+    - `timeline`: input used by this function to compute or route work.
+    - `milestones`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     await db.execute(
         "UPDATE plans SET is_active = 0 WHERE project_id = ? AND is_active = 1",
         (project_id,),
@@ -177,6 +434,29 @@ async def create_plan(
 
 
 async def get_active_plan(db: aiosqlite.Connection, project_id: str) -> dict[str, Any] | None:
+    """
+    Get active plan.
+    
+    Purpose:
+    - Implement `get_active_plan` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         "SELECT * FROM plans WHERE project_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1",
         (project_id,),
@@ -200,6 +480,31 @@ async def create_tasks(
     plan_id: int,
     tasks: list[dict[str, str]],
 ) -> list[int]:
+    """
+    Create tasks.
+    
+    Purpose:
+    - Implement `create_tasks` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `plan_id`: input used by this function to compute or route work.
+    - `tasks`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[int]` when available; otherwise side effects only.
+    """
+
     ids = []
     for i, task in enumerate(tasks):
         async with db.execute(
@@ -218,6 +523,30 @@ async def get_tasks(
     project_id: str,
     plan_id: int | None = None,
 ) -> list[dict[str, Any]]:
+    """
+    Get tasks.
+    
+    Purpose:
+    - Implement `get_tasks` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `plan_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     if plan_id:
         sql = "SELECT * FROM tasks WHERE project_id = ? AND plan_id = ? ORDER BY order_index"
         params = (project_id, plan_id)
@@ -233,6 +562,30 @@ async def update_task(
     task_id: int,
     **fields: Any,
 ) -> None:
+    """
+    Update task.
+    
+    Purpose:
+    - Implement `update_task` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `task_id`: input used by this function to compute or route work.
+    - `**fields`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     sets = ", ".join(f"{k} = ?" for k in fields)
     vals = list(fields.values()) + [task_id]
     await db.execute(f"UPDATE tasks SET {sets} WHERE id = ?", vals)
@@ -251,6 +604,33 @@ async def add_conversation_message(
     token_count: int = 0,
     phase: str = "coding",
 ) -> int:
+    """
+    Add conversation message.
+    
+    Purpose:
+    - Implement `add_conversation_message` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `role`: input used by this function to compute or route work.
+    - `content`: input used by this function to compute or route work.
+    - `token_count`: input used by this function to compute or route work.
+    - `phase`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     content_json = json.dumps(content, default=str) if not isinstance(content, str) else content
     async with db.execute(
         "INSERT INTO project_conversations (project_id, role, content, token_count, phase) "
@@ -268,6 +648,31 @@ async def get_conversation(
     phase: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
+    """
+    Get conversation.
+    
+    Purpose:
+    - Implement `get_conversation` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `phase`: input used by this function to compute or route work.
+    - `limit`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     if phase:
         sql = ("SELECT * FROM project_conversations WHERE project_id = ? AND phase = ? "
                "ORDER BY id DESC LIMIT ?")
@@ -291,6 +696,28 @@ async def get_conversation(
 # ------------------------------------------------------------------
 
 def _conversation_id() -> str:
+    """
+    Conversation id.
+    
+    Purpose:
+    - Implement `_conversation_id` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     return f"conv_{uuid.uuid4().hex[:16]}"
 
 
@@ -301,6 +728,31 @@ async def create_conversation_session(
     title: str,
     active_role: str = "igris",
 ) -> dict[str, Any]:
+    """
+    Create conversation session.
+    
+    Purpose:
+    - Implement `create_conversation_session` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `title`: input used by this function to compute or route work.
+    - `active_role`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+    """
+
     conversation_id = _conversation_id()
     now = _now()
     await db.execute(
@@ -332,6 +784,30 @@ async def list_conversation_sessions(
     user_id: int,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
+    """
+    List conversation sessions.
+    
+    Purpose:
+    - Implement `list_conversation_sessions` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `limit`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         """
         SELECT *
@@ -354,6 +830,29 @@ async def get_conversation_session(
     *,
     conversation_id: str,
 ) -> dict[str, Any] | None:
+    """
+    Get conversation session.
+    
+    Purpose:
+    - Implement `get_conversation_session` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `conversation_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         "SELECT * FROM conversations WHERE conversation_id = ?",
         (conversation_id,),
@@ -373,6 +872,30 @@ async def update_conversation_session(
     conversation_id: str,
     **fields: Any,
 ) -> None:
+    """
+    Update conversation session.
+    
+    Purpose:
+    - Implement `update_conversation_session` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `conversation_id`: input used by this function to compute or route work.
+    - `**fields`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not fields:
         return
     update_fields = dict(fields)
@@ -392,6 +915,29 @@ async def get_conversation_by_user_active_pointer(
     *,
     user_id: int,
 ) -> dict[str, Any] | None:
+    """
+    Get conversation by user active pointer.
+    
+    Purpose:
+    - Implement `get_conversation_by_user_active_pointer` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     active_id = await get_user_active_conversation(db, user_id=user_id)
     if not active_id:
         return None
@@ -406,6 +952,32 @@ async def add_session_message(
     content: str,
     metadata: dict[str, Any] | None = None,
 ) -> int:
+    """
+    Add session message.
+    
+    Purpose:
+    - Implement `add_session_message` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `conversation_id`: input used by this function to compute or route work.
+    - `role`: input used by this function to compute or route work.
+    - `content`: input used by this function to compute or route work.
+    - `metadata`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         """
         INSERT INTO messages (conversation_id, role, content, metadata, created_at)
@@ -428,6 +1000,30 @@ async def list_session_messages(
     conversation_id: str,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
+    """
+    List session messages.
+    
+    Purpose:
+    - Implement `list_session_messages` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `conversation_id`: input used by this function to compute or route work.
+    - `limit`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         """
         SELECT *
@@ -451,6 +1047,30 @@ async def set_user_active_conversation(
     user_id: int,
     conversation_id: str,
 ) -> None:
+    """
+    Set user active conversation.
+    
+    Purpose:
+    - Implement `set_user_active_conversation` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `conversation_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     await upsert_user_preference(
         db,
         user_id=int(user_id),
@@ -465,6 +1085,29 @@ async def get_user_active_conversation(
     *,
     user_id: int,
 ) -> str | None:
+    """
+    Get user active conversation.
+    
+    Purpose:
+    - Implement `get_user_active_conversation` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str | None` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         """
         SELECT pref_value
@@ -482,6 +1125,28 @@ async def get_user_active_conversation(
 
 
 def _safe_json_loads(value: Any) -> dict[str, Any]:
+    """
+    Safe json loads.
+    
+    Purpose:
+    - Implement `_safe_json_loads` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `value`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+    """
+
     if isinstance(value, dict):
         return value
     try:
@@ -504,6 +1169,33 @@ async def create_reminder(
     notes: str = "",
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
+    """
+    Create reminder.
+    
+    Purpose:
+    - Implement `create_reminder` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `title`: input used by this function to compute or route work.
+    - `due_at`: input used by this function to compute or route work.
+    - `notes`: input used by this function to compute or route work.
+    - `conversation_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+    """
+
     now = _now()
     async with db.execute(
         """
@@ -534,6 +1226,29 @@ async def get_reminder(
     *,
     reminder_id: int,
 ) -> dict[str, Any] | None:
+    """
+    Get reminder.
+    
+    Purpose:
+    - Implement `get_reminder` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `reminder_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         "SELECT * FROM reminders WHERE id = ?",
         (int(reminder_id),),
@@ -549,6 +1264,31 @@ async def list_reminders(
     status: str | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
+    """
+    List reminders.
+    
+    Purpose:
+    - Implement `list_reminders` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `status`: input used by this function to compute or route work.
+    - `limit`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     if status:
         sql = (
             "SELECT * FROM reminders WHERE user_id = ? AND status = ? "
@@ -571,6 +1311,30 @@ async def update_reminder(
     reminder_id: int,
     **fields: Any,
 ) -> None:
+    """
+    Update reminder.
+    
+    Purpose:
+    - Implement `update_reminder` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `reminder_id`: input used by this function to compute or route work.
+    - `**fields`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not fields:
         return
     fields = dict(fields)
@@ -592,6 +1356,32 @@ async def record_provider_usage(
     tokens: int = 0,
     error: bool = False,
 ) -> None:
+    """
+    Record provider usage.
+    
+    Purpose:
+    - Implement `record_provider_usage` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `provider_name`: input used by this function to compute or route work.
+    - `requests`: input used by this function to compute or route work.
+    - `tokens`: input used by this function to compute or route work.
+    - `error`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     now = _now()
     await db.execute(
@@ -613,6 +1403,30 @@ async def get_provider_usage(
     provider_name: str,
     date: str | None = None,
 ) -> dict[str, Any] | None:
+    """
+    Get provider usage.
+    
+    Purpose:
+    - Implement `get_provider_usage` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `provider_name`: input used by this function to compute or route work.
+    - `date`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     if date is None:
         date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     async with db.execute(
@@ -626,6 +1440,28 @@ async def get_provider_usage(
 async def get_all_provider_usage_today(
     db: aiosqlite.Connection,
 ) -> list[dict[str, Any]]:
+    """
+    Get all provider usage today.
+    
+    Purpose:
+    - Implement `get_all_provider_usage_today` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     async with db.execute(
         "SELECT * FROM provider_usage WHERE date = ? ORDER BY provider_name",
@@ -645,6 +1481,32 @@ async def add_event(
     summary: str,
     detail: str = "",
 ) -> int:
+    """
+    Add event.
+    
+    Purpose:
+    - Implement `add_event` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `event_type`: input used by this function to compute or route work.
+    - `summary`: input used by this function to compute or route work.
+    - `detail`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         "INSERT INTO project_events (project_id, event_type, summary, detail) "
         "VALUES (?, ?, ?, ?)",
@@ -660,6 +1522,30 @@ async def get_events(
     project_id: str,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
+    """
+    Get events.
+    
+    Purpose:
+    - Implement `get_events` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `limit`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         "SELECT * FROM project_events WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
         (project_id, limit),
@@ -676,6 +1562,30 @@ async def create_agent(
     project_id: str,
     role: str,
 ) -> str:
+    """
+    Create agent.
+    
+    Purpose:
+    - Implement `create_agent` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `role`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     agent_id = _uuid()
     await db.execute(
         "INSERT INTO agents (id, project_id, role, created_at) VALUES (?, ?, ?, ?)",
@@ -686,6 +1596,29 @@ async def create_agent(
 
 
 async def get_agent(db: aiosqlite.Connection, agent_id: str) -> dict[str, Any] | None:
+    """
+    Get agent.
+    
+    Purpose:
+    - Implement `get_agent` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `agent_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     async with db.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)) as cur:
         row = await cur.fetchone()
         return dict(row) if row else None
@@ -696,6 +1629,30 @@ async def get_agent_by_project_role(
     project_id: str,
     role: str,
 ) -> dict[str, Any] | None:
+    """
+    Get agent by project role.
+    
+    Purpose:
+    - Implement `get_agent_by_project_role` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `role`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         "SELECT * FROM agents WHERE project_id = ? AND role = ?",
         (project_id, role),
@@ -708,6 +1665,29 @@ async def list_agents(
     db: aiosqlite.Connection,
     project_id: str | None = None,
 ) -> list[dict[str, Any]]:
+    """
+    List agents.
+    
+    Purpose:
+    - Implement `list_agents` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     if project_id:
         sql = "SELECT * FROM agents WHERE project_id = ? ORDER BY role"
         params: tuple = (project_id,)
@@ -727,6 +1707,33 @@ async def update_agent(
     total_tokens_delta: int = 0,
     last_active_at: str | None = None,
 ) -> None:
+    """
+    Update agent.
+    
+    Purpose:
+    - Implement `update_agent` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `agent_id`: input used by this function to compute or route work.
+    - `status`: input used by this function to compute or route work.
+    - `tasks_completed_delta`: input used by this function to compute or route work.
+    - `total_tokens_delta`: input used by this function to compute or route work.
+    - `last_active_at`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     parts: list[str] = []
     vals: list[Any] = []
     if status is not None:
@@ -761,6 +1768,33 @@ async def create_agent_run(
     agent_role: str,
     metadata: dict[str, Any] | None = None,
 ) -> int:
+    """
+    Create agent run.
+    
+    Purpose:
+    - Implement `create_agent_run` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `task_id`: input used by this function to compute or route work.
+    - `agent_id`: input used by this function to compute or route work.
+    - `agent_role`: input used by this function to compute or route work.
+    - `metadata`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     now = _now()
     async with db.execute(
         """
@@ -790,6 +1824,30 @@ async def heartbeat_agent_run(
     run_id: int,
     metadata_patch: dict[str, Any] | None = None,
 ) -> None:
+    """
+    Heartbeat agent run.
+    
+    Purpose:
+    - Implement `heartbeat_agent_run` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `run_id`: input used by this function to compute or route work.
+    - `metadata_patch`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if metadata_patch:
         async with db.execute(
             "SELECT metadata FROM agent_runs WHERE id = ?",
@@ -823,6 +1881,32 @@ async def finish_agent_run(
     error_message: str = "",
     metadata_patch: dict[str, Any] | None = None,
 ) -> None:
+    """
+    Finish agent run.
+    
+    Purpose:
+    - Implement `finish_agent_run` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `run_id`: input used by this function to compute or route work.
+    - `status`: input used by this function to compute or route work.
+    - `error_message`: input used by this function to compute or route work.
+    - `metadata_patch`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     status_norm = (status or "").strip().lower() or "unknown"
     now = _now()
     if metadata_patch:
@@ -871,6 +1955,30 @@ async def list_agent_runs(
     project_id: str,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
+    """
+    List agent runs.
+    
+    Purpose:
+    - Implement `list_agent_runs` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `limit`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         """
         SELECT *
@@ -903,6 +2011,36 @@ async def add_task_artifact(
     url: str = "",
     metadata: dict[str, Any] | None = None,
 ) -> int:
+    """
+    Add task artifact.
+    
+    Purpose:
+    - Implement `add_task_artifact` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `task_id`: input used by this function to compute or route work.
+    - `artifact_type`: input used by this function to compute or route work.
+    - `title`: input used by this function to compute or route work.
+    - `content`: input used by this function to compute or route work.
+    - `file_path`: input used by this function to compute or route work.
+    - `url`: input used by this function to compute or route work.
+    - `metadata`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         """
         INSERT INTO task_artifacts (
@@ -934,6 +2072,31 @@ async def list_task_artifacts(
     task_id: int | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
+    """
+    List task artifacts.
+    
+    Purpose:
+    - Implement `list_task_artifacts` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `project_id`: input used by this function to compute or route work.
+    - `task_id`: input used by this function to compute or route work.
+    - `limit`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     if task_id is None:
         sql = (
             "SELECT * FROM task_artifacts WHERE project_id = ? "
@@ -970,6 +2133,32 @@ async def ensure_user(
     first_name: str = "",
     last_name: str = "",
 ) -> dict[str, Any]:
+    """
+    Ensure user.
+    
+    Purpose:
+    - Implement `ensure_user` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `telegram_user_id`: input used by this function to compute or route work.
+    - `username`: input used by this function to compute or route work.
+    - `first_name`: input used by this function to compute or route work.
+    - `last_name`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+    """
+
     now = _now()
     await db.execute(
         """
@@ -996,6 +2185,29 @@ async def get_user_by_telegram_id(
     db: aiosqlite.Connection,
     telegram_user_id: int,
 ) -> dict[str, Any] | None:
+    """
+    Get user by telegram id.
+    
+    Purpose:
+    - Implement `get_user_by_telegram_id` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `telegram_user_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         "SELECT * FROM users WHERE telegram_user_id = ?",
         (int(telegram_user_id),),
@@ -1005,6 +2217,29 @@ async def get_user_by_telegram_id(
 
 
 async def get_user_by_id(db: aiosqlite.Connection, user_id: int) -> dict[str, Any] | None:
+    """
+    Get user by id.
+    
+    Purpose:
+    - Implement `get_user_by_id` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     async with db.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)) as cur:
         row = await cur.fetchone()
     return dict(row) if row else None
@@ -1016,6 +2251,30 @@ async def set_user_memory_enabled(
     user_id: int,
     enabled: bool,
 ) -> None:
+    """
+    Set user memory enabled.
+    
+    Purpose:
+    - Implement `set_user_memory_enabled` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `enabled`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     await db.execute(
         "UPDATE users SET memory_enabled = ?, updated_at = ? WHERE id = ?",
         (1 if enabled else 0, _now(), int(user_id)),
@@ -1030,6 +2289,31 @@ async def update_user_core_fields(
     timezone: str | None = None,
     region: str | None = None,
 ) -> None:
+    """
+    Update user core fields.
+    
+    Purpose:
+    - Implement `update_user_core_fields` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `timezone`: input used by this function to compute or route work.
+    - `region`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     fields: dict[str, Any] = {}
     if timezone is not None:
         fields["timezone"] = timezone.strip()
@@ -1052,6 +2336,32 @@ async def upsert_user_preference(
     pref_value: str,
     source: str = "chat",
 ) -> None:
+    """
+    Upsert user preference.
+    
+    Purpose:
+    - Implement `upsert_user_preference` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `pref_key`: input used by this function to compute or route work.
+    - `pref_value`: input used by this function to compute or route work.
+    - `source`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     await db.execute(
         """
         INSERT INTO user_preferences (user_id, pref_key, pref_value, source, updated_at)
@@ -1071,6 +2381,29 @@ async def get_user_preferences(
     *,
     user_id: int,
 ) -> list[dict[str, Any]]:
+    """
+    Get user preferences.
+    
+    Purpose:
+    - Implement `get_user_preferences` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         """
         SELECT user_id, pref_key, pref_value, source, updated_at
@@ -1121,6 +2454,33 @@ async def add_or_update_profile_fact(
     source: str = "chat",
     confidence: float = 0.6,
 ) -> dict[str, Any]:
+    """
+    Add or update profile fact.
+    
+    Purpose:
+    - Implement `add_or_update_profile_fact` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `fact_key`: input used by this function to compute or route work.
+    - `fact_value`: input used by this function to compute or route work.
+    - `source`: input used by this function to compute or route work.
+    - `confidence`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+    """
+
     now = _now()
     key = fact_key.strip().lower()
     value = fact_value.strip()
@@ -1181,6 +2541,30 @@ async def list_profile_facts(
     user_id: int,
     active_only: bool = True,
 ) -> list[dict[str, Any]]:
+    """
+    List profile facts.
+    
+    Purpose:
+    - Implement `list_profile_facts` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `active_only`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     sql = (
         "SELECT * FROM user_profile_facts WHERE user_id = ? "
         + ("AND is_active = 1 " if active_only else "")
@@ -1196,6 +2580,30 @@ async def forget_profile_facts(
     user_id: int,
     key_or_text: str,
 ) -> int:
+    """
+    Forget profile facts.
+    
+    Purpose:
+    - Implement `forget_profile_facts` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `key_or_text`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     needle = key_or_text.strip().lower()
     if not needle:
         return 0
@@ -1223,6 +2631,34 @@ async def add_user_conversation(
     telegram_message_id: str = "",
     metadata: dict[str, Any] | None = None,
 ) -> int:
+    """
+    Add user conversation.
+    
+    Purpose:
+    - Implement `add_user_conversation` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `role`: input used by this function to compute or route work.
+    - `content`: input used by this function to compute or route work.
+    - `chat_id`: input used by this function to compute or route work.
+    - `telegram_message_id`: input used by this function to compute or route work.
+    - `metadata`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         """
         INSERT INTO user_conversations (
@@ -1252,6 +2688,32 @@ async def list_user_conversations(
     since_seconds: int | None = None,
     after_id: int | None = None,
 ) -> list[dict[str, Any]]:
+    """
+    List user conversations.
+    
+    Purpose:
+    - Implement `list_user_conversations` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `limit`: input used by this function to compute or route work.
+    - `since_seconds`: input used by this function to compute or route work.
+    - `after_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+    """
+
     conditions = ["user_id = ?"]
     params: list[Any] = [int(user_id)]
 
@@ -1350,6 +2812,33 @@ async def add_memory_audit_log(
     target_key: str = "",
     detail: str = "",
 ) -> int:
+    """
+    Add memory audit log.
+    
+    Purpose:
+    - Implement `add_memory_audit_log` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `user_id`: input used by this function to compute or route work.
+    - `action`: input used by this function to compute or route work.
+    - `target_type`: input used by this function to compute or route work.
+    - `target_key`: input used by this function to compute or route work.
+    - `detail`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         """
         INSERT INTO memory_audit_log (

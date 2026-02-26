@@ -82,6 +82,28 @@ async def on_project_progress(project_id: str, event_type: str, summary: str) ->
 
 
 async def _ensure_memory_user_row(update: Update) -> dict:
+    """
+    Ensure memory user row.
+    
+    Purpose:
+    - Implement `_ensure_memory_user_row` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict` when available; otherwise side effects only.
+    """
+
     from db import store
 
     if not state._project_manager:
@@ -101,6 +123,29 @@ async def _ensure_memory_user_row(update: Update) -> dict:
 
 
 async def _create_new_conversation(update: Update, *, title: str | None = None) -> dict:
+    """
+    Create new conversation.
+    
+    Purpose:
+    - Implement `_create_new_conversation` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `title`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict` when available; otherwise side effects only.
+    """
+
     from db import store
 
     user_row = await _ensure_memory_user_row(update)
@@ -119,6 +164,28 @@ async def _create_new_conversation(update: Update, *, title: str | None = None) 
 
 
 async def _build_conversation_picker_markup(update: Update) -> InlineKeyboardMarkup:
+    """
+    Build conversation picker markup.
+    
+    Purpose:
+    - Implement `_build_conversation_picker_markup` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `InlineKeyboardMarkup` when available; otherwise side effects only.
+    """
+
     from db import store
 
     user_row = await _ensure_memory_user_row(update)
@@ -198,6 +265,29 @@ async def request_worker_approval(
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle callback.
+    
+    Purpose:
+    - Implement `handle_callback` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     query = update.callback_query
     user = update.effective_user
     if not user or user.id != cfg.ALLOWED_USER_ID:
@@ -365,6 +455,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def cmd_newproject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd newproject.
+    
+    Purpose:
+    - Implement `cmd_newproject` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not context.args:
@@ -375,6 +488,29 @@ async def cmd_newproject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cmd_idea(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd idea.
+    
+    Purpose:
+    - Implement `cmd_idea` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not context.args:
@@ -384,6 +520,29 @@ async def cmd_idea(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd plan.
+    
+    Purpose:
+    - Implement `cmd_plan` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
 
@@ -408,6 +567,28 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
     async def _bg_cmd_plan() -> None:
+        """
+        Bg cmd plan.
+        
+        Purpose:
+        - Implement `_bg_cmd_plan` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         await _notify_styled(
             "progress",
             "Plan Generation",
@@ -466,6 +647,29 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd projects.
+    
+    Purpose:
+    - Implement `cmd_projects` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     try:
@@ -491,6 +695,29 @@ async def cmd_projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cmd_project_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd project status.
+    
+    Purpose:
+    - Implement `cmd_project_status` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not context.args:
@@ -532,6 +759,29 @@ async def cmd_project_status(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd pause.
+    
+    Purpose:
+    - Implement `cmd_pause` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not context.args:
@@ -550,6 +800,29 @@ async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_resume_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd resume project.
+    
+    Purpose:
+    - Implement `cmd_resume_project` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not context.args:
@@ -568,6 +841,29 @@ async def cmd_resume_project(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd cancel.
+    
+    Purpose:
+    - Implement `cmd_cancel` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not context.args:
@@ -586,6 +882,29 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_remove_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd remove project.
+    
+    Purpose:
+    - Implement `cmd_remove_project` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     project_ref = " ".join(context.args).strip() if context.args else ""
@@ -602,6 +921,29 @@ async def cmd_remove_project(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cmd_quota(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd quota.
+    
+    Purpose:
+    - Implement `cmd_quota` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not state._provider_router:
@@ -628,6 +970,29 @@ async def cmd_quota(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd profile.
+    
+    Purpose:
+    - Implement `cmd_profile` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     try:
@@ -638,6 +1003,29 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd forget.
+    
+    Purpose:
+    - Implement `cmd_forget` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not context.args:
@@ -651,6 +1039,29 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_no_store(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd no store.
+    
+    Purpose:
+    - Implement `cmd_no_store` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     try:
@@ -666,6 +1077,29 @@ async def cmd_no_store(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cmd_store_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd store on.
+    
+    Purpose:
+    - Implement `cmd_store_on` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     try:
@@ -681,6 +1115,29 @@ async def cmd_store_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd start.
+    
+    Purpose:
+    - Implement `cmd_start` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     keyboard = InlineKeyboardMarkup([
@@ -697,6 +1154,29 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_agent_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd agent status.
+    
+    Purpose:
+    - Implement `cmd_agent_status` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     try:
@@ -737,6 +1217,29 @@ async def cmd_agent_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def cmd_git_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd git status.
+    
+    Purpose:
+    - Implement `cmd_git_status` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     path = _parse_path(context.args)
@@ -749,6 +1252,29 @@ async def cmd_git_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cmd_run_tests(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd run tests.
+    
+    Purpose:
+    - Implement `cmd_run_tests` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     path = _parse_path(context.args)
@@ -762,6 +1288,29 @@ async def cmd_run_tests(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cmd_lint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd lint.
+    
+    Purpose:
+    - Implement `cmd_lint` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     path = _parse_path(context.args)
@@ -774,6 +1323,29 @@ async def cmd_lint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_build(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd build.
+    
+    Purpose:
+    - Implement `cmd_build` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     path = _parse_path(context.args)
@@ -786,6 +1358,29 @@ async def cmd_build(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_vscode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd vscode.
+    
+    Purpose:
+    - Implement `cmd_vscode` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not context.args:
@@ -801,6 +1396,29 @@ async def cmd_vscode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_check_agents(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd check agents.
+    
+    Purpose:
+    - Implement `cmd_check_agents` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     try:
@@ -811,6 +1429,29 @@ async def cmd_check_agents(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def cmd_run_agent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd run agent.
+    
+    Purpose:
+    - Implement `cmd_run_agent` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if len(context.args) < 2:
@@ -850,6 +1491,29 @@ async def cmd_run_agent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cmd_cline_provider(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd cline provider.
+    
+    Purpose:
+    - Implement `cmd_cline_provider` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not context.args:
@@ -875,6 +1539,29 @@ async def cmd_cline_provider(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cmd_git_commit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd git commit.
+    
+    Purpose:
+    - Implement `cmd_git_commit` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not context.args or len(context.args) < 2:
@@ -887,6 +1574,29 @@ async def cmd_git_commit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cmd_install_deps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd install deps.
+    
+    Purpose:
+    - Implement `cmd_install_deps` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     path = _parse_path(context.args)
@@ -896,6 +1606,29 @@ async def cmd_install_deps(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def cmd_close_app(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd close app.
+    
+    Purpose:
+    - Implement `cmd_close_app` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not context.args:
@@ -907,6 +1640,29 @@ async def cmd_close_app(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cmd_emergency_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd emergency stop.
+    
+    Purpose:
+    - Implement `cmd_emergency_stop` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     # Cancel all running projects.
@@ -925,6 +1681,29 @@ async def cmd_emergency_stop(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd resume.
+    
+    Purpose:
+    - Implement `cmd_resume` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     try:
@@ -943,6 +1722,29 @@ async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_agents(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd agents.
+    
+    Purpose:
+    - Implement `cmd_agents` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     try:
@@ -974,6 +1776,29 @@ async def cmd_agents(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_heartbeat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd heartbeat.
+    
+    Purpose:
+    - Implement `cmd_heartbeat` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not state._heartbeat:
@@ -1000,6 +1825,29 @@ async def cmd_heartbeat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cmd_sentinel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd sentinel.
+    
+    Purpose:
+    - Implement `cmd_sentinel` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     if not state._sentinel:
@@ -1017,6 +1865,29 @@ async def cmd_sentinel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cmd_skills(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Cmd skills.
+    
+    Purpose:
+    - Implement `cmd_skills` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     try:
@@ -1056,6 +1927,29 @@ async def cmd_skills(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle text.
+    
+    Purpose:
+    - Implement `handle_text` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `context`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if not _authorised(update):
         return
     text = update.message.text.strip()

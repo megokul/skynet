@@ -17,6 +17,28 @@ logger = logging.getLogger("skynet.heartbeat.tasks")
 
 
 def _is_missing_s3_credentials_error(exc: Exception) -> bool:
+    """
+    Is missing s3 credentials error.
+    
+    Purpose:
+    - Implement `_is_missing_s3_credentials_error` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `exc`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     text = str(exc or "").lower()
     return (
         "unable to locate credentials" in text

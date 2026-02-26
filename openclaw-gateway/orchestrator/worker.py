@@ -58,6 +58,36 @@ class Worker:
         on_progress: Callable[[str, str, str], Awaitable[None]],
         request_approval: Callable[[str, str, dict], Awaitable[bool]],
     ):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        - `db`: input used by this function to compute or route work.
+        - `router`: input used by this function to compute or route work.
+        - `searcher`: input used by this function to compute or route work.
+        - `gateway_api_url`: input used by this function to compute or route work.
+        - `pause_event`: input used by this function to compute or route work.
+        - `cancel_event`: input used by this function to compute or route work.
+        - `on_progress`: input used by this function to compute or route work.
+        - `request_approval`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.project_id = project_id
         self.db = db
         self.router = router
@@ -69,6 +99,28 @@ class Worker:
         self.request_approval = request_approval
 
     async def run(self) -> None:
+        """
+        Run.
+        
+        Purpose:
+        - Implement `run` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         project = await store.get_project(self.db, self.project_id)
         if not project:
             logger.error("Project %s not found", self.project_id)
@@ -158,6 +210,28 @@ class Worker:
 
     @staticmethod
     def _task_milestone(task: dict[str, Any]) -> str:
+        """
+        Task milestone.
+        
+        Purpose:
+        - Implement `_task_milestone` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `task`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         name = (task.get("milestone") or "").strip()
         return name or "General"
 
@@ -165,6 +239,28 @@ class Worker:
         self,
         tasks: list[dict[str, Any]],
     ) -> tuple[list[str], dict[str, int]]:
+        """
+        Build milestone index.
+        
+        Purpose:
+        - Implement `_build_milestone_index` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `tasks`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `tuple[list[str], dict[str, int]]` when available; otherwise side effects only.
+        """
+
         order: list[str] = []
         totals: dict[str, int] = {}
         for task in tasks:
@@ -183,6 +279,32 @@ class Worker:
         done_all: int,
         total_all: int,
     ) -> str:
+        """
+        Milestone summary.
+        
+        Purpose:
+        - Implement `_milestone_summary` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `milestone`: input used by this function to compute or route work.
+        - `done_in_milestone`: input used by this function to compute or route work.
+        - `total_in_milestone`: input used by this function to compute or route work.
+        - `done_all`: input used by this function to compute or route work.
+        - `total_all`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         return (
             f"Milestone review: {milestone}\n"
             f"Milestone progress: {done_in_milestone}/{total_in_milestone} tasks\n"
@@ -195,6 +317,30 @@ class Worker:
         milestone_order: list[str],
         milestone_totals: dict[str, int],
     ) -> str:
+        """
+        Milestone start summary.
+        
+        Purpose:
+        - Implement `_milestone_start_summary` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `milestone`: input used by this function to compute or route work.
+        - `milestone_order`: input used by this function to compute or route work.
+        - `milestone_totals`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         idx = milestone_order.index(milestone) + 1 if milestone in milestone_order else 1
         total = len(milestone_order) if milestone_order else 1
         return (
@@ -232,6 +378,31 @@ class Worker:
         task_num: int,
         total_tasks: int,
     ) -> None:
+        """
+        Execute task.
+        
+        Purpose:
+        - Implement `_execute_task` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project`: input used by this function to compute or route work.
+        - `task`: input used by this function to compute or route work.
+        - `task_num`: input used by this function to compute or route work.
+        - `total_tasks`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         await store.update_task(
             self.db, task["id"], status="in_progress", started_at=store._now(),
         )
@@ -307,6 +478,28 @@ class Worker:
         return response.text
 
     async def _final_testing(self, project: dict) -> None:
+        """
+        Final testing.
+        
+        Purpose:
+        - Implement `_final_testing` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         await self._notify("testing", "Running final tests and validation...")
         system_prompt = TESTING_PROMPT.format(
             project_name=project["display_name"],
@@ -482,6 +675,29 @@ class Worker:
         return "\n".join(parts) if parts else "OK"
 
     async def _notify(self, event_type: str, summary: str) -> None:
+        """
+        Notify.
+        
+        Purpose:
+        - Implement `_notify` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `event_type`: input used by this function to compute or route work.
+        - `summary`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         await store.add_event(self.db, self.project_id, event_type, summary)
         try:
             await self.on_progress(self.project_id, event_type, summary)

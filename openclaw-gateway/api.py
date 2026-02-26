@@ -46,11 +46,56 @@ _idempotency_lock = asyncio.Lock()
 
 
 def _force_ssh_mode(ssh_configured: bool) -> bool:
+    """
+    Force ssh mode.
+    
+    Purpose:
+    - Implement `_force_ssh_mode` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `ssh_configured`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     mode = os.environ.get("OPENCLAW_EXECUTION_MODE", "").strip().lower()
     return ssh_configured and mode in _SSH_ONLY_MODES
 
 
 def _action_key(task_id: str | None, idempotency_key: str | None) -> str | None:
+    """
+    Action key.
+    
+    Purpose:
+    - Implement `_action_key` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `task_id`: input used by this function to compute or route work.
+    - `idempotency_key`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str | None` when available; otherwise side effects only.
+    """
+
     tid = str(task_id or "").strip()
     key = str(idempotency_key or "").strip()
     if not tid or not key:
@@ -59,6 +104,28 @@ def _action_key(task_id: str | None, idempotency_key: str | None) -> str | None:
 
 
 def _idempotency_db(request: web.Request) -> aiosqlite.Connection | None:
+    """
+    Idempotency db.
+    
+    Purpose:
+    - Implement `_idempotency_db` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `request`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `aiosqlite.Connection | None` when available; otherwise side effects only.
+    """
+
     return request.app.get("idempotency_db")
 
 
@@ -68,6 +135,30 @@ async def _load_cached_result(
     task_id: str,
     idempotency_key: str,
 ) -> dict[str, Any] | None:
+    """
+    Load cached result.
+    
+    Purpose:
+    - Implement `_load_cached_result` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `task_id`: input used by this function to compute or route work.
+    - `idempotency_key`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     async with db.execute(
         """
         SELECT response_json
@@ -93,6 +184,31 @@ async def _store_cached_result(
     idempotency_key: str,
     result: dict[str, Any],
 ) -> None:
+    """
+    Store cached result.
+    
+    Purpose:
+    - Implement `_store_cached_result` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `task_id`: input used by this function to compute or route work.
+    - `idempotency_key`: input used by this function to compute or route work.
+    - `result`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     await db.execute(
         """
         INSERT OR REPLACE INTO action_idempotency (
@@ -109,6 +225,28 @@ async def _store_cached_result(
 # ---------------------------------------------------------------------------
 
 async def handle_status(request: web.Request) -> web.Response:
+    """
+    Handle status.
+    
+    Purpose:
+    - Implement `handle_status` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `request`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `web.Response` when available; otherwise side effects only.
+    """
+
     ssh_exec = get_ssh_executor()
     ssh_ok, ssh_detail = await ssh_exec.health_check()
     ssh_configured = ssh_exec.is_configured()
@@ -262,6 +400,28 @@ async def handle_action(request: web.Request) -> web.Response:
 
 
 async def handle_emergency_stop(request: web.Request) -> web.Response:
+    """
+    Handle emergency stop.
+    
+    Purpose:
+    - Implement `handle_emergency_stop` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `request`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `web.Response` when available; otherwise side effects only.
+    """
+
     if not is_agent_connected() and get_ssh_executor().is_configured():
         return web.json_response({"status": "not_applicable_in_ssh_mode"})
     try:
@@ -272,6 +432,28 @@ async def handle_emergency_stop(request: web.Request) -> web.Response:
 
 
 async def handle_resume(request: web.Request) -> web.Response:
+    """
+    Handle resume.
+    
+    Purpose:
+    - Implement `handle_resume` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `request`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `web.Response` when available; otherwise side effects only.
+    """
+
     if not is_agent_connected() and get_ssh_executor().is_configured():
         return web.json_response({"status": "not_applicable_in_ssh_mode"})
     try:
@@ -282,6 +464,28 @@ async def handle_resume(request: web.Request) -> web.Response:
 
 
 async def handle_get_profile(request: web.Request) -> web.Response:
+    """
+    Handle get profile.
+    
+    Purpose:
+    - Implement `handle_get_profile` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `request`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `web.Response` when available; otherwise side effects only.
+    """
+
     telegram_user_id = request.match_info.get("telegram_user_id", "").strip()
     if not telegram_user_id.isdigit():
         return web.json_response({"error": "telegram_user_id must be numeric."}, status=400)
@@ -309,6 +513,28 @@ async def handle_get_profile(request: web.Request) -> web.Response:
 
 
 async def handle_forget_profile(request: web.Request) -> web.Response:
+    """
+    Handle forget profile.
+    
+    Purpose:
+    - Implement `handle_forget_profile` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `request`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `web.Response` when available; otherwise side effects only.
+    """
+
     telegram_user_id = request.match_info.get("telegram_user_id", "").strip()
     if not telegram_user_id.isdigit():
         return web.json_response({"error": "telegram_user_id must be numeric."}, status=400)
@@ -350,6 +576,28 @@ async def handle_forget_profile(request: web.Request) -> web.Response:
 
 
 async def handle_set_memory_policy(request: web.Request) -> web.Response:
+    """
+    Handle set memory policy.
+    
+    Purpose:
+    - Implement `handle_set_memory_policy` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `request`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `web.Response` when available; otherwise side effects only.
+    """
+
     telegram_user_id = request.match_info.get("telegram_user_id", "").strip()
     if not telegram_user_id.isdigit():
         return web.json_response({"error": "telegram_user_id must be numeric."}, status=400)
@@ -392,6 +640,28 @@ async def handle_set_memory_policy(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 async def _ensure_idempotency_schema(db: aiosqlite.Connection) -> None:
+    """
+    Ensure idempotency schema.
+    
+    Purpose:
+    - Implement `_ensure_idempotency_schema` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     await db.execute(
         """
         CREATE TABLE IF NOT EXISTS action_idempotency (
@@ -410,12 +680,56 @@ async def _ensure_idempotency_schema(db: aiosqlite.Connection) -> None:
 
 
 async def _cleanup_app(app: web.Application) -> None:
+    """
+    Cleanup app.
+    
+    Purpose:
+    - Implement `_cleanup_app` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `app`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     db = app.get("idempotency_db")
     if db is not None:
         await db.close()
 
 
 def create_app(*, idempotency_db: aiosqlite.Connection | None = None) -> web.Application:
+    """
+    Create app.
+    
+    Purpose:
+    - Implement `create_app` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `idempotency_db`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `web.Application` when available; otherwise side effects only.
+    """
+
     app = web.Application()
     app["idempotency_db"] = idempotency_db
     app.on_cleanup.append(_cleanup_app)

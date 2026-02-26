@@ -1,3 +1,13 @@
+"""
+Top-level conversation orchestration runtime.
+
+Flow overview:
+1. Resolve user + conversation scope.
+2. Queue inbound messages through per-conversation inbox workers.
+3. Run role cycle (`igris` + specialists) and persist assistant output.
+4. Emit trace events for each stage.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,6 +30,22 @@ logger = logging.getLogger("skynet.core.engine")
 
 @dataclass(slots=True)
 class EngineResult:
+    """
+    EngineResult.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `EngineResult`.
+    """
+
     conversation_id: str
     text: str
 
@@ -28,6 +54,30 @@ class ConversationEngine:
     """Commander-based multi-role conversation engine."""
 
     def __init__(self, db, provider_router, *, project_manager: Any | None = None):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `db`: input used by this function to compute or route work.
+        - `provider_router`: input used by this function to compute or route work.
+        - `project_manager`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.db = db
         self.provider_router = provider_router
         self.project_manager = project_manager
@@ -55,6 +105,34 @@ class ConversationEngine:
         conversation_id: str | None = None,
         entrypoint: str = "handle_text()",
     ) -> EngineResult:
+        # Ensure user exists/up-to-date before any conversation routing so
+        # conversation ownership checks remain stable.
+        """
+        Process user message.
+        
+        Purpose:
+        - Implement `process_user_message` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `telegram_user_id`: input used by this function to compute or route work.
+        - `text`: input used by this function to compute or route work.
+        - `user_profile`: input used by this function to compute or route work.
+        - `conversation_id`: input used by this function to compute or route work.
+        - `entrypoint`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `EngineResult` when available; otherwise side effects only.
+        """
+
         profile = user_profile or {}
         user = await store.ensure_user(
             self.db,
@@ -85,14 +163,82 @@ class ConversationEngine:
         return EngineResult(conversation_id=conversation.id, text=reply)
 
     async def start_new_conversation(self, *, telegram_user_id: int, title: str | None = None) -> Conversation:
+        """
+        Start new conversation.
+        
+        Purpose:
+        - Implement `start_new_conversation` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `telegram_user_id`: input used by this function to compute or route work.
+        - `title`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `Conversation` when available; otherwise side effects only.
+        """
+
         user = await store.ensure_user(self.db, telegram_user_id=int(telegram_user_id))
         return await self.conversation_manager.create_conversation(int(user["id"]), title=title)
 
     async def list_user_conversations(self, *, telegram_user_id: int) -> list[Conversation]:
+        """
+        List user conversations.
+        
+        Purpose:
+        - Implement `list_user_conversations` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `telegram_user_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `list[Conversation]` when available; otherwise side effects only.
+        """
+
         user = await store.ensure_user(self.db, telegram_user_id=int(telegram_user_id))
         return await self.conversation_manager.list_conversations(int(user["id"]))
 
     async def switch_conversation(self, *, telegram_user_id: int, conversation_id: str) -> Conversation | None:
+        """
+        Switch conversation.
+        
+        Purpose:
+        - Implement `switch_conversation` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `telegram_user_id`: input used by this function to compute or route work.
+        - `conversation_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `Conversation | None` when available; otherwise side effects only.
+        """
+
         user = await store.ensure_user(self.db, telegram_user_id=int(telegram_user_id))
         target = await self.conversation_manager.get_conversation(conversation_id)
         if not target or int(target.user_id) != int(user["id"]):
@@ -101,6 +247,28 @@ class ConversationEngine:
         return target
 
     async def clear_pending_action_for_user(self, user_id: str) -> None:
+        """
+        Clear pending action for user.
+        
+        Purpose:
+        - Implement `clear_pending_action_for_user` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `user_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         user = await store.get_user_by_telegram_id(self.db, int(user_id))
         if not user:
             return
@@ -108,9 +276,56 @@ class ConversationEngine:
         await self.conversation_manager.clear_pending_action(conversation.id)
 
     async def shutdown(self) -> None:
+        """
+        Shutdown.
+        
+        Purpose:
+        - Implement `shutdown` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         await self.scheduler.stop()
 
     async def _process_batch(self, conversation_id: str, batch: list[InboxMessage]) -> str:
+        # Inbox may coalesce rapid messages into one batch; they are processed
+        # as a single user turn in arrival order.
+        """
+        Process batch.
+        
+        Purpose:
+        - Implement `_process_batch` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `conversation_id`: input used by this function to compute or route work.
+        - `batch`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         merged_text = "\n".join(item.text for item in batch)
         telegram_user_id = ""
         entrypoint = "handle_text()"
@@ -147,6 +362,7 @@ class ConversationEngine:
                 metadata={"source": "telegram"},
             )
 
+            # Core role execution cycle.
             response_text = await self.run(conversation, merged_text)
 
             await self.conversation_manager.add_message(
@@ -163,18 +379,87 @@ class ConversationEngine:
             )
             return response_text
         finally:
+            # Always close trace even if role execution raises.
             trace_logger.end()
             clear_current_trace(trace_token)
 
     @trace(role="engine", step_name="run")
     async def run(self, conversation: Conversation, user_text: str) -> str:
+        """
+        Run.
+        
+        Purpose:
+        - Implement `run` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `conversation`: input used by this function to compute or route work.
+        - `user_text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         return await self._run_role_cycle(conversation, user_text)
 
     @trace(role="engine", step_name="select_role")
     def select_role(self, role_name: str):
+        """
+        Select role.
+        
+        Purpose:
+        - Implement `select_role` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `role_name`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         return self.role_registry.get(role_name)
 
     async def _run_role_cycle(self, conversation: Conversation, user_text: str) -> str:
+        """
+        Run role cycle.
+        
+        Purpose:
+        - Implement `_run_role_cycle` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `conversation`: input used by this function to compute or route work.
+        - `user_text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         role_name = conversation.active_role or "igris"
         role = self.select_role(role_name)
         trace_flow(
@@ -206,6 +491,35 @@ class ConversationEngine:
         return await self._apply_role_output(conversation, user_text, output)
 
     async def _apply_role_output(self, conversation: Conversation, user_text: str, output: RoleOutput) -> str:
+        # RoleOutput is a compact command protocol:
+        # - respond: assistant text directly to user
+        # - delegate: transfer active role and run specialist once
+        # - continue: specialist keeps control and asks follow-up
+        # - complete: specialist finished; control returns to commander
+        """
+        Apply role output.
+        
+        Purpose:
+        - Implement `_apply_role_output` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `conversation`: input used by this function to compute or route work.
+        - `user_text`: input used by this function to compute or route work.
+        - `output`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         command = output.command
         trace_flow(
             "engine.role_output.apply",
@@ -275,6 +589,31 @@ class ConversationEngine:
         target_role: str,
         user_text: str,
     ) -> RoleOutput:
+        # Specialist execution is isolated through a fresh RoleContext snapshot.
+        """
+        Execute specialist.
+        
+        Purpose:
+        - Implement `execute_specialist` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `conversation`: input used by this function to compute or route work.
+        - `target_role`: input used by this function to compute or route work.
+        - `user_text`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `RoleOutput` when available; otherwise side effects only.
+        """
+
         specialist = self.select_role(target_role)
         spec_context = RoleContext(
             db=self.db,
@@ -288,6 +627,29 @@ class ConversationEngine:
         return await specialist.handle_message(spec_context, user_text)
 
     async def _apply_specialist_output(self, conversation: Conversation, output: RoleOutput) -> str:
+        """
+        Apply specialist output.
+        
+        Purpose:
+        - Implement `_apply_specialist_output` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `conversation`: input used by this function to compute or route work.
+        - `output`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         trace_flow(
             "engine.specialist_output.apply",
             conversation_id=conversation.id,
@@ -308,7 +670,8 @@ class ConversationEngine:
             return (output.response or "Please continue.").strip()
 
         if output.command == "delegate":
-            # Allow specialist-to-specialist delegation but keep deterministic single hop.
+            # Allow specialist-to-specialist delegation but keep deterministic
+            # single-hop behavior per user turn.
             target = (output.target_role or "igris").strip() or "igris"
             await self.conversation_manager.set_active_role(conversation.id, target)
             return f"Delegating to {target}."

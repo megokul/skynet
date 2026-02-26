@@ -17,6 +17,28 @@ class ArchivistAgent:
     """Generate markdown reports for completed runs."""
 
     def __init__(self, *, db: aiosqlite.Connection) -> None:
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `db`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         self.db = db
 
     async def record_task_report(
@@ -28,6 +50,32 @@ class ArchivistAgent:
         run_id: int,
         result_summary: str,
     ) -> int:
+        """
+        Record task report.
+        
+        Purpose:
+        - Implement `record_task_report` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project`: input used by this function to compute or route work.
+        - `task`: input used by this function to compute or route work.
+        - `agent_role`: input used by this function to compute or route work.
+        - `run_id`: input used by this function to compute or route work.
+        - `result_summary`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `int` when available; otherwise side effects only.
+        """
+
         report_md = self._build_task_report_markdown(
             project=project,
             task=task,
@@ -58,6 +106,28 @@ class ArchivistAgent:
         *,
         project: dict[str, Any],
     ) -> int:
+        """
+        Record project summary.
+        
+        Purpose:
+        - Implement `record_project_summary` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `int` when available; otherwise side effects only.
+        """
+
         tasks = await store.get_tasks(self.db, str(project["id"]))
         completed = sum(1 for t in tasks if t.get("status") == "completed")
         total = len(tasks)
@@ -106,6 +176,32 @@ class ArchivistAgent:
         run_id: int,
         result_summary: str,
     ) -> str:
+        """
+        Build task report markdown.
+        
+        Purpose:
+        - Implement `_build_task_report_markdown` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project`: input used by this function to compute or route work.
+        - `task`: input used by this function to compute or route work.
+        - `agent_role`: input used by this function to compute or route work.
+        - `run_id`: input used by this function to compute or route work.
+        - `result_summary`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         milestone = task.get("milestone") or "General"
         lines = [
             f"# Task Report: {task.get('title', 'Untitled task')}",

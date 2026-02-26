@@ -58,6 +58,28 @@ _SUMMARY_RAW_TAIL: int = 6
 
 
 def _compute_gap_tier(gap_seconds: float | None) -> GapTier:
+    """
+    Compute gap tier.
+    
+    Purpose:
+    - Implement `_compute_gap_tier` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `gap_seconds`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `GapTier` when available; otherwise side effects only.
+    """
+
     if gap_seconds is None:
         return GapTier.EXTENDED
     for upper, tier in _GAP_THRESHOLDS:
@@ -96,6 +118,28 @@ async def compute_session_gap(update: Update) -> GapTier:
 
 
 async def _ensure_memory_user(update: Update) -> dict | None:
+    """
+    Ensure memory user.
+    
+    Purpose:
+    - Implement `_ensure_memory_user` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict | None` when available; otherwise side effects only.
+    """
+
     user = update.effective_user
     if user is None or state._project_manager is None:
         return None
@@ -196,6 +240,31 @@ async def _append_user_conversation(
     content: str,
     metadata: dict | None = None,
 ) -> None:
+    """
+    Append user conversation.
+    
+    Purpose:
+    - Implement `_append_user_conversation` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `role`: input used by this function to compute or route work.
+    - `content`: input used by this function to compute or route work.
+    - `metadata`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if state._project_manager is None:
         return
     user_row = await _ensure_memory_user(update)
@@ -340,6 +409,28 @@ async def _load_recent_conversation_messages(
 
 
 async def _profile_prompt_context(update: Update) -> str:
+    """
+    Profile prompt context.
+    
+    Purpose:
+    - Implement `_profile_prompt_context` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     if state._project_manager is None:
         return ""
     user_row = await _ensure_memory_user(update)
@@ -367,6 +458,28 @@ async def _profile_prompt_context(update: Update) -> str:
 
 
 def _extract_memory_candidates(text: str) -> tuple[list[tuple[str, str, float]], list[tuple[str, str]]]:
+    """
+    Extract memory candidates.
+    
+    Purpose:
+    - Implement `_extract_memory_candidates` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `text`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `tuple[list[tuple[str, str, float]], list[tuple[str, str]]]` when available; otherwise side effects only.
+    """
+
     lowered = text.lower()
     facts: list[tuple[str, str, float]] = []
     prefs: list[tuple[str, str]] = []
@@ -413,11 +526,55 @@ def _extract_memory_candidates(text: str) -> tuple[list[tuple[str, str, float]],
 
 
 def _is_no_store_once_message(text: str) -> bool:
+    """
+    Is no store once message.
+    
+    Purpose:
+    - Implement `_is_no_store_once_message` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `text`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     lowered = text.lower()
     return any(marker in lowered for marker in state._NO_STORE_ONCE_MARKERS)
 
 
 def _is_no_store_chat_message(text: str) -> bool:
+    """
+    Is no store chat message.
+    
+    Purpose:
+    - Implement `_is_no_store_chat_message` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `text`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     lowered = text.lower()
     return any(marker in lowered for marker in state._NO_STORE_CHAT_MARKERS)
 
@@ -429,6 +586,31 @@ async def _capture_profile_memory(
     skip_store: bool,
     persist_message: bool = True,
 ) -> None:
+    """
+    Capture profile memory.
+    
+    Purpose:
+    - Implement `_capture_profile_memory` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `text`: input used by this function to compute or route work.
+    - `skip_store`: input used by this function to compute or route work.
+    - `persist_message`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     if state._project_manager is None:
         return
     user_row = await _ensure_memory_user(update)
@@ -500,6 +682,28 @@ async def _capture_profile_memory(
 
 
 async def _format_profile_summary(update: Update) -> str:
+    """
+    Format profile summary.
+    
+    Purpose:
+    - Implement `_format_profile_summary` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     if state._project_manager is None:
         return "User profile is unavailable."
     user_row = await _ensure_memory_user(update)
@@ -548,6 +752,29 @@ async def _format_profile_summary(update: Update) -> str:
 
 
 async def _forget_profile_target(update: Update, target: str) -> str:
+    """
+    Forget profile target.
+    
+    Purpose:
+    - Implement `_forget_profile_target` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `target`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     if state._project_manager is None:
         return "Profile store is not available."
     user_row = await _ensure_memory_user(update)
@@ -575,6 +802,30 @@ async def _forget_profile_target(update: Update, target: str) -> str:
     return f"Forgot {removed} fact(s) matching '{target}'."
 
 async def _set_memory_enabled_for_user(update: Update, enabled: bool, *, reason: str) -> str:
+    """
+    Set memory enabled for user.
+    
+    Purpose:
+    - Implement `_set_memory_enabled_for_user` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `enabled`: input used by this function to compute or route work.
+    - `reason`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     if state._project_manager is None:
         return "Profile store is not available."
     user_row = await _ensure_memory_user(update)
@@ -598,6 +849,29 @@ async def _set_memory_enabled_for_user(update: Update, enabled: bool, *, reason:
     return "Memory capture disabled for this user. Use /store_on to re-enable."
 
 async def _maybe_handle_memory_text_command(update: Update, text: str) -> bool:
+    """
+    Maybe handle memory text command.
+    
+    Purpose:
+    - Implement `_maybe_handle_memory_text_command` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `text`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     lowered = text.strip().lower()
 
     if lowered in {"show my profile", "show profile", "what do you know about me"}:

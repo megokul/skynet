@@ -1,9 +1,16 @@
+"""
+Weather specialist role.
+
+The role extracts a location from natural language, fetches current weather
+from Open-Meteo APIs, and returns a concise summary.
+"""
+
 from __future__ import annotations
 
 import logging
 import aiohttp
 
-from core.prompt_library import commander_prompt_block, load_prompt
+from core.prompt_library import load_prompt
 from core.roles.base import Role, RoleContext, RoleOutput
 from core.trace import trace_flow
 from core.tracing import trace
@@ -12,12 +19,33 @@ logger = logging.getLogger("skynet.core.roles.weather")
 
 
 class WeatherSpecialistRole(Role):
+    """
+    WeatherSpecialistRole.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `WeatherSpecialistRole`.
+    """
+
     name = "weather_specialist"
-    _guidance = commander_prompt_block()
     _location_extract_instruction = load_prompt("core/roles/weather_location_extract_instruction.md")
 
     @trace(role="weather_specialist", step_name="weather_specialist_handle")
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
+        """
+        Weather role lifecycle:
+        1. Extract location from natural text.
+        2. Query geocoding and forecast endpoints.
+        3. Return concise result and complete role turn.
+        """
         trace_flow(
             "role.weather.handle.start",
             conversation_id=context.conversation.id,
@@ -55,6 +83,12 @@ class WeatherSpecialistRole(Role):
         step_name="extract_weather_location",
     )
     async def _extract_location(self, context: RoleContext, user_text: str) -> str:
+        """
+        Use structured payload extraction for location.
+
+        If extraction confidence is low, fall back to raw user text so weather
+        lookup still has a chance to succeed.
+        """
         extractor = context.intent_extractor
         if extractor is None:
             return (user_text or "").strip()
@@ -72,6 +106,13 @@ class WeatherSpecialistRole(Role):
 
     @trace(role="weather_specialist", step_name="fetch_weather")
     async def _fetch_weather(self, location: str) -> str:
+        """
+        Fetch weather via Open-Meteo APIs.
+
+        Two-step call chain:
+        - Geocoding API resolves location -> lat/lon.
+        - Forecast API resolves lat/lon -> current weather snapshot.
+        """
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
             async with session.get(
                 "https://geocoding-api.open-meteo.com/v1/search",

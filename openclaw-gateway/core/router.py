@@ -1,7 +1,14 @@
+"""
+Deterministic pre-role routing helpers.
+
+The router resolves conversation/project scope and write-intent gate decisions
+before any specialist/LLM role logic executes.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from core.conversation_manager import Conversation, ConversationManager
 from core.trace import trace_flow
@@ -26,6 +33,8 @@ _SWITCH_PROJECT_PHRASES = (
 
 @dataclass(slots=True)
 class ScopeResolution:
+    """Result of deterministic project-scope inspection for one user turn."""
+
     conversation_id: str
     active_project_id: str | None
     switch_requested: bool
@@ -33,6 +42,8 @@ class ScopeResolution:
 
 @dataclass(slots=True)
 class RoutingDecision:
+    """Deterministic pre-role routing decision for a single intent."""
+
     intent: str
     execute_now: bool
     requires_question: bool
@@ -40,16 +51,41 @@ class RoutingDecision:
 
 
 class Router:
-    """Deterministic continuity router that runs before role reasoning."""
+    """
+    Deterministic continuity router that runs before role reasoning.
 
-    def __init__(
-        self,
-        conversation_manager: ConversationManager,
-        *,
-        execute_write_intent: Callable[[str, dict[str, Any], Any], Awaitable[str]] | None = None,
-    ):
+    This component is intentionally non-LLM and side-effect-light:
+    - Resolves which conversation should receive the turn.
+    - Resolves project scope and switch hints from explicit user text.
+    - Produces deterministic write-intent routing decisions.
+
+    It does not execute role logic directly.
+    """
+
+    def __init__(self, conversation_manager: ConversationManager):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `conversation_manager`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self._conversation_manager = conversation_manager
-        self._execute_write_intent = execute_write_intent
 
     async def resolve_conversation_scope(
         self,
@@ -57,6 +93,14 @@ class Router:
         user_id: int,
         requested_conversation_id: str | None = None,
     ) -> Conversation:
+        """
+        Resolve the conversation context for this turn.
+
+        Priority:
+        1. Explicit requested conversation (if it belongs to the user).
+        2. User's currently active conversation.
+        3. Auto-create a new conversation.
+        """
         if requested_conversation_id:
             existing = await self._conversation_manager.get_conversation(requested_conversation_id)
             if existing and existing.user_id == int(user_id):
@@ -78,6 +122,12 @@ class Router:
         return resolved
 
     def resolve_project_scope(self, *, conversation: Conversation, user_text: str) -> ScopeResolution:
+        """
+        Determine whether this message explicitly asks to switch project scope.
+
+        Note: this is lexical/deterministic, used as a guardrail before any
+        model-driven intent reasoning.
+        """
         lowered = (user_text or "").strip().lower()
         switch_requested = any(phrase in lowered for phrase in _SWITCH_PROJECT_PHRASES)
         resolution = ScopeResolution(
@@ -102,58 +152,44 @@ class Router:
         user_text: str,
         payload: dict[str, Any] | None = None,
     ) -> RoutingDecision:
+        """
+        Route intents deterministically before role execution.
+
+        For write intents:
+        - Execute immediately only when active project exists and payload exists.
+        - Ask for payload when scope exists but payload is missing.
+        - Ask project-selection question when no active project exists.
+
+        Non-write intents are returned for normal role handling.
+        """
         payload = payload or {}
 
         if intent in WRITE_INTENTS:
             if conversation.active_project_id and payload:
                 decision = RoutingDecision(intent=intent, execute_now=True, requires_question=False, question_type=None)
-                trace_flow(
-                    "router.intent.route",
-                    conversation_id=conversation.id,
-                    intent=intent,
-                    execute_now=decision.execute_now,
-                    requires_question=decision.requires_question,
-                    question_type=decision.question_type or "",
-                    has_payload=bool(payload),
-                )
+                self._trace_decision(conversation.id, decision, bool(payload))
                 return decision
             if conversation.active_project_id:
                 decision = RoutingDecision(intent=intent, execute_now=False, requires_question=True, question_type="need_payload")
-                trace_flow(
-                    "router.intent.route",
-                    conversation_id=conversation.id,
-                    intent=intent,
-                    execute_now=decision.execute_now,
-                    requires_question=decision.requires_question,
-                    question_type=decision.question_type or "",
-                    has_payload=bool(payload),
-                )
+                self._trace_decision(conversation.id, decision, bool(payload))
                 return decision
             decision = RoutingDecision(intent=intent, execute_now=False, requires_question=True, question_type="choose_project")
-            trace_flow(
-                "router.intent.route",
-                conversation_id=conversation.id,
-                intent=intent,
-                execute_now=decision.execute_now,
-                requires_question=decision.requires_question,
-                question_type=decision.question_type or "",
-                has_payload=bool(payload),
-            )
+            self._trace_decision(conversation.id, decision, bool(payload))
             return decision
 
         decision = RoutingDecision(intent=intent, execute_now=False, requires_question=False, question_type=None)
+        self._trace_decision(conversation.id, decision, bool(payload))
+        return decision
+
+    @staticmethod
+    def _trace_decision(conversation_id: str, decision: RoutingDecision, has_payload: bool) -> None:
+        """Emit one normalized decision log event for easier debugging."""
         trace_flow(
             "router.intent.route",
-            conversation_id=conversation.id,
-            intent=intent,
+            conversation_id=conversation_id,
+            intent=decision.intent,
             execute_now=decision.execute_now,
             requires_question=decision.requires_question,
             question_type=decision.question_type or "",
-            has_payload=bool(payload),
+            has_payload=has_payload,
         )
-        return decision
-
-    async def execute_write_intent(self, *, intent: str, payload: dict[str, Any], context: Any) -> str:
-        if not self._execute_write_intent:
-            raise RuntimeError("execute_write_intent callback is not configured")
-        return await self._execute_write_intent(intent, payload, context)

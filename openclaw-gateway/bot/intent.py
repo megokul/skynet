@@ -1,3 +1,20 @@
+"""Natural-language intent classification helpers for bot orchestration.
+
+Purpose:
+- Convert free-form user text into normalized intent categories.
+- Blend deterministic pre/post overrides with LLM classification output.
+- Extract entities and confidence values used by routing/mode selection.
+
+How it works:
+- Applies lightweight regex preclassification for high-confidence cases.
+- Calls provider chat endpoint with a strict intent-classifier prompt.
+- Validates and normalizes structured response fields with safe fallback logic.
+
+Why this exists:
+- Centralized intent semantics reduce drift across downstream decision code.
+- Deterministic guards improve reliability when model output is malformed.
+- Explicit categories allow stable analytics and regression testing."""
+
 from __future__ import annotations
 
 import json
@@ -37,6 +54,22 @@ _APPROVAL_PHRASES: frozenset[str] = frozenset({
 
 @dataclass
 class ClassifiedIntent:
+    """
+    ClassifiedIntent.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `ClassifiedIntent`.
+    """
+
     intent: str
     confidence: float
     secondary_intents: list[str] = field(default_factory=list)
@@ -46,7 +79,45 @@ class ClassifiedIntent:
 
 
 class IntentClassifier:
+    """
+    IntentClassifier.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `IntentClassifier`.
+    """
+
     def __init__(self, provider_router):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `provider_router`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.provider_router = provider_router
 
     async def classify(
@@ -55,6 +126,30 @@ class IntentClassifier:
         session: Session,
         recent_messages: list[dict],
     ) -> ClassifiedIntent:
+        """
+        Classify.
+        
+        Purpose:
+        - Implement `classify` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `message`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        - `recent_messages`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `ClassifiedIntent` when available; otherwise side effects only.
+        """
+
         preclassified = self._preclassify(message, session)
         if preclassified is not None:
             return preclassified
@@ -115,6 +210,29 @@ class IntentClassifier:
             return self.fallback_classify(message, session)
 
     def _preclassify(self, message: str, session: Session) -> ClassifiedIntent | None:
+        """
+        Preclassify.
+        
+        Purpose:
+        - Implement `_preclassify` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `message`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `ClassifiedIntent | None` when available; otherwise side effects only.
+        """
+
         msg = (message or "").strip()
         if not msg:
             return ClassifiedIntent("unclear", 1.0, [], {}, False, False)
@@ -144,6 +262,30 @@ class IntentClassifier:
         session: Session,
         classified: ClassifiedIntent,
     ) -> ClassifiedIntent:
+        """
+        Apply post overrides.
+        
+        Purpose:
+        - Implement `_apply_post_overrides` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `message`: input used by this function to compute or route work.
+        - `session`: input used by this function to compute or route work.
+        - `classified`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `ClassifiedIntent` when available; otherwise side effects only.
+        """
+
         msg = (message or "").strip().lower()
 
         # Explicit planning phrases should never be interpreted as approval.

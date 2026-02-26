@@ -57,6 +57,40 @@ class SpecializedAgent:
         on_progress: Callable[[str, str, str], Awaitable[None]],
         request_approval: Callable[[str, str, dict], Awaitable[bool]],
     ):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `agent_id`: input used by this function to compute or route work.
+        - `role`: input used by this function to compute or route work.
+        - `project_id`: input used by this function to compute or route work.
+        - `db`: input used by this function to compute or route work.
+        - `router`: input used by this function to compute or route work.
+        - `searcher`: input used by this function to compute or route work.
+        - `skill_registry`: input used by this function to compute or route work.
+        - `memory_manager`: input used by this function to compute or route work.
+        - `gateway_api_url`: input used by this function to compute or route work.
+        - `pause_event`: input used by this function to compute or route work.
+        - `cancel_event`: input used by this function to compute or route work.
+        - `on_progress`: input used by this function to compute or route work.
+        - `request_approval`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.agent_id = agent_id
         self.role = role
         self.config = AGENT_CONFIGS.get(role, AGENT_CONFIGS[DEFAULT_ROLE])

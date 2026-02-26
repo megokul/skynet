@@ -32,6 +32,30 @@ class S3Storage:
     """Async-friendly S3 client for SKYNET artifact storage."""
 
     def __init__(self, bucket: str, prefix: str = "openclaw/", region: str = "us-east-1"):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `bucket`: input used by this function to compute or route work.
+        - `prefix`: input used by this function to compute or route work.
+        - `region`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.bucket = bucket
         self.prefix = prefix
         self.region = region
@@ -51,6 +75,28 @@ class S3Storage:
         return await loop.run_in_executor(None, partial(func, *args, **kwargs))
 
     def _full_key(self, key: str) -> str:
+        """
+        Full key.
+        
+        Purpose:
+        - Implement `_full_key` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `key`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         return f"{self.prefix}{key}"
 
     # ------------------------------------------------------------------
@@ -63,6 +109,28 @@ class S3Storage:
         full_key = self._full_key(key)
 
         def _put():
+            """
+            Put.
+            
+            Purpose:
+            - Implement `_put` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - None.
+            
+            Returns:
+            - Function-specific value or side effects consumed by upstream callers.
+            """
+
             client = self._get_client()
             client.put_object(
                 Bucket=self.bucket,
@@ -80,6 +148,28 @@ class S3Storage:
         full_key = self._full_key(key)
 
         def _get():
+            """
+            Get.
+            
+            Purpose:
+            - Implement `_get` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - None.
+            
+            Returns:
+            - Function-specific value or side effects consumed by upstream callers.
+            """
+
             client = self._get_client()
             try:
                 resp = client.get_object(Bucket=self.bucket, Key=full_key)
@@ -98,6 +188,28 @@ class S3Storage:
         full_key = self._full_key(key)
 
         def _head():
+            """
+            Head.
+            
+            Purpose:
+            - Implement `_head` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - None.
+            
+            Returns:
+            - Function-specific value or side effects consumed by upstream callers.
+            """
+
             client = self._get_client()
             try:
                 client.head_object(Bucket=self.bucket, Key=full_key)
@@ -177,6 +289,28 @@ class S3Storage:
         full_prefix = self._full_key(prefix)
 
         def _list():
+            """
+            List.
+            
+            Purpose:
+            - Implement `_list` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - None.
+            
+            Returns:
+            - Function-specific value or side effects consumed by upstream callers.
+            """
+
             client = self._get_client()
             resp = client.list_objects_v2(
                 Bucket=self.bucket,

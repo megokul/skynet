@@ -1,3 +1,20 @@
+"""Session state model and persistence adapter for bot orchestrator turns.
+
+Purpose:
+- Represent per-user orchestration state in a typed Session dataclass.
+- Normalize pending-question/pending-action metadata payloads.
+- Load/update session rows while keeping in-memory state synchronized.
+
+How it works:
+- Reads session row, parses metadata JSON, and computes inactivity gap.
+- Validates project references and clears stale project ids automatically.
+- Merges metadata updates rather than overwriting full session blobs.
+
+Why this exists:
+- Encapsulation avoids duplicated state plumbing across orchestrator code paths.
+- Normalization keeps pending-state handling robust against malformed rows.
+- Merge semantics reduce accidental loss of unrelated metadata fields."""
+
 from __future__ import annotations
 
 import json
@@ -14,6 +31,22 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Session:
+    """
+    Session.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `Session`.
+    """
+
     user_id: str
     project_id: str | None
     conversation_phase: str
@@ -26,23 +59,128 @@ class Session:
 
 
 def get_pending_question(session: Session) -> PendingQuestion | None:
+    """
+    Get pending question.
+    
+    Purpose:
+    - Implement `get_pending_question` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `session`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `PendingQuestion | None` when available; otherwise side effects only.
+    """
+
     raw = (session.metadata or {}).get("pending_question")
     normalized = _normalize_pending_question(raw)
     return PendingQuestion(**normalized) if normalized else None
 
 
 def get_pending_action(session: Session) -> PendingAction | None:
+    """
+    Get pending action.
+    
+    Purpose:
+    - Implement `get_pending_action` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `session`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `PendingAction | None` when available; otherwise side effects only.
+    """
+
     raw = (session.metadata or {}).get("pending_action")
     normalized = _normalize_pending_action(raw)
     return PendingAction(**normalized) if normalized else None
 
 
 class SessionLoader:
+    """
+    SessionLoader.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `SessionLoader`.
+    """
+
     def __init__(self, db, project_manager):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `db`: input used by this function to compute or route work.
+        - `project_manager`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.db = db
         self.project_manager = project_manager
 
     async def load(self, telegram_user_id: int) -> Session:
+        """
+        Load.
+        
+        Purpose:
+        - Implement `load` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `telegram_user_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `Session` when available; otherwise side effects only.
+        """
+
         user_id = str(telegram_user_id)
         row = await store.get_or_create_session(self.db, user_id=user_id)
 
@@ -141,6 +279,29 @@ class SessionLoader:
         session: Session,
         pending_question: PendingQuestion | dict[str, Any],
     ) -> None:
+        """
+        Set pending question.
+        
+        Purpose:
+        - Implement `set_pending_question` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `session`: input used by this function to compute or route work.
+        - `pending_question`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         if isinstance(pending_question, PendingQuestion):
             payload = {
                 "type": pending_question.type,
@@ -158,6 +319,28 @@ class SessionLoader:
         await self.update(session, session_metadata={"pending_question": normalized})
 
     async def clear_pending_question(self, session: Session) -> None:
+        """
+        Clear pending question.
+        
+        Purpose:
+        - Implement `clear_pending_question` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `session`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         await self.update(session, session_metadata={"pending_question": None})
 
     async def set_pending_action(
@@ -165,6 +348,29 @@ class SessionLoader:
         session: Session,
         pending_action: PendingAction | dict[str, Any],
     ) -> None:
+        """
+        Set pending action.
+        
+        Purpose:
+        - Implement `set_pending_action` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `session`: input used by this function to compute or route work.
+        - `pending_action`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         if isinstance(pending_action, PendingAction):
             payload = {
                 "type": pending_action.type,
@@ -181,14 +387,80 @@ class SessionLoader:
         await self.update(session, session_metadata={"pending_action": normalized})
 
     async def clear_pending_action(self, session: Session) -> None:
+        """
+        Clear pending action.
+        
+        Purpose:
+        - Implement `clear_pending_action` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `session`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         await self.update(session, session_metadata={"pending_action": None})
 
 
 def _utcnow_iso() -> str:
+    """
+    Utcnow iso.
+    
+    Purpose:
+    - Implement `_utcnow_iso` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     return datetime.now(timezone.utc).isoformat()
 
 
 def _parse_datetime(value: Any) -> datetime | None:
+    """
+    Parse datetime.
+    
+    Purpose:
+    - Implement `_parse_datetime` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `value`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `datetime | None` when available; otherwise side effects only.
+    """
+
     if value is None:
         return None
     dt = datetime.fromisoformat(str(value))
@@ -198,6 +470,28 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 def _normalize_metadata(metadata: Any) -> dict[str, Any]:
+    """
+    Normalize metadata.
+    
+    Purpose:
+    - Implement `_normalize_metadata` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `metadata`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+    """
+
     if not isinstance(metadata, dict):
         return {}
     normalized = dict(metadata)
@@ -215,6 +509,28 @@ def _normalize_metadata(metadata: Any) -> dict[str, Any]:
 
 
 def _normalize_pending_question(raw: Any) -> dict[str, Any] | None:
+    """
+    Normalize pending question.
+    
+    Purpose:
+    - Implement `_normalize_pending_question` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `raw`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     if not isinstance(raw, dict):
         return None
     q_type = str(raw.get("type") or "").strip()
@@ -242,6 +558,28 @@ def _normalize_pending_question(raw: Any) -> dict[str, Any] | None:
 
 
 def _normalize_pending_action(raw: Any) -> dict[str, Any] | None:
+    """
+    Normalize pending action.
+    
+    Purpose:
+    - Implement `_normalize_pending_action` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `raw`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     if not isinstance(raw, dict):
         return None
     action_type = str(raw.get("type") or "").strip()
@@ -272,6 +610,28 @@ def _normalize_pending_action(raw: Any) -> dict[str, Any] | None:
 
 
 def _is_future(iso_value: str) -> bool:
+    """
+    Is future.
+    
+    Purpose:
+    - Implement `_is_future` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `iso_value`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     try:
         dt = _parse_datetime(iso_value)
     except (TypeError, ValueError):

@@ -58,6 +58,28 @@ def _post(endpoint: str, body: dict | None = None) -> dict:
 
 
 def _get(endpoint: str) -> dict:
+    """
+    Get.
+    
+    Purpose:
+    - Implement `_get` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `endpoint`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict` when available; otherwise side effects only.
+    """
+
     req = urllib.request.Request(f"{API_BASE}{endpoint}", method="GET")
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -69,6 +91,28 @@ def _get(endpoint: str) -> dict:
 
 
 def _print_menu() -> None:
+    """
+    Print menu.
+    
+    Purpose:
+    - Implement `_print_menu` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     print(
         """
 ============================================================
@@ -103,6 +147,28 @@ def _fill_params(params: dict) -> dict:
 
 
 def main() -> None:
+    """
+    Main.
+    
+    Purpose:
+    - Implement `main` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _print_menu()
 
     while True:

@@ -26,10 +26,54 @@ class LocalProvider(BaseExecutionProvider):
     name = "local"
 
     def __init__(self, allowed_paths: list[str] | None = None):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `allowed_paths`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.allowed_paths = allowed_paths or [os.getcwd()]
         self._running: dict[str, asyncio.subprocess.Process] = {}
 
     async def execute(self, spec: ExecutionSpec) -> ExecutionResult:
+        """
+        Execute.
+        
+        Purpose:
+        - Implement `execute` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `spec`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `ExecutionResult` when available; otherwise side effects only.
+        """
+
         result = ExecutionResult(job_id=spec.job_id, status="running")
         logs: list[str] = []
         step_results: list[dict[str, Any]] = []
@@ -86,9 +130,53 @@ class LocalProvider(BaseExecutionProvider):
         return result
 
     async def health_check(self) -> bool:
+        """
+        Health check.
+        
+        Purpose:
+        - Implement `health_check` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         return True
 
     async def cancel(self, job_id: str) -> bool:
+        """
+        Cancel.
+        
+        Purpose:
+        - Implement `cancel` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `job_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         proc = self._running.get(job_id)
         if not proc:
             return False
@@ -103,6 +191,32 @@ class LocalProvider(BaseExecutionProvider):
         timeout: int,
         env: dict[str, str] | None = None,
     ) -> tuple[int, str, str]:
+        """
+        Run command.
+        
+        Purpose:
+        - Implement `_run_command` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `job_id`: input used by this function to compute or route work.
+        - `command`: input used by this function to compute or route work.
+        - `cwd`: input used by this function to compute or route work.
+        - `timeout`: input used by this function to compute or route work.
+        - `env`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `tuple[int, str, str]` when available; otherwise side effects only.
+        """
+
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=cwd,
@@ -122,6 +236,28 @@ class LocalProvider(BaseExecutionProvider):
             self._running.pop(job_id, None)
 
     def _is_allowed_path(self, candidate: str) -> bool:
+        """
+        Is allowed path.
+        
+        Purpose:
+        - Implement `_is_allowed_path` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `candidate`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         try:
             candidate_path = Path(candidate).resolve()
             for allowed in self.allowed_paths:
@@ -136,6 +272,29 @@ class LocalProvider(BaseExecutionProvider):
             return False
 
     def _action_to_command(self, action: str, params: dict[str, Any]) -> list[str] | None:
+        """
+        Action to command.
+        
+        Purpose:
+        - Implement `_action_to_command` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `action`: input used by this function to compute or route work.
+        - `params`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `list[str] | None` when available; otherwise side effects only.
+        """
+
         is_windows = os.name == "nt"
         action_map = {
             "git_status": ["git", "status"],

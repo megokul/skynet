@@ -22,6 +22,22 @@ def _pm():
     return _state._project_manager
 
 class ProjectManagementSkill(BaseSkill):
+    """
+    ProjectManagementSkill.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `ProjectManagementSkill`.
+    """
+
     name = "project_management"
     description = "Create and manage SKYNET projects, capture ideas, generate plans and docs"
     plan_auto_approved = {
@@ -38,6 +54,28 @@ class ProjectManagementSkill(BaseSkill):
     # ------------------------------------------------------------------
 
     def get_tools(self) -> list[dict[str, Any]]:
+        """
+        Get tools.
+        
+        Purpose:
+        - Implement `get_tools` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+        """
+
         return [
             {
                 "name": "project_create",
@@ -269,6 +307,30 @@ class ProjectManagementSkill(BaseSkill):
         tool_input: dict[str, Any],
         context: SkillContext,
     ) -> str:
+        """
+        Execute.
+        
+        Purpose:
+        - Implement `execute` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `tool_name`: input used by this function to compute or route work.
+        - `tool_input`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         pm = _pm()
 
         if pm is None:
@@ -309,12 +371,58 @@ class ProjectManagementSkill(BaseSkill):
     # ------------------------------------------------------------------
 
     def _resolve_project_id(self, tool_input: dict, context: SkillContext) -> str | None:
+        """
+        Resolve project id.
+        
+        Purpose:
+        - Implement `_resolve_project_id` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `tool_input`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str | None` when available; otherwise side effects only.
+        """
+
         project_id = tool_input.get("project_id") or context.project_id
         if not project_id or project_id == "telegram_chat":
             return None
         return project_id
 
     async def _set_active_project(self, context: SkillContext, project: dict | None) -> None:
+        """
+        Set active project.
+        
+        Purpose:
+        - Implement `_set_active_project` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `context`: input used by this function to compute or route work.
+        - `project`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         if not project or not project.get("id"):
             return
         project_id = str(project["id"])
@@ -327,6 +435,29 @@ class ProjectManagementSkill(BaseSkill):
             await context.set_active_project(project_id, phase)
 
     async def _get_project(self, pm, project_id: str) -> dict | None:
+        """
+        Get project.
+        
+        Purpose:
+        - Implement `_get_project` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `pm`: input used by this function to compute or route work.
+        - `project_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `dict | None` when available; otherwise side effects only.
+        """
+
         try:
             from db import store
             return await store.get_project(pm.db, project_id)
@@ -456,6 +587,30 @@ class ProjectManagementSkill(BaseSkill):
         return False
 
     async def _create(self, pm, inp: dict, context: SkillContext) -> str:
+        """
+        Create.
+        
+        Purpose:
+        - Implement `_create` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `pm`: input used by this function to compute or route work.
+        - `inp`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         name = (inp.get("name") or "").strip()
         if not name:
             return "ERROR: Project name is required. Please provide a name."
@@ -490,6 +645,30 @@ class ProjectManagementSkill(BaseSkill):
         return "\n".join(parts)
 
     async def _add_idea(self, pm, inp: dict, context: SkillContext) -> str:
+        """
+        Add idea.
+        
+        Purpose:
+        - Implement `_add_idea` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `pm`: input used by this function to compute or route work.
+        - `inp`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         idea = (inp.get("idea") or "").strip()
         if not idea:
             return "ERROR: idea text is required."
@@ -518,6 +697,28 @@ class ProjectManagementSkill(BaseSkill):
         return f"Added idea #{count} to '{_project_display(project)}'."
 
     async def _list(self, pm) -> str:
+        """
+        List.
+        
+        Purpose:
+        - Implement `_list` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `pm`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         projects = await pm.list_projects()
         if not projects:
             return "No projects found."
@@ -531,6 +732,30 @@ class ProjectManagementSkill(BaseSkill):
         return "\n".join(lines)
 
     async def _status(self, pm, inp: dict, context: SkillContext) -> str:
+        """
+        Status.
+        
+        Purpose:
+        - Implement `_status` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `pm`: input used by this function to compute or route work.
+        - `inp`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         project, err = await self._resolve_project(pm, inp, context)
         if not project:
             return err or "No active project."
@@ -574,6 +799,30 @@ class ProjectManagementSkill(BaseSkill):
         return "\n".join(lines)
 
     async def _generate_plan(self, pm, inp: dict, context: SkillContext) -> str:
+        """
+        Generate plan.
+        
+        Purpose:
+        - Implement `_generate_plan` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `pm`: input used by this function to compute or route work.
+        - `inp`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         project, err = await self._resolve_project(pm, inp, context)
         if not project:
             return f"ERROR: {err}"
@@ -596,6 +845,30 @@ class ProjectManagementSkill(BaseSkill):
         return f"Plan generation started for '{_project_display(project)}'. I will notify you when it's ready for review."
 
     async def _approve_start(self, pm, inp: dict, context: SkillContext) -> str:
+        """
+        Approve start.
+        
+        Purpose:
+        - Implement `_approve_start` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `pm`: input used by this function to compute or route work.
+        - `inp`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         project, err = await self._resolve_project(pm, inp, context)
         if not project:
             return f"ERROR: {err}"
@@ -654,6 +927,30 @@ class ProjectManagementSkill(BaseSkill):
         return f"Plan approved and execution started for '{name}'."
 
     async def _pause(self, pm, inp: dict, context: SkillContext) -> str:
+        """
+        Pause.
+        
+        Purpose:
+        - Implement `_pause` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `pm`: input used by this function to compute or route work.
+        - `inp`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         project, err = await self._resolve_project(pm, inp, context)
         if not project:
             return f"ERROR: {err}"
@@ -662,6 +959,30 @@ class ProjectManagementSkill(BaseSkill):
         return f"Project '{_project_display(project)}' paused."
 
     async def _resume(self, pm, inp: dict, context: SkillContext) -> str:
+        """
+        Resume.
+        
+        Purpose:
+        - Implement `_resume` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `pm`: input used by this function to compute or route work.
+        - `inp`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         project, err = await self._resolve_project(pm, inp, context)
         if not project:
             return f"ERROR: {err}"
@@ -671,6 +992,30 @@ class ProjectManagementSkill(BaseSkill):
         return f"Project '{_project_display(project)}' resumed."
 
     async def _cancel(self, pm, inp: dict, context: SkillContext) -> str:
+        """
+        Cancel.
+        
+        Purpose:
+        - Implement `_cancel` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `pm`: input used by this function to compute or route work.
+        - `inp`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         project, err = await self._resolve_project(pm, inp, context)
         if not project:
             return f"ERROR: {err}"
@@ -679,6 +1024,30 @@ class ProjectManagementSkill(BaseSkill):
         return f"Project '{_project_display(project)}' cancelled."
 
     async def _remove(self, pm, inp: dict, context: SkillContext) -> str:
+        """
+        Remove.
+        
+        Purpose:
+        - Implement `_remove` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `pm`: input used by this function to compute or route work.
+        - `inp`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         project_id = self._resolve_project_id(inp, context)
         if not project_id:
             return "ERROR: No active project to remove."
@@ -706,6 +1075,30 @@ class ProjectManagementSkill(BaseSkill):
         return f"Removed {len(removed)} failed project(s): {names}."
 
     async def _generate_docs(self, pm, inp: dict, context: SkillContext) -> str:
+        """
+        Generate docs.
+        
+        Purpose:
+        - Implement `_generate_docs` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `pm`: input used by this function to compute or route work.
+        - `inp`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         project_id = self._resolve_project_id(inp, context)
         if not project_id:
             return "ERROR: No active project."

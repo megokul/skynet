@@ -42,6 +42,28 @@ from core.trace import trace_flow
 
 
 def _configure_logging() -> None:
+    """
+    Configure logging.
+    
+    Purpose:
+    - Implement `_configure_logging` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     configure_logging(
         level_name=cfg.LOG_LEVEL,
         log_dir=cfg.LOG_DIR,
@@ -66,6 +88,28 @@ def _configure_logging() -> None:
 
 
 def _print_banner() -> None:
+    """
+    Print banner.
+    
+    Purpose:
+    - Implement `_print_banner` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     print(
         r"""
   ____  _  ____   ___   _ _____ _____
@@ -91,6 +135,28 @@ def _print_banner() -> None:
 
 
 async def _main() -> None:
+    """
+    Main.
+    
+    Purpose:
+    - Implement `_main` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _configure_logging()
     _print_banner()
     trace_flow("main.start")
@@ -232,6 +298,22 @@ async def _main() -> None:
 
     # Create a simple context namespace for heartbeat tasks.
     class _HBContext:
+        """
+        HBContext.
+        
+        Purpose:
+        - Represent a cohesive runtime concept for this subsystem.
+        - Group related state and methods behind a single abstraction boundary.
+        
+        How it works:
+        - Holds domain-specific fields and exposes operations that enforce local invariants.
+        - Shields calling code from low-level implementation details.
+        
+        Why this exists:
+        - Improves readability by giving the concept an explicit named type.
+        - Reduces coupling by centralizing behavior inside `_HBContext`.
+        """
+
         pass
     hb_ctx = _HBContext()
     hb_ctx.sentinel = sentinel

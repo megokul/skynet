@@ -52,6 +52,30 @@ def _success_response(
     action: str,
     result: dict[str, Any],
 ) -> dict[str, Any]:
+    """
+    Success response.
+    
+    Purpose:
+    - Implement `_success_response` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `request_id`: input used by this function to compute or route work.
+    - `action`: input used by this function to compute or route work.
+    - `result`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+    """
+
     return {
         "request_id": request_id,
         "status": "success",
@@ -65,6 +89,30 @@ def _error_response(
     action: str,
     reason: str,
 ) -> dict[str, Any]:
+    """
+    Error response.
+    
+    Purpose:
+    - Implement `_error_response` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `request_id`: input used by this function to compute or route work.
+    - `action`: input used by this function to compute or route work.
+    - `reason`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+    """
+
     return {
         "request_id": request_id,
         "status": "error",
@@ -103,6 +151,28 @@ async def route(message: dict[str, Any]) -> dict[str, Any]:
             return _with_request_id(cached, request_id)
 
     async def _finalize(response: dict[str, Any]) -> dict[str, Any]:
+        """
+        Finalize.
+        
+        Purpose:
+        - Implement `_finalize` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `response`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         if idempotency_cache_key:
             await _store_idempotent_result(idempotency_cache_key, response)
         return response
@@ -204,10 +274,54 @@ async def route(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def _elapsed_ms(start: float) -> float:
+    """
+    Elapsed ms.
+    
+    Purpose:
+    - Implement `_elapsed_ms` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `start`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `float` when available; otherwise side effects only.
+    """
+
     return round((time.monotonic() - start) * 1000, 2)
 
 
 def _build_idempotency_key(message: dict[str, Any]) -> str | None:
+    """
+    Build idempotency key.
+    
+    Purpose:
+    - Implement `_build_idempotency_key` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `message`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str | None` when available; otherwise side effects only.
+    """
+
     task_id = str(message.get("task_id") or "").strip()
     idem = str(message.get("idempotency_key") or "").strip()
     if not task_id or not idem:
@@ -216,6 +330,29 @@ def _build_idempotency_key(message: dict[str, Any]) -> str | None:
 
 
 def _with_request_id(response: dict[str, Any], request_id: str) -> dict[str, Any]:
+    """
+    With request id.
+    
+    Purpose:
+    - Implement `_with_request_id` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `response`: input used by this function to compute or route work.
+    - `request_id`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+    """
+
     patched = dict(response)
     patched["request_id"] = request_id
     patched["idempotent_replay"] = True
@@ -223,6 +360,28 @@ def _with_request_id(response: dict[str, Any], request_id: str) -> dict[str, Any
 
 
 async def _load_idempotent_result(key: str) -> dict[str, Any] | None:
+    """
+    Load idempotent result.
+    
+    Purpose:
+    - Implement `_load_idempotent_result` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `key`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+    """
+
     now = time.monotonic()
     async with _idempotency_cache_lock:
         stale = [k for k, (ts, _) in _idempotency_cache.items() if now - ts > _IDEMPOTENCY_TTL_SECONDS]
@@ -235,6 +394,29 @@ async def _load_idempotent_result(key: str) -> dict[str, Any] | None:
 
 
 async def _store_idempotent_result(key: str, response: dict[str, Any]) -> None:
+    """
+    Store idempotent result.
+    
+    Purpose:
+    - Implement `_store_idempotent_result` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `key`: input used by this function to compute or route work.
+    - `response`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     now = time.monotonic()
     async with _idempotency_cache_lock:
         stale = [k for k, (ts, _) in _idempotency_cache.items() if now - ts > _IDEMPOTENCY_TTL_SECONDS]

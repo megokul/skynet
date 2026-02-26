@@ -61,14 +61,80 @@ LEGAL_TASK_TRANSITIONS: dict[str, set[str]] = {
 
 
 def _utc_now() -> datetime:
+    """
+    Utc now.
+    
+    Purpose:
+    - Implement `_utc_now` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `datetime` when available; otherwise side effects only.
+    """
+
     return utc_now()
 
 
 def _iso_now() -> str:
+    """
+    Iso now.
+    
+    Purpose:
+    - Implement `_iso_now` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     return iso_now()
 
 
 def _parse_iso(value: str | None) -> datetime | None:
+    """
+    Parse iso.
+    
+    Purpose:
+    - Implement `_parse_iso` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `value`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `datetime | None` when available; otherwise side effects only.
+    """
+
     if not value:
         return None
     try:
@@ -81,6 +147,28 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 
 def _json_loads_list(value: Any) -> list[Any]:
+    """
+    Json loads list.
+    
+    Purpose:
+    - Implement `_json_loads_list` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `value`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[Any]` when available; otherwise side effects only.
+    """
+
     if isinstance(value, list):
         return value
     if not value:
@@ -93,6 +181,28 @@ def _json_loads_list(value: Any) -> list[Any]:
 
 
 def _json_loads_dict(value: Any) -> dict[str, Any]:
+    """
+    Json loads dict.
+    
+    Purpose:
+    - Implement `_json_loads_dict` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `value`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+    """
+
     if isinstance(value, dict):
         return value
     if not value:
@@ -105,6 +215,28 @@ def _json_loads_dict(value: Any) -> dict[str, Any]:
 
 
 def _uniq_nonempty(items: list[str] | None) -> list[str]:
+    """
+    Uniq nonempty.
+    
+    Purpose:
+    - Implement `_uniq_nonempty` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `items`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[str]` when available; otherwise side effects only.
+    """
+
     out: list[str] = []
     for item in items or []:
         v = str(item).strip()
@@ -114,6 +246,28 @@ def _uniq_nonempty(items: list[str] | None) -> list[str]:
 
 
 def _normalize_status(status: str | None) -> str:
+    """
+    Normalize status.
+    
+    Purpose:
+    - Implement `_normalize_status` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `status`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     value = str(status or "").strip().lower()
     return TASK_STATE_ALIASES.get(value, value)
 
@@ -122,6 +276,29 @@ class TaskQueueManager:
     """Database-backed control-plane scheduler state."""
 
     def __init__(self, db: aiosqlite.Connection, lock_timeout_seconds: int = 300) -> None:
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `db`: input used by this function to compute or route work.
+        - `lock_timeout_seconds`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         self.db = db
         self.lock_timeout_seconds = lock_timeout_seconds
 
@@ -136,6 +313,34 @@ class TaskQueueManager:
         required_files: list[str] | None = None,
         gateway_id: str | None = None,
     ) -> dict[str, Any]:
+        """
+        Enqueue task.
+        
+        Purpose:
+        - Implement `enqueue_task` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `action`: input used by this function to compute or route work.
+        - `params`: input used by this function to compute or route work.
+        - `task_id`: input used by this function to compute or route work.
+        - `priority`: input used by this function to compute or route work.
+        - `dependencies`: input used by this function to compute or route work.
+        - `required_files`: input used by this function to compute or route work.
+        - `gateway_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         now = _iso_now()
         task_id = task_id or f"task-{uuid4().hex[:12]}"
         deps = _uniq_nonempty(dependencies)
@@ -220,11 +425,56 @@ class TaskQueueManager:
         return task
 
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
+        """
+        Get task.
+        
+        Purpose:
+        - Implement `get_task` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `task_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+        """
+
         async with self.db.execute("SELECT * FROM control_tasks WHERE id = ?", (task_id,)) as cur:
             row = await cur.fetchone()
         return self._row_to_task(dict(row)) if row else None
 
     async def list_tasks(self, status: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        """
+        List tasks.
+        
+        Purpose:
+        - Implement `list_tasks` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `status`: input used by this function to compute or route work.
+        - `limit`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+        """
+
         normalized = _normalize_status(status) if status else None
         if normalized:
             sql = "SELECT * FROM control_tasks WHERE status = ? ORDER BY created_at DESC LIMIT ?"
@@ -457,6 +707,33 @@ class TaskQueueManager:
         result: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> bool:
+        """
+        Complete task.
+        
+        Purpose:
+        - Implement `complete_task` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `task_id`: input used by this function to compute or route work.
+        - `worker_id`: input used by this function to compute or route work.
+        - `claim_token`: input used by this function to compute or route work.
+        - `success`: input used by this function to compute or route work.
+        - `result`: input used by this function to compute or route work.
+        - `error`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         now = _iso_now()
         next_status = TASK_STATE_SUCCEEDED if success else TASK_STATE_FAILED
         event_type = "succeeded" if success else "failed"
@@ -724,6 +1001,28 @@ class TaskQueueManager:
             raise
 
     async def release_files_for_task(self, task_id: str) -> int:
+        """
+        Release files for task.
+        
+        Purpose:
+        - Implement `release_files_for_task` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `task_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `int` when available; otherwise side effects only.
+        """
+
         cur = await self.db.execute(
             "DELETE FROM control_task_file_ownership WHERE owning_task = ?",
             (task_id,),
@@ -732,6 +1031,28 @@ class TaskQueueManager:
         return cur.rowcount
 
     async def list_file_ownership(self) -> list[dict[str, Any]]:
+        """
+        List file ownership.
+        
+        Purpose:
+        - Implement `list_file_ownership` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+        """
+
         async with self.db.execute(
             "SELECT file_path, owning_task, claim_token, claimed_at FROM control_task_file_ownership ORDER BY file_path"
         ) as cur:
@@ -744,6 +1065,30 @@ class TaskQueueManager:
         limit: int = 200,
         since: str | None = None,
     ) -> list[dict[str, Any]]:
+        """
+        List task events.
+        
+        Purpose:
+        - Implement `list_task_events` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `task_id`: input used by this function to compute or route work.
+        - `limit`: input used by this function to compute or route work.
+        - `since`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+        """
+
         where: list[str] = []
         params: list[Any] = []
         if task_id:
@@ -771,6 +1116,28 @@ class TaskQueueManager:
         return rows
 
     async def list_active_assignments(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        """
+        List active assignments.
+        
+        Purpose:
+        - Implement `list_active_assignments` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `limit`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+        """
+
         async with self.db.execute(
             """
             SELECT
@@ -792,6 +1159,28 @@ class TaskQueueManager:
             return [dict(r) for r in await cur.fetchall()]
 
     async def list_stale_locked_tasks(self, *, ttl_seconds: int | None = None) -> list[dict[str, Any]]:
+        """
+        List stale locked tasks.
+        
+        Purpose:
+        - Implement `list_stale_locked_tasks` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `ttl_seconds`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+        """
+
         ttl = int(ttl_seconds or self.lock_timeout_seconds)
         now_dt = _utc_now()
         stale: list[dict[str, Any]] = []
@@ -817,6 +1206,29 @@ class TaskQueueManager:
         return stale
 
     async def _files_unowned(self, *, task_id: str, files: list[str]) -> bool:
+        """
+        Files unowned.
+        
+        Purpose:
+        - Implement `_files_unowned` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `task_id`: input used by this function to compute or route work.
+        - `files`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         for file_path in files:
             async with self.db.execute(
                 "SELECT owning_task FROM control_task_file_ownership WHERE file_path = ?",
@@ -829,11 +1241,55 @@ class TaskQueueManager:
         return True
 
     async def _task_status_map(self) -> dict[str, str]:
+        """
+        Task status map.
+        
+        Purpose:
+        - Implement `_task_status_map` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `dict[str, str]` when available; otherwise side effects only.
+        """
+
         async with self.db.execute("SELECT id, status FROM control_tasks") as cur:
             rows = await cur.fetchall()
         return {str(r[0]): _normalize_status(str(r[1])) for r in rows}
 
     async def _get_task_for_update(self, task_id: str) -> dict[str, Any] | None:
+        """
+        Get task for update.
+        
+        Purpose:
+        - Implement `_get_task_for_update` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `task_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `dict[str, Any] | None` when available; otherwise side effects only.
+        """
+
         async with self.db.execute("SELECT * FROM control_tasks WHERE id = ?", (task_id,)) as cur:
             row = await cur.fetchone()
         return self._row_to_task(dict(row)) if row else None
@@ -850,6 +1306,35 @@ class TaskQueueManager:
         message: str = "",
         payload: dict[str, Any] | None = None,
     ) -> None:
+        """
+        Append event.
+        
+        Purpose:
+        - Implement `_append_event` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `task_id`: input used by this function to compute or route work.
+        - `event_type`: input used by this function to compute or route work.
+        - `from_status`: input used by this function to compute or route work.
+        - `to_status`: input used by this function to compute or route work.
+        - `worker_id`: input used by this function to compute or route work.
+        - `claim_token`: input used by this function to compute or route work.
+        - `message`: input used by this function to compute or route work.
+        - `payload`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         await self.db.execute(
             """
             INSERT INTO control_task_events (
@@ -872,6 +1357,28 @@ class TaskQueueManager:
         )
 
     async def _graph_has_cycle(self) -> bool:
+        """
+        Graph has cycle.
+        
+        Purpose:
+        - Implement `_graph_has_cycle` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         async with self.db.execute("SELECT id, dependencies FROM control_tasks") as cur:
             rows = [dict(r) for r in await cur.fetchall()]
 
@@ -883,6 +1390,28 @@ class TaskQueueManager:
         visited: set[str] = set()
 
         def dfs(node: str) -> bool:
+            """
+            Dfs.
+            
+            Purpose:
+            - Implement `dfs` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - `node`: input used by this function to compute or route work.
+            
+            Returns:
+            - Return value typed as `bool` when available; otherwise side effects only.
+            """
+
             if node in visited:
                 return False
             if node in visiting:
@@ -903,6 +1432,28 @@ class TaskQueueManager:
         return False
 
     def _row_to_task(self, row: dict[str, Any]) -> dict[str, Any]:
+        """
+        Row to task.
+        
+        Purpose:
+        - Implement `_row_to_task` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `row`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         row["status"] = _normalize_status(row.get("status"))
         row["params"] = _json_loads_dict(row.get("params"))
         row["dependencies"] = _json_loads_list(row.get("dependencies"))

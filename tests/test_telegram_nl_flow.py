@@ -14,6 +14,28 @@ import pytest
 
 
 def _ensure_gateway_path() -> None:
+    """
+    Ensure gateway path.
+    
+    Purpose:
+    - Implement `_ensure_gateway_path` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     repo_root = Path(__file__).parent.parent
     gateway_root = str(repo_root / "openclaw-gateway")
     if gateway_root not in sys.path:
@@ -25,6 +47,28 @@ def _ensure_gateway_path() -> None:
 # ---------------------------------------------------------------------------
 
 def test_pure_greeting_hi() -> None:
+    """
+    Test scenario `test_pure_greeting_hi`.
+    
+    Purpose:
+    - Implement `test_pure_greeting_hi` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_gateway_path()
     from bot.nl_intent import _is_pure_greeting
 
@@ -35,6 +79,28 @@ def test_pure_greeting_hi() -> None:
 
 
 def test_pure_greeting_rejects_substantive_text() -> None:
+    """
+    Test scenario `test_pure_greeting_rejects_substantive_text`.
+    
+    Purpose:
+    - Implement `test_pure_greeting_rejects_substantive_text` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_gateway_path()
     from bot.nl_intent import _is_pure_greeting
 
@@ -45,6 +111,28 @@ def test_pure_greeting_rejects_substantive_text() -> None:
 
 
 def test_pure_greeting_case_insensitive() -> None:
+    """
+    Test scenario `test_pure_greeting_case_insensitive`.
+    
+    Purpose:
+    - Implement `test_pure_greeting_case_insensitive` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_gateway_path()
     from bot.nl_intent import _is_pure_greeting
 
@@ -58,6 +146,28 @@ def test_pure_greeting_case_insensitive() -> None:
 # ---------------------------------------------------------------------------
 
 def test_new_project_intent_positive_cases() -> None:
+    """
+    Test scenario `test_new_project_intent_positive_cases`.
+    
+    Purpose:
+    - Implement `test_new_project_intent_positive_cases` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_gateway_path()
     from bot.nl_intent import _is_new_project_intent
 
@@ -73,6 +183,28 @@ def test_new_project_intent_positive_cases() -> None:
 
 
 def test_new_project_intent_negative_cases() -> None:
+    """
+    Test scenario `test_new_project_intent_negative_cases`.
+    
+    Purpose:
+    - Implement `test_new_project_intent_negative_cases` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_gateway_path()
     from bot.nl_intent import _is_new_project_intent
 
@@ -92,6 +224,28 @@ def test_new_project_intent_negative_cases() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_project_no_manager_returns_error() -> None:
+    """
+    Test scenario `test_resolve_project_no_manager_returns_error`.
+    
+    Purpose:
+    - Implement `test_resolve_project_no_manager_returns_error` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_gateway_path()
     from bot import state
     from bot.nl_intent import _resolve_project
@@ -124,6 +278,28 @@ def _make_context():
 
 @pytest.mark.asyncio
 async def test_project_skill_no_manager_returns_error() -> None:
+    """
+    Test scenario `test_project_skill_no_manager_returns_error`.
+    
+    Purpose:
+    - Implement `test_project_skill_no_manager_returns_error` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_gateway_path()
     from skills.project_skill import ProjectManagementSkill
     from bot import state
@@ -142,6 +318,28 @@ async def test_project_skill_no_manager_returns_error() -> None:
 
 @pytest.mark.asyncio
 async def test_project_skill_create_empty_name_returns_error() -> None:
+    """
+    Test scenario `test_project_skill_create_empty_name_returns_error`.
+    
+    Purpose:
+    - Implement `test_project_skill_create_empty_name_returns_error` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_gateway_path()
     from skills.project_skill import ProjectManagementSkill
     from bot import state
@@ -150,7 +348,45 @@ async def test_project_skill_create_empty_name_returns_error() -> None:
     ctx = _make_context()
 
     class _DummyManager:
+        """
+        DummyManager.
+        
+        Purpose:
+        - Represent a cohesive runtime concept for this subsystem.
+        - Group related state and methods behind a single abstraction boundary.
+        
+        How it works:
+        - Holds domain-specific fields and exposes operations that enforce local invariants.
+        - Shields calling code from low-level implementation details.
+        
+        Why this exists:
+        - Improves readability by giving the concept an explicit named type.
+        - Reduces coupling by centralizing behavior inside `_DummyManager`.
+        """
+
         async def create_project(self, name: str):
+            """
+            Create project.
+            
+            Purpose:
+            - Implement `create_project` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - `name`: input used by this function to compute or route work.
+            
+            Returns:
+            - Function-specific value or side effects consumed by upstream callers.
+            """
+
             return {"id": "x", "name": name, "status": "ideation", "bootstrap_ok": True, "bootstrap_summary": ""}
 
     original = state._project_manager
@@ -164,6 +400,28 @@ async def test_project_skill_create_empty_name_returns_error() -> None:
 
 @pytest.mark.asyncio
 async def test_project_skill_list_with_empty_project_list() -> None:
+    """
+    Test scenario `test_project_skill_list_with_empty_project_list`.
+    
+    Purpose:
+    - Implement `test_project_skill_list_with_empty_project_list` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_gateway_path()
     from skills.project_skill import ProjectManagementSkill
     from bot import state
@@ -172,7 +430,45 @@ async def test_project_skill_list_with_empty_project_list() -> None:
     ctx = _make_context()
 
     class _DummyManager:
+        """
+        DummyManager.
+        
+        Purpose:
+        - Represent a cohesive runtime concept for this subsystem.
+        - Group related state and methods behind a single abstraction boundary.
+        
+        How it works:
+        - Holds domain-specific fields and exposes operations that enforce local invariants.
+        - Shields calling code from low-level implementation details.
+        
+        Why this exists:
+        - Improves readability by giving the concept an explicit named type.
+        - Reduces coupling by centralizing behavior inside `_DummyManager`.
+        """
+
         async def list_projects(self):
+            """
+            List projects.
+            
+            Purpose:
+            - Implement `list_projects` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - None.
+            
+            Returns:
+            - Function-specific value or side effects consumed by upstream callers.
+            """
+
             return []
 
     original = state._project_manager
@@ -186,6 +482,28 @@ async def test_project_skill_list_with_empty_project_list() -> None:
 
 @pytest.mark.asyncio
 async def test_project_skill_create_calls_manager() -> None:
+    """
+    Test scenario `test_project_skill_create_calls_manager`.
+    
+    Purpose:
+    - Implement `test_project_skill_create_calls_manager` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_gateway_path()
     from skills.project_skill import ProjectManagementSkill
     from bot import state
@@ -195,7 +513,45 @@ async def test_project_skill_create_calls_manager() -> None:
     created_names: list[str] = []
 
     class _DummyManager:
+        """
+        DummyManager.
+        
+        Purpose:
+        - Represent a cohesive runtime concept for this subsystem.
+        - Group related state and methods behind a single abstraction boundary.
+        
+        How it works:
+        - Holds domain-specific fields and exposes operations that enforce local invariants.
+        - Shields calling code from low-level implementation details.
+        
+        Why this exists:
+        - Improves readability by giving the concept an explicit named type.
+        - Reduces coupling by centralizing behavior inside `_DummyManager`.
+        """
+
         async def create_project(self, name: str):
+            """
+            Create project.
+            
+            Purpose:
+            - Implement `create_project` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - `name`: input used by this function to compute or route work.
+            
+            Returns:
+            - Function-specific value or side effects consumed by upstream callers.
+            """
+
             created_names.append(name)
             return {
                 "id": "proj-123",
@@ -219,6 +575,28 @@ async def test_project_skill_create_calls_manager() -> None:
 
 @pytest.mark.asyncio
 async def test_project_skill_add_idea_no_active_project() -> None:
+    """
+    Test scenario `test_project_skill_add_idea_no_active_project`.
+    
+    Purpose:
+    - Implement `test_project_skill_add_idea_no_active_project` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_gateway_path()
     from skills.project_skill import ProjectManagementSkill
     from bot import state
@@ -227,7 +605,46 @@ async def test_project_skill_add_idea_no_active_project() -> None:
     ctx = _make_context()
 
     class _DummyManager:
+        """
+        DummyManager.
+        
+        Purpose:
+        - Represent a cohesive runtime concept for this subsystem.
+        - Group related state and methods behind a single abstraction boundary.
+        
+        How it works:
+        - Holds domain-specific fields and exposes operations that enforce local invariants.
+        - Shields calling code from low-level implementation details.
+        
+        Why this exists:
+        - Improves readability by giving the concept an explicit named type.
+        - Reduces coupling by centralizing behavior inside `_DummyManager`.
+        """
+
         async def add_idea(self, project_id: str, idea: str) -> int:
+            """
+            Add idea.
+            
+            Purpose:
+            - Implement `add_idea` within this module's workflow.
+            - Keep behavior localized so callers have one stable entrypoint.
+            
+            How it works:
+            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+            - Produces deterministic return data or side effects expected by calling code.
+            
+            Why this exists:
+            - Prevents duplicated logic in upstream orchestration paths.
+            - Improves debuggability by centralizing this behavior in one named function.
+            
+            Parameters:
+            - `project_id`: input used by this function to compute or route work.
+            - `idea`: input used by this function to compute or route work.
+            
+            Returns:
+            - Return value typed as `int` when available; otherwise side effects only.
+            """
+
             return 1
 
     original_pm = state._project_manager

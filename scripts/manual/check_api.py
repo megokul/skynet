@@ -16,6 +16,28 @@ API_KEY = os.getenv("SKYNET_API_KEY", "").strip()
 
 
 def _headers() -> dict[str, str]:
+    """
+    Headers.
+    
+    Purpose:
+    - Implement `_headers` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `dict[str, str]` when available; otherwise side effects only.
+    """
+
     headers = {}
     if API_KEY:
         headers["X-API-Key"] = API_KEY
@@ -23,6 +45,28 @@ def _headers() -> dict[str, str]:
 
 
 async def test_health() -> bool:
+    """
+    Test scenario `test_health`.
+    
+    Purpose:
+    - Implement `test_health` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     print("\n=== Testing /v1/health ===")
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{API_BASE}/v1/health")
@@ -32,6 +76,28 @@ async def test_health() -> bool:
 
 
 async def test_register_gateway() -> bool:
+    """
+    Test scenario `test_register_gateway`.
+    
+    Purpose:
+    - Implement `test_register_gateway` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     print("\n=== Testing /v1/register-gateway ===")
     payload = {
         "gateway_id": "manual-gw-1",
@@ -52,6 +118,28 @@ async def test_register_gateway() -> bool:
 
 
 async def test_register_worker() -> bool:
+    """
+    Test scenario `test_register_worker`.
+    
+    Purpose:
+    - Implement `test_register_worker` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     print("\n=== Testing /v1/register-worker ===")
     payload = {
         "worker_id": "manual-worker-1",
@@ -73,6 +161,28 @@ async def test_register_worker() -> bool:
 
 
 async def test_route_task() -> bool:
+    """
+    Test scenario `test_route_task`.
+    
+    Purpose:
+    - Implement `test_route_task` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     print("\n=== Testing /v1/route-task ===")
     payload = {
         "task_id": str(uuid4()),
@@ -96,6 +206,28 @@ async def test_route_task() -> bool:
 
 
 async def test_system_state() -> bool:
+    """
+    Test scenario `test_system_state`.
+    
+    Purpose:
+    - Implement `test_system_state` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     print("\n=== Testing /v1/system-state ===")
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{API_BASE}/v1/system-state", headers=_headers())
@@ -105,6 +237,28 @@ async def test_system_state() -> bool:
 
 
 async def main() -> int:
+    """
+    Main.
+    
+    Purpose:
+    - Implement `main` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     print("=" * 70)
     print("SKYNET Control Plane API Manual Checks")
     print("=" * 70)

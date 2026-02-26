@@ -22,6 +22,28 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def _ensure_paths() -> None:
+    """
+    Ensure paths.
+    
+    Purpose:
+    - Implement `_ensure_paths` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     repo_root = Path(__file__).parent.parent
     for sub in ("openclaw-gateway", ""):
         p = str(repo_root / sub)
@@ -38,15 +60,70 @@ _ensure_paths()
 
 @dataclass
 class _FakeMessage:
+    """
+    FakeMessage.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `_FakeMessage`.
+    """
+
     text: str
     replies: list[str] = field(default_factory=list)
 
     async def reply_text(self, text: str, **kwargs) -> None:
+        """
+        Reply text.
+        
+        Purpose:
+        - Implement `reply_text` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `text`: input used by this function to compute or route work.
+        - `**kwargs`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         self.replies.append(text)
 
 
 @dataclass
 class _FakeUser:
+    """
+    FakeUser.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `_FakeUser`.
+    """
+
     id: int = 999
     first_name: str = "Tester"
     last_name: str = ""
@@ -56,16 +133,76 @@ class _FakeUser:
 
 @dataclass
 class _FakeUpdate:
+    """
+    FakeUpdate.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `_FakeUpdate`.
+    """
+
     message: _FakeMessage
     effective_user: _FakeUser = field(default_factory=_FakeUser)
     effective_chat: Any = None
 
     def __post_init__(self):
+        """
+        Post init.
+        
+        Purpose:
+        - Implement `__post_init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         if self.effective_chat is None:
             self.effective_chat = type("FakeChat", (), {"id": 999})()
 
 
 def _make_update(text: str) -> _FakeUpdate:
+    """
+    Make update.
+    
+    Purpose:
+    - Implement `_make_update` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `text`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `_FakeUpdate` when available; otherwise side effects only.
+    """
+
     return _FakeUpdate(message=_FakeMessage(text=text))
 
 
@@ -75,6 +212,22 @@ def _make_update(text: str) -> _FakeUpdate:
 
 @dataclass
 class _ToolCall:
+    """
+    ToolCall.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `_ToolCall`.
+    """
+
     name: str
     input: dict
     id: str = "tc-1"
@@ -82,6 +235,22 @@ class _ToolCall:
 
 @dataclass
 class _LLMResponse:
+    """
+    LLMResponse.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `_LLMResponse`.
+    """
+
     text: str = ""
     tool_calls: list[_ToolCall] = field(default_factory=list)
 
@@ -90,11 +259,58 @@ class ScriptedRouter:
     """Mock LLM router that returns scripted responses in order."""
 
     def __init__(self, script: list[_LLMResponse]) -> None:
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `script`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         self._script = list(script)
         self._idx = 0
         self._calls: list[dict] = []
 
     async def chat(self, messages, *, tools=None, system=None, **kwargs) -> _LLMResponse:
+        """
+        Chat.
+        
+        Purpose:
+        - Implement `chat` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `messages`: input used by this function to compute or route work.
+        - `tools`: input used by this function to compute or route work.
+        - `system`: input used by this function to compute or route work.
+        - `**kwargs`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `_LLMResponse` when available; otherwise side effects only.
+        """
+
         self._calls.append({"messages": messages, "tools": tools})
         if self._idx < len(self._script):
             resp = self._script[self._idx]
@@ -118,6 +334,22 @@ async def _build_state(router: ScriptedRouter):
     db = await schema.init_db(":memory:")
 
     class _DummyScheduler:
+        """
+        DummyScheduler.
+        
+        Purpose:
+        - Represent a cohesive runtime concept for this subsystem.
+        - Group related state and methods behind a single abstraction boundary.
+        
+        How it works:
+        - Holds domain-specific fields and exposes operations that enforce local invariants.
+        - Shields calling code from low-level implementation details.
+        
+        Why this exists:
+        - Improves readability by giving the concept an explicit named type.
+        - Reduces coupling by centralizing behavior inside `_DummyScheduler`.
+        """
+
         gateway_url = "http://127.0.0.1:8766"
 
     pm = ProjectManager(
@@ -132,9 +364,65 @@ async def _build_state(router: ScriptedRouter):
     registry = build_default_registry()
 
     class _FakeApp:
+        """
+        FakeApp.
+        
+        Purpose:
+        - Represent a cohesive runtime concept for this subsystem.
+        - Group related state and methods behind a single abstraction boundary.
+        
+        How it works:
+        - Holds domain-specific fields and exposes operations that enforce local invariants.
+        - Shields calling code from low-level implementation details.
+        
+        Why this exists:
+        - Improves readability by giving the concept an explicit named type.
+        - Reduces coupling by centralizing behavior inside `_FakeApp`.
+        """
+
         class bot:
+            """
+            Bot.
+            
+            Purpose:
+            - Represent a cohesive runtime concept for this subsystem.
+            - Group related state and methods behind a single abstraction boundary.
+            
+            How it works:
+            - Holds domain-specific fields and exposes operations that enforce local invariants.
+            - Shields calling code from low-level implementation details.
+            
+            Why this exists:
+            - Improves readability by giving the concept an explicit named type.
+            - Reduces coupling by centralizing behavior inside `bot`.
+            """
+
             @staticmethod
             async def send_message(chat_id, text, **kwargs):
+                """
+                Send message.
+                
+                Purpose:
+                - Implement `send_message` within this module's workflow.
+                - Keep behavior localized so callers have one stable entrypoint.
+                
+                How it works:
+                - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+                - Produces deterministic return data or side effects expected by calling code.
+                
+                Why this exists:
+                - Prevents duplicated logic in upstream orchestration paths.
+                - Improves debuggability by centralizing this behavior in one named function.
+                
+                Parameters:
+                - `chat_id`: input used by this function to compute or route work.
+                - `text`: input used by this function to compute or route work.
+                - `**kwargs`: input used by this function to compute or route work.
+                
+                Returns:
+                - Function-specific value or side effects consumed by upstream callers.
+                """
+
                 pass
 
     import bot_config as cfg
@@ -153,6 +441,30 @@ async def _build_state(router: ScriptedRouter):
 
 
 async def _teardown_state(db, cfg, original_auth):
+    """
+    Teardown state.
+    
+    Purpose:
+    - Implement `_teardown_state` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `db`: input used by this function to compute or route work.
+    - `cfg`: input used by this function to compute or route work.
+    - `original_auth`: input used by this function to compute or route work.
+    
+    Returns:
+    - Function-specific value or side effects consumed by upstream callers.
+    """
+
     import asyncio
     from bot import state
     # Cancel any lingering background tasks
@@ -202,6 +514,28 @@ async def test_scenario_greeting() -> None:
 
 @pytest.mark.asyncio
 async def test_scenario_greeting_hello() -> None:
+    """
+    Test scenario `test_scenario_greeting_hello`.
+    
+    Purpose:
+    - Implement `test_scenario_greeting_hello` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     router = ScriptedRouter([])
     db, pm, registry, cfg, orig_auth = await _build_state(router)
     try:
@@ -487,6 +821,28 @@ async def test_scenario_generate_plan_no_project() -> None:
 
 @pytest.mark.asyncio
 async def test_scenario_unknown_tool() -> None:
+    """
+    Test scenario `test_scenario_unknown_tool`.
+    
+    Purpose:
+    - Implement `test_scenario_unknown_tool` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     from skills.project_skill import ProjectManagementSkill
     from skills.base import SkillContext
 

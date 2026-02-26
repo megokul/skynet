@@ -15,6 +15,28 @@ from skills.skynet_delegate import SkynetDelegateSkill
 
 
 async def test_route_task() -> bool:
+    """
+    Test scenario `test_route_task`.
+    
+    Purpose:
+    - Implement `test_route_task` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     print("\n" + "=" * 70)
     print("Test 1: skynet_route_task")
     print("=" * 70)
@@ -44,6 +66,28 @@ async def test_route_task() -> bool:
 
 
 async def test_system_state() -> bool:
+    """
+    Test scenario `test_system_state`.
+    
+    Purpose:
+    - Implement `test_system_state` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     print("\n" + "=" * 70)
     print("Test 2: skynet_system_state")
     print("=" * 70)
@@ -68,6 +112,28 @@ async def test_system_state() -> bool:
 
 
 async def test_tools_definition() -> bool:
+    """
+    Test scenario `test_tools_definition`.
+    
+    Purpose:
+    - Implement `test_tools_definition` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     print("\n" + "=" * 70)
     print("Test 3: Tool Definitions")
     print("=" * 70)
@@ -90,6 +156,28 @@ async def test_tools_definition() -> bool:
 
 
 async def main() -> int:
+    """
+    Main.
+    
+    Purpose:
+    - Implement `main` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     print("=" * 70)
     print("SKYNET Delegate Skill Tests")
     print("=" * 70)

@@ -27,6 +27,28 @@ class PlanStep:
     skills_required: list[str] = field(default_factory=list)  # e.g. ["git", "filesystem"]
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        To dict.
+        
+        Purpose:
+        - Implement `to_dict` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         return {
             "title": self.title,
             "description": self.description,
@@ -39,6 +61,28 @@ class PlanStep:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> PlanStep:
+        """
+        From dict.
+        
+        Purpose:
+        - Implement `from_dict` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `d`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `PlanStep` when available; otherwise side effects only.
+        """
+
         return cls(
             title=d["title"],
             description=d.get("description", ""),
@@ -68,6 +112,28 @@ class PlanSpec:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        """
+        Post init.
+        
+        Purpose:
+        - Implement `__post_init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         if self.total_estimated_minutes == 0 and self.steps:
             self.total_estimated_minutes = sum(s.estimated_minutes for s in self.steps)
 
@@ -86,6 +152,28 @@ class PlanSpec:
         return {s.agent_role for s in self.steps}
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        To dict.
+        
+        Purpose:
+        - Implement `to_dict` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         return {
             "job_id": self.job_id,
             "project_id": self.project_id,
@@ -98,6 +186,28 @@ class PlanSpec:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> PlanSpec:
+        """
+        From dict.
+        
+        Purpose:
+        - Implement `from_dict` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `d`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `PlanSpec` when available; otherwise side effects only.
+        """
+
         steps = [PlanStep.from_dict(s) for s in d.get("steps", [])]
         return cls(
             job_id=d["job_id"],

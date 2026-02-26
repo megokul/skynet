@@ -19,6 +19,29 @@ class WorkerRegistry:
     """Database-backed worker registry."""
 
     def __init__(self, db: aiosqlite.Connection, heartbeat_timeout_seconds: int = 60) -> None:
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `db`: input used by this function to compute or route work.
+        - `heartbeat_timeout_seconds`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         self.db = db
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
 
@@ -155,6 +178,28 @@ class WorkerRegistry:
         return cur.rowcount
 
     def _row_to_worker_dict(self, row: dict[str, Any]) -> dict[str, Any]:
+        """
+        Row to worker dict.
+        
+        Purpose:
+        - Implement `_row_to_worker_dict` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `row`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
+        """
+
         row["capabilities"] = json.loads(row.get("capabilities", "[]"))
         row["metadata"] = json.loads(row.get("metadata", "{}"))
         return row

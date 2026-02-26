@@ -35,6 +35,30 @@ class MemoryManager:
         gateway_api_url: str,
         s3: Any | None = None,
     ):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `db`: input used by this function to compute or route work.
+        - `gateway_api_url`: input used by this function to compute or route work.
+        - `s3`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.db = db
         self.gateway_api_url = gateway_api_url
         self.s3 = s3
@@ -253,6 +277,29 @@ class MemoryManager:
             return None
 
     async def _write_file(self, path: str, content: str) -> None:
+        """
+        Write file.
+        
+        Purpose:
+        - Implement `_write_file` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `path`: input used by this function to compute or route work.
+        - `content`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         await self._agent_action("file_write", {"file": path, "content": content})
 
     async def _write_if_missing(self, path: str, content: str) -> None:
@@ -262,10 +309,54 @@ class MemoryManager:
             await self._write_file(path, content)
 
     async def _read_file(self, path: str) -> str | None:
+        """
+        Read file.
+        
+        Purpose:
+        - Implement `_read_file` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `path`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str | None` when available; otherwise side effects only.
+        """
+
         result = await self._agent_action("file_read", {"file": path})
         if result and not result.startswith("Error"):
             return result
         return None
 
     async def _list_dir(self, path: str) -> str | None:
+        """
+        List dir.
+        
+        Purpose:
+        - Implement `_list_dir` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `path`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str | None` when available; otherwise side effects only.
+        """
+
         return await self._agent_action("list_directory", {"directory": path})

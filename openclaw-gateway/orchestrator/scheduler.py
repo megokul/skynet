@@ -35,6 +35,36 @@ class Scheduler:
         skill_registry: SkillRegistry | None = None,
         memory_manager: Any | None = None,
     ):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `db`: input used by this function to compute or route work.
+        - `router`: input used by this function to compute or route work.
+        - `searcher`: input used by this function to compute or route work.
+        - `gateway_api_url`: input used by this function to compute or route work.
+        - `on_progress`: input used by this function to compute or route work.
+        - `request_approval`: input used by this function to compute or route work.
+        - `max_parallel`: input used by this function to compute or route work.
+        - `skill_registry`: input used by this function to compute or route work.
+        - `memory_manager`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.db = db
         self.router = router
         self.searcher = searcher
@@ -51,12 +81,78 @@ class Scheduler:
 
     @property
     def running_count(self) -> int:
+        """
+        Running count.
+        
+        Purpose:
+        - Implement `running_count` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `int` when available; otherwise side effects only.
+        """
+
         return len(self._tasks)
 
     def is_running(self, project_id: str) -> bool:
+        """
+        Is running.
+        
+        Purpose:
+        - Implement `is_running` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         return project_id in self._tasks
 
     async def submit(self, project_id: str) -> None:
+        """
+        Submit.
+        
+        Purpose:
+        - Implement `submit` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         if project_id in self._tasks:
             raise RuntimeError(f"Project {project_id} is already running.")
         if len(self._tasks) >= self.max_parallel:
@@ -113,6 +209,28 @@ class Scheduler:
         logger.info("Started worker for project %s", project_id)
 
     def pause(self, project_id: str) -> bool:
+        """
+        Pause.
+        
+        Purpose:
+        - Implement `pause` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         event = self._pause_events.get(project_id)
         if event:
             event.clear()
@@ -120,6 +238,28 @@ class Scheduler:
         return False
 
     def resume(self, project_id: str) -> bool:
+        """
+        Resume.
+        
+        Purpose:
+        - Implement `resume` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         event = self._pause_events.get(project_id)
         if event:
             event.set()
@@ -127,6 +267,28 @@ class Scheduler:
         return False
 
     def cancel(self, project_id: str) -> bool:
+        """
+        Cancel.
+        
+        Purpose:
+        - Implement `cancel` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `bool` when available; otherwise side effects only.
+        """
+
         event = self._cancel_events.get(project_id)
         if event:
             event.set()
@@ -134,6 +296,28 @@ class Scheduler:
         return False
 
     def cancel_all(self) -> int:
+        """
+        Cancel all.
+        
+        Purpose:
+        - Implement `cancel_all` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `int` when available; otherwise side effects only.
+        """
+
         count = 0
         for project_id in list(self._tasks):
             if self.cancel(project_id):
@@ -141,6 +325,28 @@ class Scheduler:
         return count
 
     def _cleanup(self, project_id: str) -> None:
+        """
+        Cleanup.
+        
+        Purpose:
+        - Implement `_cleanup` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_id`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         self._tasks.pop(project_id, None)
         self._pause_events.pop(project_id, None)
         self._cancel_events.pop(project_id, None)

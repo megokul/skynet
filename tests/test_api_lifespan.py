@@ -14,6 +14,28 @@ from skynet.api.routes import app_state
 
 
 def test_api_lifespan_initializes_control_plane(monkeypatch) -> None:
+    """
+    Test scenario `test_api_lifespan_initializes_control_plane`.
+    
+    Purpose:
+    - Implement `test_api_lifespan_initializes_control_plane` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `monkeypatch`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     monkeypatch.delenv("OPENCLAW_GATEWAY_URLS", raising=False)
     monkeypatch.setenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:8766")
 

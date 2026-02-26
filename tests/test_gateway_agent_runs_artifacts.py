@@ -9,6 +9,29 @@ import pytest
 
 
 def _load_module(path: Path, module_name: str):
+    """
+    Load module.
+    
+    Purpose:
+    - Implement `_load_module` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `path`: input used by this function to compute or route work.
+    - `module_name`: input used by this function to compute or route work.
+    
+    Returns:
+    - Function-specific value or side effects consumed by upstream callers.
+    """
+
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load module from {path}")
@@ -19,6 +42,28 @@ def _load_module(path: Path, module_name: str):
 
 @pytest.mark.asyncio
 async def test_agent_runs_and_task_artifacts_roundtrip() -> None:
+    """
+    Test scenario `test_agent_runs_and_task_artifacts_roundtrip`.
+    
+    Purpose:
+    - Implement `test_agent_runs_and_task_artifacts_roundtrip` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     repo_root = Path(__file__).parent.parent
     schema_path = repo_root / "openclaw-gateway" / "db" / "schema.py"
     store_path = repo_root / "openclaw-gateway" / "db" / "store.py"

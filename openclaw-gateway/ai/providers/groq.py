@@ -83,11 +83,56 @@ class GroqProvider(BaseProvider):
     rpm_limit = 30
 
     def __init__(self, api_key: str, model: str | None = None):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `api_key`: input used by this function to compute or route work.
+        - `model`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         super().__init__(api_key, model)
         self._client = AsyncGroq(api_key=api_key)
 
     @property
     def default_model(self) -> str:
+        """
+        Default model.
+        
+        Purpose:
+        - Implement `default_model` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         return "llama-3.3-70b-versatile"
 
     async def chat(
@@ -98,6 +143,31 @@ class GroqProvider(BaseProvider):
         system: str | None = None,
         max_tokens: int = 4096,
     ) -> ProviderResponse:
+        """
+        Chat.
+        
+        Purpose:
+        - Implement `chat` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `messages`: input used by this function to compute or route work.
+        - `tools`: input used by this function to compute or route work.
+        - `system`: input used by this function to compute or route work.
+        - `max_tokens`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `ProviderResponse` when available; otherwise side effects only.
+        """
+
         oai_messages = _convert_messages_to_openai(messages, system)
         kwargs: dict[str, Any] = {
             "model": self.model_name,

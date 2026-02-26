@@ -1,3 +1,10 @@
+"""Regression tests for deterministic continuity and scope invariants.
+
+Purpose:
+- Validate scope resolution behavior for active/new project transitions.
+- Confirm write-intent routing decisions under pending-question conditions.
+- Protect project-isolation guarantees when switching conversations."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -8,6 +15,28 @@ import pytest
 
 
 def _ensure_paths() -> None:
+    """
+    Ensure paths.
+    
+    Purpose:
+    - Implement `_ensure_paths` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     repo_root = Path(__file__).parent.parent
     gateway_root = str(repo_root / "openclaw-gateway")
     if gateway_root not in sys.path:
@@ -15,6 +44,29 @@ def _ensure_paths() -> None:
 
 
 def _make_session(*, project_id: str | None, metadata: dict | None = None):
+    """
+    Make session.
+    
+    Purpose:
+    - Implement `_make_session` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `project_id`: input used by this function to compute or route work.
+    - `metadata`: input used by this function to compute or route work.
+    
+    Returns:
+    - Function-specific value or side effects consumed by upstream callers.
+    """
+
     from bot.session import Session
 
     return Session(
@@ -31,6 +83,28 @@ def _make_session(*, project_id: str | None, metadata: dict | None = None):
 
 
 def test_scope_defaults_to_active_project() -> None:
+    """
+    Test scenario `test_scope_defaults_to_active_project`.
+    
+    Purpose:
+    - Implement `test_scope_defaults_to_active_project` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_paths()
     from bot.invariants import resolve_scope
 
@@ -42,6 +116,28 @@ def test_scope_defaults_to_active_project() -> None:
 
 
 def test_short_new_without_pending_question_does_not_switch_scope() -> None:
+    """
+    Test scenario `test_short_new_without_pending_question_does_not_switch_scope`.
+    
+    Purpose:
+    - Implement `test_short_new_without_pending_question_does_not_switch_scope` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_paths()
     from bot.invariants import resolve_scope
 
@@ -53,6 +149,28 @@ def test_short_new_without_pending_question_does_not_switch_scope() -> None:
 
 
 def test_short_new_with_scope_question_switches_scope() -> None:
+    """
+    Test scenario `test_short_new_with_scope_question_switches_scope`.
+    
+    Purpose:
+    - Implement `test_short_new_with_scope_question_switches_scope` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_paths()
     from bot.invariants import resolve_scope
 
@@ -77,6 +195,28 @@ def test_short_new_with_scope_question_switches_scope() -> None:
 
 
 def test_write_intent_executes_on_active_scope() -> None:
+    """
+    Test scenario `test_write_intent_executes_on_active_scope`.
+    
+    Purpose:
+    - Implement `test_write_intent_executes_on_active_scope` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_paths()
     from bot.invariants import enforce_continuity, resolve_scope
     from bot.intent import ClassifiedIntent
@@ -95,6 +235,28 @@ def test_write_intent_executes_on_active_scope() -> None:
 
 @pytest.mark.asyncio
 async def test_conversation_switching_isolates_active_project_context() -> None:
+    """
+    Test scenario `test_conversation_switching_isolates_active_project_context`.
+    
+    Purpose:
+    - Implement `test_conversation_switching_isolates_active_project_context` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     _ensure_paths()
     from core.conversation_manager import ConversationManager
     from db import schema, store

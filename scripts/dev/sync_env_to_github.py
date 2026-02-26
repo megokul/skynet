@@ -20,6 +20,28 @@ ENV_LINE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
 
 def parse_env(env_path: Path) -> dict[str, str]:
+    """
+    Parse env.
+    
+    Purpose:
+    - Implement `parse_env` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `env_path`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, str]` when available; otherwise side effects only.
+    """
+
     values: dict[str, str] = {}
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
@@ -38,6 +60,29 @@ def parse_env(env_path: Path) -> dict[str, str]:
 
 
 def run_cmd(args: list[str], stdin_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    """
+    Run cmd.
+    
+    Purpose:
+    - Implement `run_cmd` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `args`: input used by this function to compute or route work.
+    - `stdin_text`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `subprocess.CompletedProcess[str]` when available; otherwise side effects only.
+    """
+
     return subprocess.run(
         args,
         input=stdin_text,
@@ -49,6 +94,28 @@ def run_cmd(args: list[str], stdin_text: str | None = None) -> subprocess.Comple
 
 
 def resolve_gh() -> str:
+    """
+    Resolve gh.
+    
+    Purpose:
+    - Implement `resolve_gh` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     gh = shutil.which("gh")
     if gh:
         return gh
@@ -65,6 +132,28 @@ def resolve_gh() -> str:
 
 
 def detect_repo(gh_bin: str) -> str:
+    """
+    Detect repo.
+    
+    Purpose:
+    - Implement `detect_repo` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `gh_bin`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     view = run_cmd([gh_bin, "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
     if view.returncode == 0 and view.stdout.strip():
         return view.stdout.strip()
@@ -87,6 +176,33 @@ def sync_values(
     dry_run: bool = False,
     quiet: bool = False,
 ) -> tuple[int, int]:
+    """
+    Sync values.
+    
+    Purpose:
+    - Implement `sync_values` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `gh_bin`: input used by this function to compute or route work.
+    - `repo`: input used by this function to compute or route work.
+    - `values`: input used by this function to compute or route work.
+    - `mode`: input used by this function to compute or route work.
+    - `dry_run`: input used by this function to compute or route work.
+    - `quiet`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `tuple[int, int]` when available; otherwise side effects only.
+    """
+
     updated = 0
     failed = 0
     for key in sorted(values.keys()):
@@ -110,6 +226,28 @@ def sync_values(
 
 
 def main() -> int:
+    """
+    Main.
+    
+    Purpose:
+    - Implement `main` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `int` when available; otherwise side effects only.
+    """
+
     parser = argparse.ArgumentParser(description="Sync .env values to GitHub repo secrets/variables.")
     parser.add_argument("--env-file", default=".env", help="Path to .env file (default: .env)")
     parser.add_argument("--repo", default="", help="GitHub repo in owner/name form")

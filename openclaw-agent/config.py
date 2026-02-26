@@ -39,6 +39,22 @@ WS_PING_TIMEOUT_SECONDS: int = 10
 # Risk Tiers
 # ---------------------------------------------------------------------------
 class Tier(str, Enum):
+    """
+    Tier.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `Tier`.
+    """
+
     AUTO = "AUTO"         # Execute immediately, no confirmation.
     CONFIRM = "CONFIRM"   # Prompt operator in terminal before executing.
     BLOCKED = "BLOCKED"   # Never execute — reject instantly.

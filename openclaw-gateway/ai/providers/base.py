@@ -63,6 +63,29 @@ class BaseProvider(ABC):
     rpm_limit: int | None = None
 
     def __init__(self, api_key: str, model: str | None = None):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `api_key`: input used by this function to compute or route work.
+        - `model`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self.api_key = api_key
         self.model_name = model or self.default_model
         self._daily_used: int = 0
@@ -77,6 +100,28 @@ class BaseProvider(ABC):
     @property
     @abstractmethod
     def default_model(self) -> str:
+        """
+        Default model.
+        
+        Purpose:
+        - Implement `default_model` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         ...
 
     @abstractmethod
@@ -96,6 +141,28 @@ class BaseProvider(ABC):
     # ------------------------------------------------------------------
 
     def remaining_quota(self) -> QuotaInfo:
+        """
+        Remaining quota.
+        
+        Purpose:
+        - Implement `remaining_quota` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `QuotaInfo` when available; otherwise side effects only.
+        """
+
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if self._daily_date != today:
             self._daily_used = 0
@@ -130,6 +197,28 @@ class BaseProvider(ABC):
         return True
 
     def _count_recent_rpm(self) -> int:
+        """
+        Count recent rpm.
+        
+        Purpose:
+        - Implement `_count_recent_rpm` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `int` when available; otherwise side effects only.
+        """
+
         cutoff = time.monotonic() - 60
         self._rpm_timestamps = [t for t in self._rpm_timestamps if t > cutoff]
         return len(self._rpm_timestamps)

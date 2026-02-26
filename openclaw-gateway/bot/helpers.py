@@ -26,6 +26,28 @@ logger = logging.getLogger("skynet.telegram")
 
 
 def _authorised(update: Update) -> bool:
+    """
+    Authorised.
+    
+    Purpose:
+    - Implement `_authorised` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     user = update.effective_user
     if user and user.id == cfg.ALLOWED_USER_ID:
         return True
@@ -35,6 +57,28 @@ def _authorised(update: Update) -> bool:
 
 
 async def _gateway_get(endpoint: str) -> dict:
+    """
+    Gateway get.
+    
+    Purpose:
+    - Implement `_gateway_get` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `endpoint`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict` when available; otherwise side effects only.
+    """
+
     async with aiohttp.ClientSession() as session:
         async with session.get(
             f"{cfg.GATEWAY_API_URL}{endpoint}", timeout=aiohttp.ClientTimeout(total=10)
@@ -43,6 +87,29 @@ async def _gateway_get(endpoint: str) -> dict:
 
 
 async def _gateway_post(endpoint: str, body: dict | None = None) -> dict:
+    """
+    Gateway post.
+    
+    Purpose:
+    - Implement `_gateway_post` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `endpoint`: input used by this function to compute or route work.
+    - `body`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict` when available; otherwise side effects only.
+    """
+
     async with aiohttp.ClientSession() as session:
         async with session.post(
             f"{cfg.GATEWAY_API_URL}{endpoint}",
@@ -53,12 +120,58 @@ async def _gateway_post(endpoint: str, body: dict | None = None) -> dict:
 
 
 async def _send_action(action: str, params: dict, confirmed: bool = False) -> dict:
+    """
+    Send action.
+    
+    Purpose:
+    - Implement `_send_action` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `action`: input used by this function to compute or route work.
+    - `params`: input used by this function to compute or route work.
+    - `confirmed`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict` when available; otherwise side effects only.
+    """
+
     return await _gateway_post("/action", {
         "action": action, "params": params, "confirmed": confirmed,
     })
 
 
 def _format_result(result: dict) -> str:
+    """
+    Format result.
+    
+    Purpose:
+    - Implement `_format_result` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `result`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     status = result.get("status", "unknown")
     action = result.get("action", "")
     if status == "error":
@@ -81,12 +194,58 @@ def _format_result(result: dict) -> str:
 
 
 def _parse_path(args: list[str], index: int = 0) -> str:
+    """
+    Parse path.
+    
+    Purpose:
+    - Implement `_parse_path` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `args`: input used by this function to compute or route work.
+    - `index`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     if args and len(args) > index:
         return args[index]
     return cfg.PROJECT_BASE_DIR or cfg.DEFAULT_WORKING_DIR
 
 
 def _store_pending(action: str, params: dict) -> str:
+    """
+    Store pending.
+    
+    Purpose:
+    - Implement `_store_pending` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `action`: input used by this function to compute or route work.
+    - `params`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     state._confirm_counter += 1
     key = f"c{state._confirm_counter}"
     state._pending_confirms[key] = {"action": action, "params": params}
@@ -94,6 +253,31 @@ def _store_pending(action: str, params: dict) -> str:
 
 
 async def _ask_confirm(update: Update, action: str, params: dict, summary: str) -> None:
+    """
+    Ask confirm.
+    
+    Purpose:
+    - Implement `_ask_confirm` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `action`: input used by this function to compute or route work.
+    - `params`: input used by this function to compute or route work.
+    - `summary`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     key = _store_pending(action, params)
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("Approve", callback_data=f"approve:{key}"),
@@ -106,6 +290,28 @@ async def _ask_confirm(update: Update, action: str, params: dict, summary: str) 
 
 
 def _store_pending_project_removal(project: dict[str, Any]) -> str:
+    """
+    Store pending project removal.
+    
+    Purpose:
+    - Implement `_store_pending_project_removal` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `project`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     key = f"rp{uuid.uuid4().hex[:10]}"
     state._pending_project_removals[key] = {
         "project_id": str(project.get("id", "")),
@@ -222,6 +428,29 @@ def _build_gap_system_context(gap_tier, project_name: str = "") -> str:
 
 
 def _truncate_for_notice(value: str, *, max_chars: int = 700) -> str:
+    """
+    Truncate for notice.
+    
+    Purpose:
+    - Implement `_truncate_for_notice` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `value`: input used by this function to compute or route work.
+    - `max_chars`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     text = (value or "").strip()
     if len(text) <= max_chars:
         return text
@@ -229,6 +458,31 @@ def _truncate_for_notice(value: str, *, max_chars: int = 700) -> str:
 
 
 def _format_notification(level: str, title: str, body: str, *, project: str = "") -> str:
+    """
+    Format notification.
+    
+    Purpose:
+    - Implement `_format_notification` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `level`: input used by this function to compute or route work.
+    - `title`: input used by this function to compute or route work.
+    - `body`: input used by this function to compute or route work.
+    - `project`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     theme_map: dict[str, tuple[str, str, str]] = {
         "info": ("🔵", "INFO", "BLUE"),
         "progress": ("🟣", "IN_PROGRESS", "PURPLE"),
@@ -251,6 +505,31 @@ def _format_notification(level: str, title: str, body: str, *, project: str = ""
 
 
 async def _notify_styled(level: str, title: str, body: str, *, project: str = "") -> None:
+    """
+    Notify styled.
+    
+    Purpose:
+    - Implement `_notify_styled` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `level`: input used by this function to compute or route work.
+    - `title`: input used by this function to compute or route work.
+    - `body`: input used by this function to compute or route work.
+    - `project`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     await _send_to_user(_format_notification(level, title, body, project=project), parse_mode="HTML")
 
 
@@ -261,6 +540,31 @@ async def _run_gateway_action_in_background(
     title: str,
     project: str = "",
 ) -> None:
+    """
+    Run gateway action in background.
+    
+    Purpose:
+    - Implement `_run_gateway_action_in_background` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `action`: input used by this function to compute or route work.
+    - `params`: input used by this function to compute or route work.
+    - `title`: input used by this function to compute or route work.
+    - `project`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     await _notify_styled(
         "progress",
         title,
@@ -289,6 +593,29 @@ async def _run_gateway_action_in_background(
 
 
 async def _ask_remove_project_confirmation(update: Update, project: dict[str, Any]) -> None:
+    """
+    Ask remove project confirmation.
+    
+    Purpose:
+    - Implement `_ask_remove_project_confirmation` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `update`: input used by this function to compute or route work.
+    - `project`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     key = _store_pending_project_removal(project)
     display = html.escape(_project_display(project))
     keyboard = InlineKeyboardMarkup([[
@@ -355,6 +682,28 @@ def _spawn_background_task(coro, *, tag: str) -> None:
     state._background_tasks.add(task)
 
     def _done(t: asyncio.Task) -> None:
+        """
+        Done.
+        
+        Purpose:
+        - Implement `_done` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `t`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `None` when available; otherwise side effects only.
+        """
+
         state._background_tasks.discard(t)
         try:
             t.result()
@@ -440,6 +789,28 @@ def _extract_textual_tool_call(text: str) -> ToolCall | None:
 
 
 def _extract_json_object(text: str) -> dict | None:
+    """
+    Extract json object.
+    
+    Purpose:
+    - Implement `_extract_json_object` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `text`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict | None` when available; otherwise side effects only.
+    """
+
     raw = (text or "").strip()
     if not raw:
         return None
@@ -506,6 +877,28 @@ def _friendly_ai_error(exc: Exception) -> str:
 
 
 def _norm_project(text: str) -> str:
+    """
+    Norm project.
+    
+    Purpose:
+    - Implement `_norm_project` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `text`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     return re.sub(r"[^a-z0-9]+", "", text.lower())
 
 
@@ -525,10 +918,54 @@ def _clean_entity(value: str) -> str:
 
 
 def _project_display(project: dict) -> str:
+    """
+    Project display.
+    
+    Purpose:
+    - Implement `_project_display` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `project`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     return str(project.get("display_name") or project.get("name") or "project")
 
 
 def _project_bootstrap_note(project: dict) -> str:
+    """
+    Project bootstrap note.
+    
+    Purpose:
+    - Implement `_project_bootstrap_note` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `project`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     summary = str(project.get("bootstrap_summary") or "").strip()
     if not summary:
         return ""
@@ -552,11 +989,56 @@ def _project_bootstrap_note(project: dict) -> str:
 
 
 def _join_project_path(base: str, leaf: str) -> str:
+    """
+    Join project path.
+    
+    Purpose:
+    - Implement `_join_project_path` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `base`: input used by this function to compute or route work.
+    - `leaf`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     sep = "\\" if ("\\" in base or ":" in base) else "/"
     return base.rstrip("\\/") + sep + leaf.strip("\\/")
 
 
 def _action_result_ok(result: dict[str, Any]) -> tuple[bool, str]:
+    """
+    Action result ok.
+    
+    Purpose:
+    - Implement `_action_result_ok` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `result`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `tuple[bool, str]` when available; otherwise side effects only.
+    """
+
     if result.get("status") == "error" or result.get("error"):
         return False, str(result.get("error", "Unknown action error"))
     inner = result.get("result", {}) if isinstance(result.get("result", {}), dict) else {}

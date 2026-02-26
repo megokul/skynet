@@ -6,11 +6,49 @@ from .base import BaseSkill, SkillContext
 
 
 class SearchSkill(BaseSkill):
+    """
+    SearchSkill.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `SearchSkill`.
+    """
+
     name = "search"
     description = "Web search for programming resources and documentation"
     allowed_roles = []
 
     def get_tools(self) -> list[dict[str, Any]]:
+        """
+        Get tools.
+        
+        Purpose:
+        - Implement `get_tools` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - None.
+        
+        Returns:
+        - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
+        """
+
         return [
             {
                 "name": "web_search",
@@ -33,6 +71,30 @@ class SearchSkill(BaseSkill):
         ]
 
     async def execute(self, tool_name: str, tool_input: dict[str, Any], context: SkillContext) -> str:
+        """
+        Execute.
+        
+        Purpose:
+        - Implement `execute` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `tool_name`: input used by this function to compute or route work.
+        - `tool_input`: input used by this function to compute or route work.
+        - `context`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         if tool_name != "web_search":
             return f"Unknown search tool: {tool_name}"
         if not isinstance(tool_input, dict):

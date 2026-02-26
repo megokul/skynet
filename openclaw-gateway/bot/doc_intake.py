@@ -43,6 +43,29 @@ _DOC_INTAKE_FIELD_LIMITS: dict[str, int] = {
 
 
 def _sanitize_intake_text(value: str, *, max_chars: int = 1200) -> str:
+    """
+    Sanitize intake text.
+    
+    Purpose:
+    - Implement `_sanitize_intake_text` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `value`: input used by this function to compute or route work.
+    - `max_chars`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     text = (value or "").replace("\r", "\n")
     # Strip non-printable control chars but preserve newlines/tabs.
     text = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", text)
@@ -57,6 +80,29 @@ def _sanitize_intake_text(value: str, *, max_chars: int = 1200) -> str:
 
 
 def _sanitize_markdown_paragraph(value: str, *, max_chars: int = 1200) -> str:
+    """
+    Sanitize markdown paragraph.
+    
+    Purpose:
+    - Implement `_sanitize_markdown_paragraph` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `value`: input used by this function to compute or route work.
+    - `max_chars`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     text = _sanitize_intake_text(value, max_chars=max_chars)
     if not text:
         return "TBD"
@@ -70,6 +116,28 @@ def _sanitize_markdown_paragraph(value: str, *, max_chars: int = 1200) -> str:
 
 
 def _normalize_list_item(value: str) -> str:
+    """
+    Normalize list item.
+    
+    Purpose:
+    - Implement `_normalize_list_item` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `value`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     item = re.sub(r"^\s*[-*•]+\s*", "", value or "").strip()
     item = re.sub(r"\s+", " ", item).strip(" .;,-")
     if not item:
@@ -82,6 +150,30 @@ def _normalize_list_item(value: str) -> str:
 
 
 def _parse_natural_list(value: str, *, max_items: int = 12, max_chars: int = 1500) -> list[str]:
+    """
+    Parse natural list.
+    
+    Purpose:
+    - Implement `_parse_natural_list` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `value`: input used by this function to compute or route work.
+    - `max_items`: input used by this function to compute or route work.
+    - `max_chars`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[str]` when available; otherwise side effects only.
+    """
+
     text = _sanitize_intake_text(value, max_chars=max_chars)
     if not text:
         return []
@@ -118,17 +210,86 @@ def _parse_natural_list(value: str, *, max_items: int = 12, max_chars: int = 150
 
 
 def _to_checklist(items: list[str], *, fallback: list[str]) -> list[str]:
+    """
+    To checklist.
+    
+    Purpose:
+    - Implement `_to_checklist` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `items`: input used by this function to compute or route work.
+    - `fallback`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[str]` when available; otherwise side effects only.
+    """
+
     src = items if items else fallback
     return [f"- [ ] {i}" for i in src]
 
 
 def _to_bullets(items: list[str], *, fallback: str = "TBD") -> list[str]:
+    """
+    To bullets.
+    
+    Purpose:
+    - Implement `_to_bullets` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `items`: input used by this function to compute or route work.
+    - `fallback`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `list[str]` when available; otherwise side effects only.
+    """
+
     if not items:
         return [f"- {fallback}"]
     return [f"- {i}" for i in items]
 
 
 def _format_initial_docs_from_answers(project_name: str, answers: dict[str, str]) -> tuple[str, str, str]:
+    """
+    Format initial docs from answers.
+    
+    Purpose:
+    - Implement `_format_initial_docs_from_answers` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `project_name`: input used by this function to compute or route work.
+    - `answers`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `tuple[str, str, str]` when available; otherwise side effects only.
+    """
+
     problem = _sanitize_markdown_paragraph(
         str(answers.get("problem", "")),
         max_chars=_DOC_INTAKE_FIELD_LIMITS["problem"],
@@ -192,6 +353,29 @@ def _format_initial_docs_from_answers(project_name: str, answers: dict[str, str]
 
 
 def _sanitize_markdown_document(value: str, *, max_chars: int = 50000) -> str:
+    """
+    Sanitize markdown document.
+    
+    Purpose:
+    - Implement `_sanitize_markdown_document` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `value`: input used by this function to compute or route work.
+    - `max_chars`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     text = (value or "").replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", text)
     text = text.strip()
@@ -205,10 +389,54 @@ def _sanitize_markdown_document(value: str, *, max_chars: int = 50000) -> str:
 
 
 def _normalize_doc_relpath(path: str) -> str:
+    """
+    Normalize doc relpath.
+    
+    Purpose:
+    - Implement `_normalize_doc_relpath` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `path`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     return re.sub(r"/{2,}", "/", (path or "").strip().replace("\\", "/")).strip("/")
 
 
 def _load_finalized_template_files() -> dict[str, str]:
+    """
+    Load finalized template files.
+    
+    Purpose:
+    - Implement `_load_finalized_template_files` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `dict[str, str]` when available; otherwise side effects only.
+    """
+
     root = state._FINALIZED_TEMPLATE_PATH
     if not root.exists() or not root.is_dir():
         return {}
@@ -228,7 +456,51 @@ def _load_finalized_template_files() -> dict[str, str]:
 
 
 def _render_project_yaml(project: dict) -> str:
+    """
+    Render project yaml.
+    
+    Purpose:
+    - Implement `_render_project_yaml` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `project`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     def _yaml_quote(value: str) -> str:
+        """
+        Yaml quote.
+        
+        Purpose:
+        - Implement `_yaml_quote` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `value`: input used by this function to compute or route work.
+        
+        Returns:
+        - Return value typed as `str` when available; otherwise side effects only.
+        """
+
         return (value or "").replace("\\", "\\\\").replace("\"", "\\\"")
 
     project_id = str(project.get("id", "")).strip()
@@ -263,6 +535,28 @@ def _render_project_yaml(project: dict) -> str:
 
 
 def _render_project_state_yaml() -> str:
+    """
+    Render project state yaml.
+    
+    Purpose:
+    - Implement `_render_project_state_yaml` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `str` when available; otherwise side effects only.
+    """
+
     return (
         "state:\n"
         "  phase: planning\n"
@@ -276,6 +570,28 @@ def _render_project_state_yaml() -> str:
 
 
 def _has_minimum_doc_context(answers: dict[str, str]) -> bool:
+    """
+    Has minimum doc context.
+    
+    Purpose:
+    - Implement `_has_minimum_doc_context` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `answers`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `bool` when available; otherwise side effects only.
+    """
+
     problem = _sanitize_intake_text(str(answers.get("problem", "")))
     requirements = _sanitize_intake_text(str(answers.get("requirements", "")))
     users = _sanitize_intake_text(str(answers.get("users", "")))
@@ -287,6 +603,29 @@ def _has_minimum_doc_context(answers: dict[str, str]) -> bool:
 
 
 def _build_baseline_doc_pack(project_name: str, answers: dict[str, str]) -> dict[str, str]:
+    """
+    Build baseline doc pack.
+    
+    Purpose:
+    - Implement `_build_baseline_doc_pack` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `project_name`: input used by this function to compute or route work.
+    - `answers`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, str]` when available; otherwise side effects only.
+    """
+
     prd, overview, features = _format_initial_docs_from_answers(project_name, answers)
     problem = _sanitize_markdown_paragraph(
         str(answers.get("problem", "")),
@@ -438,6 +777,28 @@ def _build_baseline_doc_pack(project_name: str, answers: dict[str, str]) -> dict
 
 
 def _sanitize_generated_doc_pack(payload: dict) -> dict[str, str]:
+    """
+    Sanitize generated doc pack.
+    
+    Purpose:
+    - Implement `_sanitize_generated_doc_pack` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `payload`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `dict[str, str]` when available; otherwise side effects only.
+    """
+
     docs = payload.get("documents") if isinstance(payload.get("documents"), dict) else payload
     if not isinstance(docs, dict):
         return {}
@@ -462,6 +823,31 @@ async def _generate_detailed_doc_pack_with_llm(
     *,
     review_pass: bool = False,
 ) -> tuple[dict[str, str], str]:
+    """
+    Generate detailed doc pack with llm.
+    
+    Purpose:
+    - Implement `_generate_detailed_doc_pack_with_llm` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `project`: input used by this function to compute or route work.
+    - `answers`: input used by this function to compute or route work.
+    - `baseline_docs`: input used by this function to compute or route work.
+    - `review_pass`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `tuple[dict[str, str], str]` when available; otherwise side effects only.
+    """
+
     if state._provider_router is None:
         return {}, "provider router unavailable"
 
@@ -522,6 +908,30 @@ async def _write_initial_project_docs(
     *,
     scaffold_only: bool = False,
 ) -> tuple[bool, str]:
+    """
+    Write initial project docs.
+    
+    Purpose:
+    - Implement `_write_initial_project_docs` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `project`: input used by this function to compute or route work.
+    - `answers`: input used by this function to compute or route work.
+    - `scaffold_only`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `tuple[bool, str]` when available; otherwise side effects only.
+    """
+
     path = str(project.get("local_path") or "").strip()
     if not path:
         return False, "project local_path is empty"
@@ -654,6 +1064,31 @@ async def _run_project_docs_generation_async(
     reason: str,
     notify_user: bool = True,
 ) -> None:
+    """
+    Run project docs generation async.
+    
+    Purpose:
+    - Implement `_run_project_docs_generation_async` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - `project`: input used by this function to compute or route work.
+    - `answers`: input used by this function to compute or route work.
+    - `reason`: input used by this function to compute or route work.
+    - `notify_user`: input used by this function to compute or route work.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     name = _project_display(project)
     if notify_user:
         await _notify_styled(

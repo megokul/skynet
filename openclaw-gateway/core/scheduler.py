@@ -1,3 +1,10 @@
+"""
+Background coding-job scheduler used by specialist roles.
+
+Jobs are queued in memory and executed serially by a single worker task that
+invokes project-manager lifecycle hooks.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -12,12 +19,16 @@ from db import store
 
 logger = logging.getLogger("skynet.core.scheduler")
 
+
 def _now_iso() -> str:
+    """UTC timestamp helper for job lifecycle fields."""
     return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass(slots=True)
 class CodingJob:
+    """In-memory representation of one background coding request."""
+
     id: str
     project_id: str
     requested_by: str
@@ -30,15 +41,45 @@ class CodingJob:
 
 
 class BackgroundScheduler:
-    """Background dispatcher for coding/execution jobs."""
+    """
+    Minimal async job dispatcher for coding/execution requests.
+
+    It is intentionally small:
+    - in-memory queue/job store
+    - single worker task
+    - project-manager driven execution hooks
+    """
 
     def __init__(self, *, project_manager: Any | None):
+        """
+        Initialize runtime dependencies and object state.
+        
+        Purpose:
+        - Implement `__init__` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `project_manager`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         self._project_manager = project_manager
         self._queue: asyncio.Queue[CodingJob] = asyncio.Queue()
         self._jobs: dict[str, CodingJob] = {}
         self._worker: asyncio.Task[None] | None = None
 
     async def enqueue_coding_job(self, *, project_id: str, requested_by: str, instructions: str) -> str:
+        """Create and enqueue a coding job, starting worker lazily if needed."""
         job = CodingJob(
             id=f"job_{uuid.uuid4().hex[:12]}",
             project_id=project_id,
@@ -61,12 +102,15 @@ class BackgroundScheduler:
         return job.id
 
     def get_job(self, job_id: str) -> CodingJob | None:
+        """Lookup one job by id."""
         return self._jobs.get(job_id)
 
     def list_jobs(self) -> list[CodingJob]:
+        """Return jobs ordered by creation time (oldest first)."""
         return sorted(self._jobs.values(), key=lambda job: job.created_at)
 
     async def stop(self) -> None:
+        """Cancel worker task on shutdown."""
         if self._worker is None:
             return
         self._worker.cancel()
@@ -77,6 +121,7 @@ class BackgroundScheduler:
         self._worker = None
 
     async def _run(self) -> None:
+        """Worker loop: dequeue and execute jobs serially."""
         while True:
             job = await self._queue.get()
             trace_flow(
@@ -91,6 +136,14 @@ class BackgroundScheduler:
                 self._queue.task_done()
 
     async def _execute_job(self, job: CodingJob) -> None:
+        """
+        Execute one job through project-manager lifecycle hooks.
+
+        Expected hook chain:
+        - generate plan (if needed)
+        - approve plan (if available)
+        - start execution
+        """
         job.status = "running"
         job.started_at = _now_iso()
         trace_flow(
@@ -102,6 +155,7 @@ class BackgroundScheduler:
 
         pm = self._project_manager
         if pm is None:
+            # Scheduler can exist in tests without a project manager.
             job.status = "failed"
             job.error = "project manager unavailable"
             job.finished_at = _now_iso()

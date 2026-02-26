@@ -29,7 +29,45 @@ from skynet.ledger.task_queue import TaskQueueManager
 
 
 class StubGatewayClient:
+    """
+    StubGatewayClient.
+    
+    Purpose:
+    - Represent a cohesive runtime concept for this subsystem.
+    - Group related state and methods behind a single abstraction boundary.
+    
+    How it works:
+    - Holds domain-specific fields and exposes operations that enforce local invariants.
+    - Shields calling code from low-level implementation details.
+    
+    Why this exists:
+    - Improves readability by giving the concept an explicit named type.
+    - Reduces coupling by centralizing behavior inside `StubGatewayClient`.
+    """
+
     async def get_gateway_status(self, host: str):  # noqa: ARG002
+        """
+        Get gateway status.
+        
+        Purpose:
+        - Implement `get_gateway_status` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `host`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         return {"agent_connected": True}
 
     async def execute_task(  # noqa: ARG002
@@ -41,6 +79,33 @@ class StubGatewayClient:
         task_id=None,
         idempotency_key=None,
     ):
+        """
+        Execute task.
+        
+        Purpose:
+        - Implement `execute_task` within this module's workflow.
+        - Keep behavior localized so callers have one stable entrypoint.
+        
+        How it works:
+        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+        - Produces deterministic return data or side effects expected by calling code.
+        
+        Why this exists:
+        - Prevents duplicated logic in upstream orchestration paths.
+        - Improves debuggability by centralizing this behavior in one named function.
+        
+        Parameters:
+        - `host`: input used by this function to compute or route work.
+        - `action`: input used by this function to compute or route work.
+        - `params`: input used by this function to compute or route work.
+        - `confirmed`: input used by this function to compute or route work.
+        - `task_id`: input used by this function to compute or route work.
+        - `idempotency_key`: input used by this function to compute or route work.
+        
+        Returns:
+        - Function-specific value or side effects consumed by upstream callers.
+        """
+
         return {
             "status": "success",
             "action": action,
@@ -50,6 +115,28 @@ class StubGatewayClient:
 
 @pytest.mark.asyncio
 async def test_control_registry_dependency_uninitialized() -> None:
+    """
+    Test scenario `test_control_registry_dependency_uninitialized`.
+    
+    Purpose:
+    - Implement `test_control_registry_dependency_uninitialized` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     app_state.control_registry = None
     with pytest.raises(HTTPException) as exc_info:
         get_control_registry()
@@ -58,6 +145,28 @@ async def test_control_registry_dependency_uninitialized() -> None:
 
 @pytest.mark.asyncio
 async def test_gateway_client_dependency_uninitialized() -> None:
+    """
+    Test scenario `test_gateway_client_dependency_uninitialized`.
+    
+    Purpose:
+    - Implement `test_gateway_client_dependency_uninitialized` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     app_state.gateway_client = None
     with pytest.raises(HTTPException) as exc_info:
         get_gateway_client()
@@ -66,6 +175,28 @@ async def test_gateway_client_dependency_uninitialized() -> None:
 
 @pytest.mark.asyncio
 async def test_register_gateway_and_route_task() -> None:
+    """
+    Test scenario `test_register_gateway_and_route_task`.
+    
+    Purpose:
+    - Implement `test_register_gateway_and_route_task` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     registry = ControlPlaneRegistry()
     client = StubGatewayClient()
     app_state.control_registry = registry
@@ -115,6 +246,28 @@ async def test_register_gateway_and_route_task() -> None:
 
 @pytest.mark.asyncio
 async def test_route_task_without_gateway_fails() -> None:
+    """
+    Test scenario `test_route_task_without_gateway_fails`.
+    
+    Purpose:
+    - Implement `test_route_task_without_gateway_fails` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     registry = ControlPlaneRegistry()
     client = StubGatewayClient()
     app_state.control_registry = registry
@@ -128,6 +281,28 @@ async def test_route_task_without_gateway_fails() -> None:
 
 @pytest.mark.asyncio
 async def test_read_models_tasks_next_agents_and_events() -> None:
+    """
+    Test scenario `test_read_models_tasks_next_agents_and_events`.
+    
+    Purpose:
+    - Implement `test_read_models_tasks_next_agents_and_events` within this module's workflow.
+    - Keep behavior localized so callers have one stable entrypoint.
+    
+    How it works:
+    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
+    - Produces deterministic return data or side effects expected by calling code.
+    
+    Why this exists:
+    - Prevents duplicated logic in upstream orchestration paths.
+    - Improves debuggability by centralizing this behavior in one named function.
+    
+    Parameters:
+    - None.
+    
+    Returns:
+    - Return value typed as `None` when available; otherwise side effects only.
+    """
+
     registry = ControlPlaneRegistry()
     db = await init_db(":memory:")
     q = TaskQueueManager(db)
