@@ -231,13 +231,10 @@ async def test_project_skill_add_idea_no_active_project() -> None:
             return 1
 
     original_pm = state._project_manager
-    original_pid = state._last_project_id
     try:
         state._project_manager = _DummyManager()
-        state._last_project_id = None
         result = await skill.execute("project_add_idea", {"idea": "build a thing"}, ctx)
         # No active project → should report an error
         assert "no active project" in result.lower() or "error" in result.lower()
     finally:
         state._project_manager = original_pm
-        state._last_project_id = original_pid

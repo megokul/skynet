@@ -102,7 +102,7 @@ async def remove_project_cascade(
         "tasks",
         "plans",
         "agents",
-        "conversations",
+        "project_conversations",
         "project_events",
         "agent_runs",
         "task_artifacts",
@@ -253,7 +253,7 @@ async def add_conversation_message(
 ) -> int:
     content_json = json.dumps(content, default=str) if not isinstance(content, str) else content
     async with db.execute(
-        "INSERT INTO conversations (project_id, role, content, token_count, phase) "
+        "INSERT INTO project_conversations (project_id, role, content, token_count, phase) "
         "VALUES (?, ?, ?, ?, ?)",
         (project_id, role, content_json, token_count, phase),
     ) as cur:
@@ -269,11 +269,11 @@ async def get_conversation(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     if phase:
-        sql = ("SELECT * FROM conversations WHERE project_id = ? AND phase = ? "
+        sql = ("SELECT * FROM project_conversations WHERE project_id = ? AND phase = ? "
                "ORDER BY id DESC LIMIT ?")
         params = (project_id, phase, limit)
     else:
-        sql = "SELECT * FROM conversations WHERE project_id = ? ORDER BY id DESC LIMIT ?"
+        sql = "SELECT * FROM project_conversations WHERE project_id = ? ORDER BY id DESC LIMIT ?"
         params = (project_id, limit)
     async with db.execute(sql, params) as cur:
         rows = [dict(row) for row in await cur.fetchall()]
@@ -284,6 +284,192 @@ async def get_conversation(
         except (json.JSONDecodeError, TypeError):
             pass
     return rows
+
+
+# ------------------------------------------------------------------
+# Explicit Conversation Sessions
+# ------------------------------------------------------------------
+
+def _conversation_id() -> str:
+    return f"conv_{uuid.uuid4().hex[:16]}"
+
+
+async def create_conversation_session(
+    db: aiosqlite.Connection,
+    *,
+    user_id: int,
+    title: str,
+) -> dict[str, Any]:
+    conversation_id = _conversation_id()
+    now = _now()
+    await db.execute(
+        """
+        INSERT INTO conversations (
+            conversation_id, user_id, title, active_project_id,
+            pending_question, pending_action, created_at, updated_at
+        ) VALUES (?, ?, ?, NULL, '{}', '{}', ?, ?)
+        """,
+        (conversation_id, int(user_id), title.strip() or "Conversation", now, now),
+    )
+    await db.commit()
+    row = await get_conversation_session(db, conversation_id=conversation_id)
+    if not row:
+        raise ValueError("Failed to load created conversation.")
+    return row
+
+
+async def list_conversation_sessions(
+    db: aiosqlite.Connection,
+    *,
+    user_id: int,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    async with db.execute(
+        """
+        SELECT *
+        FROM conversations
+        WHERE user_id = ?
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        (int(user_id), int(limit)),
+    ) as cur:
+        rows = [dict(row) for row in await cur.fetchall()]
+    for row in rows:
+        row["pending_question"] = _safe_json_loads(row.get("pending_question", "{}"))
+        row["pending_action"] = _safe_json_loads(row.get("pending_action", "{}"))
+    return rows
+
+
+async def get_conversation_session(
+    db: aiosqlite.Connection,
+    *,
+    conversation_id: str,
+) -> dict[str, Any] | None:
+    async with db.execute(
+        "SELECT * FROM conversations WHERE conversation_id = ?",
+        (conversation_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return None
+    data = dict(row)
+    data["pending_question"] = _safe_json_loads(data.get("pending_question", "{}"))
+    data["pending_action"] = _safe_json_loads(data.get("pending_action", "{}"))
+    return data
+
+
+async def update_conversation_session(
+    db: aiosqlite.Connection,
+    *,
+    conversation_id: str,
+    **fields: Any,
+) -> None:
+    if not fields:
+        return
+    update_fields = dict(fields)
+    update_fields["updated_at"] = _now()
+    if "pending_question" in update_fields:
+        update_fields["pending_question"] = json.dumps(update_fields["pending_question"] or {})
+    if "pending_action" in update_fields:
+        update_fields["pending_action"] = json.dumps(update_fields["pending_action"] or {})
+    sets = ", ".join(f"{key} = ?" for key in update_fields)
+    vals = list(update_fields.values()) + [conversation_id]
+    await db.execute(f"UPDATE conversations SET {sets} WHERE conversation_id = ?", vals)
+    await db.commit()
+
+
+async def add_session_message(
+    db: aiosqlite.Connection,
+    *,
+    conversation_id: str,
+    role: str,
+    content: str,
+    metadata: dict[str, Any] | None = None,
+) -> int:
+    async with db.execute(
+        """
+        INSERT INTO messages (conversation_id, role, content, metadata, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (conversation_id, role, content, json.dumps(metadata or {}), _now()),
+    ) as cur:
+        message_id = int(cur.lastrowid)
+    await db.execute(
+        "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
+        (_now(), conversation_id),
+    )
+    await db.commit()
+    return message_id
+
+
+async def list_session_messages(
+    db: aiosqlite.Connection,
+    *,
+    conversation_id: str,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    async with db.execute(
+        """
+        SELECT *
+        FROM messages
+        WHERE conversation_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (conversation_id, int(limit)),
+    ) as cur:
+        rows = [dict(row) for row in await cur.fetchall()]
+    rows.reverse()
+    for row in rows:
+        row["metadata"] = _safe_json_loads(row.get("metadata", "{}"))
+    return rows
+
+
+async def set_user_active_conversation(
+    db: aiosqlite.Connection,
+    *,
+    user_id: int,
+    conversation_id: str,
+) -> None:
+    await upsert_user_preference(
+        db,
+        user_id=int(user_id),
+        pref_key="active_conversation_id",
+        pref_value=conversation_id,
+        source="conversation_manager",
+    )
+
+
+async def get_user_active_conversation(
+    db: aiosqlite.Connection,
+    *,
+    user_id: int,
+) -> str | None:
+    async with db.execute(
+        """
+        SELECT pref_value
+        FROM user_preferences
+        WHERE user_id = ? AND pref_key = 'active_conversation_id'
+        LIMIT 1
+        """,
+        (int(user_id),),
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return None
+    value = str(row[0] or "").strip()
+    return value or None
+
+
+def _safe_json_loads(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        data = json.loads(value or "{}")
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 # ------------------------------------------------------------------

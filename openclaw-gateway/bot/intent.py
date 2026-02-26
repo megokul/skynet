@@ -23,6 +23,11 @@ _PLAN_REQUEST_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\btask\s*plan\b", re.IGNORECASE),
     re.compile(r"\b(generate|generating|make|create)\b.{0,24}\b(task\s+)?plan\b", re.IGNORECASE),
 )
+_NEW_PROJECT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(start|create|make|begin|initiate)\b.{0,24}\b(project|app|application)\b", re.IGNORECASE),
+    re.compile(r"\b(new|different)\s+(project|app|application)\b", re.IGNORECASE),
+)
+_GREETING_RE = re.compile(r"^(hi|hello|hey|yo|hiya|sup|good (morning|afternoon|evening))[!. ]*$", re.IGNORECASE)
 
 _APPROVAL_PHRASES: frozenset[str] = frozenset({
     "yes", "ok", "sure", "go ahead", "do it", "approved", "lgtm", "build it",
@@ -76,6 +81,10 @@ class IntentClassifier:
         session: Session,
         recent_messages: list[dict],
     ) -> ClassifiedIntent:
+        preclassified = self._preclassify(message, session)
+        if preclassified is not None:
+            return preclassified
+
         # Strip tool_result messages -- they confuse classifiers
         recent_messages = strip_tool_messages(recent_messages)
 
@@ -130,6 +139,30 @@ class IntentClassifier:
             logger.warning("Intent classifier failed (%s), using fallback", e)
             return self.fallback_classify(message, session)
 
+    def _preclassify(self, message: str, session: Session) -> ClassifiedIntent | None:
+        msg = (message or "").strip()
+        if not msg:
+            return ClassifiedIntent("unclear", 1.0, [], {}, False, False)
+
+        if _GREETING_RE.match(msg):
+            return ClassifiedIntent("greeting", 0.98, [], {}, False, False)
+
+        lowered = msg.lower()
+        if lowered.startswith("/"):
+            return ClassifiedIntent("memory_command", 1.0, [], {}, False, False)
+
+        if any(pattern.search(msg) for pattern in _PLAN_REQUEST_PATTERNS):
+            return ClassifiedIntent("request_plan", 0.95, [], {}, True, False)
+
+        if any(pattern.search(msg) for pattern in _NEW_PROJECT_PATTERNS):
+            return ClassifiedIntent("propose_idea", 0.86, [], {}, True, False)
+
+        # Feature-like text should go through deterministic write routing when a project is active.
+        if session.project_id and len(lowered.split()) >= 4:
+            return ClassifiedIntent("propose_idea", 0.75, [], {}, True, True)
+
+        return None
+
     def _apply_post_overrides(
         self,
         message: str,
@@ -152,7 +185,11 @@ class IntentClassifier:
         # Approval phrases map to approve_plan only while waiting for plan approval.
         if msg in _APPROVAL_PHRASES:
             waiting_for = str(session.metadata.get("waiting_for") or "")
-            if session.conversation_phase == "planning" or waiting_for == "plan_approval":
+            pending_action = session.metadata.get("pending_action") or {}
+            if (
+                isinstance(pending_action, dict)
+                and str(pending_action.get("type") or "") == "approve_plan"
+            ) or session.conversation_phase == "planning" or waiting_for == "plan_approval":
                 return ClassifiedIntent(
                     intent="approve_plan",
                     confidence=max(classified.confidence, 0.85),
@@ -175,21 +212,34 @@ class IntentClassifier:
     def fallback_classify(self, message: str, session: Session) -> ClassifiedIntent:
         """Rule-based fallback when LLM classifier fails."""
         msg = message.lower().strip()
+        pending_action = session.metadata.get("pending_action") or {}
+        waiting_for = str(session.metadata.get("waiting_for") or "")
 
         if msg in ("yes", "ok", "sure", "go ahead", "do it", "approved", "lgtm", "build it"):
+            if (
+                isinstance(pending_action, dict)
+                and str(pending_action.get("type") or "") == "approve_plan"
+            ):
+                return ClassifiedIntent("approve_plan", 0.9, [], {}, False, True)
             if session.conversation_phase == "planning":
                 return ClassifiedIntent("approve_plan", 0.8, [], {}, False, True)
-            if session.metadata.get("waiting_for") == "plan_approval":
+            if waiting_for == "plan_approval":
                 return ClassifiedIntent("approve_plan", 0.85, [], {}, False, True)
             return ClassifiedIntent("approve_execution", 0.6, [], {}, False, True)
 
         if msg.startswith("/"):
             return ClassifiedIntent("memory_command", 1.0, [], {}, False, False)
 
+        if any(pattern.search(msg) for pattern in _NEW_PROJECT_PATTERNS):
+            return ClassifiedIntent("propose_idea", 0.85, [], {}, True, False)
+
         if any(w in msg for w in ("plan", "steps", "break down")):
             return ClassifiedIntent("request_plan", 0.6, [], {}, True, False)
 
-        if any(w in msg for w in ("hi", "hello", "hey")):
+        if _GREETING_RE.match(msg):
             return ClassifiedIntent("greeting", 0.9, [], {}, False, False)
+
+        if session.project_id and len(msg.split()) >= 4 and not msg.startswith("/"):
+            return ClassifiedIntent("propose_idea", 0.72, [], {}, True, False)
 
         return ClassifiedIntent("casual_conversation", 0.5, [], {}, False, False)

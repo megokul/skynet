@@ -1,20 +1,70 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+import json
 import logging
-from datetime import datetime
-from weakref import WeakValueDictionary
+import re
+import time
+from typing import Any
+import uuid
 
 import bot_config as cfg
 from bot import state
 from bot.context import ContextBuilder, ContextPackage
-from bot.intent import IntentClassifier
+from bot.intent import ClassifiedIntent, IntentClassifier
+from bot.invariants import (
+    PendingAction,
+    PendingQuestion,
+    RoutingDecision,
+    ScopeResolution,
+    detect_switch_intent,
+    enforce_continuity,
+    resolve_scope,
+)
 from bot.memory import GapTier, _append_user_conversation, _load_recent_conversation_messages
 from bot.mode import Mode, ToolPolicyGate, select_mode
-from bot.session import Session, SessionLoader
+from bot.session import Session, SessionLoader, get_pending_action, get_pending_question
 from skills.base import SkillContext
 
 logger = logging.getLogger(__name__)
+
+WRITE_INTENTS: set[str] = {"propose_idea"}
+IDEA_EXTRACT_CONFIDENCE_THRESHOLD = 0.60
+COALESCE_WINDOW_SECONDS = 0.8
+INBOX_IDLE_TIMEOUT_SECONDS = 300
+PENDING_QUESTION_TTL = timedelta(minutes=15)
+PENDING_ACTION_TTL = timedelta(hours=24)
+_EMPTY_REPLY_SENTINEL = ""
+
+_APPROVE_PLAN_RE = re.compile(r"\b(yes|approve|approved|go ahead|start|begin|proceed|do it)\b", re.IGNORECASE)
+_REJECT_PLAN_RE = re.compile(r"\b(no|cancel|stop|not now|don't|do not)\b", re.IGNORECASE)
+_APPROVAL_PROMPT_RE = re.compile(r"\b(approve|approval|tap|start)\b.*\b(plan|execution|coding)\b", re.IGNORECASE)
+
+
+@dataclass
+class _ExecutionResult:
+    text: str
+    tool_outcomes: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class _InboundMessage:
+    update: Any
+    text: str
+    future: asyncio.Future[str]
+    received_at: float
+    is_command: bool
+
+
+@dataclass
+class _UserInbox:
+    queue: deque[_InboundMessage] = field(default_factory=deque)
+    event: asyncio.Event = field(default_factory=asyncio.Event)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    last_activity: float = field(default_factory=time.monotonic)
 
 
 class Orchestrator:
@@ -36,50 +86,259 @@ class Orchestrator:
         self.intent_classifier = IntentClassifier(provider_router)
         self.context_builder = ContextBuilder(db, skill_registry, chat_provider_allowlist)
         self.tool_gate = ToolPolicyGate()
-        # WeakValueDictionary: locks for inactive users are garbage-collected.
-        # A plain dict would leak one Lock per user_id forever.
-        self._execution_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+        self._user_inboxes: dict[str, _UserInbox] = {}
+        self._user_workers: dict[str, asyncio.Task[None]] = {}
+        self._inbox_map_lock = asyncio.Lock()
+        self._coalesce_window_seconds = COALESCE_WINDOW_SECONDS
 
     async def handle(self, update, text: str) -> str:
         user_id = str(update.effective_user.id)
+        inbox_key = await self._resolve_inbox_key(update)
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[str] = loop.create_future()
+        inbound = _InboundMessage(
+            update=update,
+            text=text,
+            future=future,
+            received_at=time.monotonic(),
+            is_command=(text or "").strip().startswith("/"),
+        )
 
-        # CRITICAL: Explicit get-or-create, NOT setdefault().
-        # WeakValueDictionary doesn't hold strong references. setdefault() can
-        # create a Lock that gets GC'd before the local variable captures it,
-        # allowing concurrent messages to bypass the lock entirely.
-        lock = self._execution_locks.get(user_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._execution_locks[user_id] = lock
+        inbox = await self._ensure_user_inbox(inbox_key)
+        async with inbox.lock:
+            inbox.queue.append(inbound)
+            inbox.last_activity = time.monotonic()
+            inbox.event.set()
 
-        if lock.locked():
-            return "Still working on your previous request."
+        try:
+            return await future
+        except Exception as exc:
+            logger.exception("Failed waiting for inbox response user=%s: %s", user_id, exc)
+            return "Something went wrong. Please try again."
 
-        async with lock:
-            try:
-                return await self._handle_internal(update, text)
-            except Exception as exc:
-                logger.exception("Unhandled orchestrator failure for user %s: %s", user_id, exc)
-                return "Something went wrong. Please try again."
+    async def _resolve_inbox_key(self, update) -> str:
+        conversation_id = await self._get_or_create_active_conversation_id(update)
+        if conversation_id:
+            return f"conv:{conversation_id}"
+        return f"user:{update.effective_user.id}"
 
+    async def _get_or_create_active_conversation_id(self, update) -> str | None:
+        if self.db is None:
+            return None
+
+        user = getattr(update, "effective_user", None)
+        if not user:
+            return None
+
+        try:
+            from db import store
+
+            user_row = await store.ensure_user(
+                self.db,
+                telegram_user_id=int(user.id),
+                username=str(getattr(user, "username", "") or ""),
+                first_name=str(getattr(user, "first_name", "") or ""),
+                last_name=str(getattr(user, "last_name", "") or ""),
+            )
+            active_id = await store.get_user_active_conversation(
+                self.db,
+                user_id=int(user_row["id"]),
+            )
+            if active_id:
+                session = await store.get_conversation_session(self.db, conversation_id=active_id)
+                if session:
+                    return active_id
+
+            title = datetime.now(timezone.utc).strftime("Conversation %Y-%m-%d %H:%M")
+            created = await store.create_conversation_session(
+                self.db,
+                user_id=int(user_row["id"]),
+                title=title,
+            )
+            await store.set_user_active_conversation(
+                self.db,
+                user_id=int(user_row["id"]),
+                conversation_id=created["conversation_id"],
+            )
+            return str(created["conversation_id"])
+        except Exception:
+            logger.exception("Failed resolving active conversation for user=%s", getattr(user, "id", "unknown"))
+            return None
+
+    async def _ensure_user_inbox(self, user_id: str) -> _UserInbox:
+        async with self._inbox_map_lock:
+            inbox = self._user_inboxes.get(user_id)
+            if inbox is None:
+                inbox = _UserInbox()
+                self._user_inboxes[user_id] = inbox
+
+            worker = self._user_workers.get(user_id)
+            if worker is None or worker.done():
+                self._user_workers[user_id] = asyncio.create_task(
+                    self._drain_user_inbox(user_id, inbox),
+                    name=f"orchestrator-inbox-{user_id}",
+                )
+            return inbox
+
+    async def _drain_user_inbox(self, user_id: str, inbox: _UserInbox) -> None:
+        this_task = asyncio.current_task()
+        try:
+            while True:
+                try:
+                    await asyncio.wait_for(inbox.event.wait(), timeout=INBOX_IDLE_TIMEOUT_SECONDS)
+                except asyncio.TimeoutError:
+                    async with inbox.lock:
+                        if inbox.queue:
+                            continue
+                        inbox.event.clear()
+                    break
+
+                while True:
+                    batch = await self._take_batch(inbox)
+                    if not batch:
+                        break
+
+                    merged_text = "\n".join(item.text for item in batch)
+                    try:
+                        response = await self._handle_internal(batch[0].update, merged_text)
+                    except Exception as exc:
+                        logger.exception("Unhandled inbox worker failure user=%s: %s", user_id, exc)
+                        response = "Something went wrong. Please try again."
+
+                    self._resolve_future(batch[0].future, response)
+                    for item in batch[1:]:
+                        self._resolve_future(item.future, _EMPTY_REPLY_SENTINEL)
+
+        finally:
+            async with self._inbox_map_lock:
+                worker = self._user_workers.get(user_id)
+                if worker is this_task:
+                    self._user_workers.pop(user_id, None)
+                active_inbox = self._user_inboxes.get(user_id)
+                if active_inbox is inbox:
+                    async with inbox.lock:
+                        if not inbox.queue:
+                            self._user_inboxes.pop(user_id, None)
+
+    async def _take_batch(self, inbox: _UserInbox) -> list[_InboundMessage]:
+        async with inbox.lock:
+            if not inbox.queue:
+                inbox.event.clear()
+                return []
+            first = inbox.queue.popleft()
+            batch = [first]
+            deadline = first.received_at + self._coalesce_window_seconds
+            while inbox.queue and inbox.queue[0].received_at <= deadline:
+                if not self._can_coalesce(batch[-1], inbox.queue[0]):
+                    break
+                batch.append(inbox.queue.popleft())
+            if not inbox.queue:
+                inbox.event.clear()
+
+        now = time.monotonic()
+        if now < deadline:
+            await asyncio.sleep(deadline - now)
+            async with inbox.lock:
+                while inbox.queue and inbox.queue[0].received_at <= deadline:
+                    if not self._can_coalesce(batch[-1], inbox.queue[0]):
+                        break
+                    batch.append(inbox.queue.popleft())
+                if not inbox.queue:
+                    inbox.event.clear()
+        return batch
+
+    def _can_coalesce(self, previous: _InboundMessage, current: _InboundMessage) -> bool:
+        if previous.is_command or current.is_command:
+            return False
+        if detect_switch_intent(previous.text) or detect_switch_intent(current.text):
+            return False
+        if not previous.text.strip() or not current.text.strip():
+            return False
+        return True
+
+    def _resolve_future(self, future: asyncio.Future[str], value: str) -> None:
+        if future.done():
+            return
+        future.set_result(value)
     async def _handle_internal(self, update, text: str) -> str:
-        # 1. Load session
         session = await self.session_loader.load(update.effective_user.id)
+        pending_question = get_pending_question(session)
+        pending_action = get_pending_action(session)
+        last_bot_turn = await self._load_last_assistant_text(update)
+        scope_resolution = resolve_scope(session, text, last_bot_turn)
 
-        # 2. Classify intent
+        action_reply = await self._maybe_handle_pending_action(update, session, text, pending_action)
+        if action_reply is not None:
+            return action_reply
+
+        if pending_question and pending_question.type == "choose_project_scope":
+            scope_reply = await self._maybe_handle_scope_question_answer(
+                update,
+                session,
+                text,
+                pending_question,
+                scope_resolution,
+            )
+            if scope_reply is not None:
+                return scope_reply
+
+        if pending_question and pending_question.type == "need_project_name":
+            name_reply = await self._maybe_handle_project_name_answer(update, session, text)
+            if name_reply is not None:
+                return name_reply
+
+        if pending_question and pending_question.type == "need_idea_text":
+            idea_reply = await self._maybe_handle_need_idea_text(update, session, text, pending_question)
+            if idea_reply is not None:
+                return idea_reply
+
         recent = await self._load_recent_for_classifier(update)
         intent = await self.intent_classifier.classify(text, session, recent)
 
+        # Deterministic fallback: feature-like text with active project is propose_idea.
+        if (
+            intent.intent in {"casual_conversation", "unclear"}
+            and session.project_id
+            and self._looks_like_idea_text(text)
+            and not detect_switch_intent(text)
+        ):
+            intent = ClassifiedIntent(
+                intent="propose_idea",
+                confidence=max(intent.confidence, 0.8),
+                secondary_intents=intent.secondary_intents,
+                entities=intent.entities,
+                requires_tools=True,
+                is_continuation=True,
+            )
+
+        scope_resolution = resolve_scope(session, text, last_bot_turn)
+        decision = enforce_continuity(intent, scope_resolution, session)
+
         logger.info(
-            "INTENT: intent=%s conf=%.2f mode_prev=%s project=%s text=%s",
+            "INTENT: intent=%s conf=%.2f mode_prev=%s project=%s scope=%s pending_q=%s text=%s",
             intent.intent,
             intent.confidence,
             session.last_mode,
             session.project_id,
+            scope_resolution.scope,
+            pending_question.type if pending_question else "",
             text[:80],
         )
 
-        # Optional entity-driven project resolution.
+        if intent.intent == "greeting":
+            return await self._handle_greeting(update, session, text)
+
+        if intent.intent in WRITE_INTENTS:
+            return await self._handle_write_intent(
+                update=update,
+                text=text,
+                session=session,
+                intent=intent,
+                decision=decision,
+                scope_resolution=scope_resolution,
+            )
+
         project_name = str(intent.entities.get("project_name") or "").strip()
         if project_name:
             try:
@@ -99,16 +358,9 @@ class Orchestrator:
             except Exception:
                 logger.exception("Failed resolving project entity: %s", project_name)
 
-        # 3. Select mode
         mode = select_mode(intent, session)
+        filtered_tools = self.tool_gate.filter(mode, self.skill_registry.get_all_tools())
 
-        # 4. Filter tools -- single source of truth
-        filtered_tools = self.tool_gate.filter(
-            mode,
-            self.skill_registry.get_all_tools(),
-        )
-
-        # 5. Build context
         ctx = await self.context_builder.build(
             mode,
             session,
@@ -124,39 +376,542 @@ class Orchestrator:
             requested_allowlist=requested_allowlist,
         )
 
-        # 6. Persist user message BEFORE execution (crash safety)
         await self._persist_message(update, role="user", content=text)
 
-        # 7. Execute
         try:
-            response = await self._execute(text, ctx, session, mode)
-        except Exception as e:
-            logger.exception("Orchestrator execution failed: %s", e)
-            response = "Something went wrong. Please try again."
+            execution = await self._execute(text, ctx, session, mode)
+            response = execution.text
+        except Exception as exc:
+            logger.exception("Orchestrator execution failed: %s", exc)
+            execution = _ExecutionResult(text="Something went wrong. Please try again.")
+            response = execution.text
 
         response = (response or "").strip() or "I could not generate a reply right now."
         response = state._main_persona_agent.compose_final_response(response)
         if len(response) > 3800:
             response = response[:3800] + "\n\n... (truncated)"
 
-        # 8. Persist assistant response AFTER execution
         await self._persist_message(update, role="assistant", content=response)
 
-        # 9. Update session (non-fatal on failure)
+        metadata_update = self._build_metadata_update(intent, mode, response, session)
+        pending_action_update = self._build_pending_action_update(intent, execution, response, session)
+        if pending_action_update is not None:
+            metadata_update["pending_action"] = pending_action_update
+
         try:
             await self.session_loader.update(
                 session,
                 last_intent=intent.intent,
                 last_mode=mode.value,
-                last_message_at=datetime.utcnow().isoformat(),
+                last_message_at=datetime.now(timezone.utc).isoformat(),
                 conversation_phase=self._infer_phase(intent, mode, session),
-                session_metadata=self._build_metadata_update(intent, mode, response, session),
+                session_metadata=metadata_update,
             )
         except Exception as exc:
             logger.exception("Failed to update session for user %s: %s", session.user_id, exc)
 
         return response
 
+    async def _handle_write_intent(
+        self,
+        *,
+        update,
+        text: str,
+        session: Session,
+        intent: ClassifiedIntent,
+        decision: RoutingDecision,
+        scope_resolution: ScopeResolution,
+    ) -> str:
+        if decision.ask_question and decision.question_type == "need_project_name":
+            hinted_name = self._extract_project_name_hint(text)
+            if hinted_name:
+                return await self._maybe_handle_project_name_answer(update, session, hinted_name)
+            question = "What would you like to name the new project?"
+            pending = self._build_pending_question(
+                q_type="need_project_name",
+                choices=[],
+                payload={"source": intent.intent, "original_text": text},
+            )
+            return await self._reply_with_pending_question(
+                update,
+                session,
+                text,
+                question,
+                pending,
+                intent_name=intent.intent,
+                mode=Mode.PLANNING,
+            )
+
+        if decision.ask_question and decision.question_type in {"choose_project_scope", "resolve_project_reference"}:
+            question = "Should I use your current project or start a new project for this idea?"
+            pending = self._build_pending_question(
+                q_type="choose_project_scope",
+                choices=["existing", "new"],
+                payload={"source": intent.intent, "original_text": text},
+            )
+            return await self._reply_with_pending_question(
+                update,
+                session,
+                text,
+                question,
+                pending,
+                intent_name=intent.intent,
+                mode=Mode.PLANNING,
+            )
+
+        project_id = decision.target_project_id or scope_resolution.project_id or session.project_id
+        if not project_id:
+            question = "Which project should I add this idea to?"
+            pending = self._build_pending_question(
+                q_type="choose_project_scope",
+                choices=["existing", "new"],
+                payload={"source": intent.intent, "original_text": text},
+            )
+            return await self._reply_with_pending_question(
+                update,
+                session,
+                text,
+                question,
+                pending,
+                intent_name=intent.intent,
+                mode=Mode.PLANNING,
+            )
+
+        extraction = await self._extract_idea_payload(text)
+        idea_text = extraction.get("idea_text", "").strip()
+        confidence = float(extraction.get("confidence") or 0.0)
+
+        if not idea_text or confidence < IDEA_EXTRACT_CONFIDENCE_THRESHOLD:
+            question = "What should I add as the idea?"
+            pending = self._build_pending_question(
+                q_type="need_idea_text",
+                choices=[],
+                payload={"project_id": project_id},
+            )
+            return await self._reply_with_pending_question(
+                update,
+                session,
+                text,
+                question,
+                pending,
+                intent_name=intent.intent,
+                mode=Mode.PLANNING,
+            )
+
+        await self._persist_message(update, role="user", content=text)
+        result = await self._execute_deterministic_tool(
+            "project_add_idea",
+            {"project_id": project_id, "idea": idea_text},
+            session,
+        )
+        response = state._main_persona_agent.compose_final_response((result or "").strip())
+        await self._persist_message(update, role="assistant", content=response)
+
+        await self.session_loader.update(
+            session,
+            last_intent=intent.intent,
+            last_mode=Mode.PLANNING.value,
+            last_message_at=datetime.now(timezone.utc).isoformat(),
+            conversation_phase=self._infer_phase(intent, Mode.PLANNING, session),
+            session_metadata={
+                "last_mode": Mode.PLANNING.value,
+                "pending_question": None,
+                "last_response_preview": response[:240],
+            },
+            )
+        return response
+
+    async def _handle_greeting(self, update, session: Session, user_text: str) -> str:
+        await self._persist_message(update, role="user", content=user_text)
+        project_name = (session.project or {}).get("display_name") or (session.project or {}).get("name")
+        if project_name:
+            response = f"Hi! Ready to continue {project_name}. What should we do next?"
+        else:
+            response = "Hi! How can I help today?"
+        response = state._main_persona_agent.compose_final_response(response)
+        await self._persist_message(update, role="assistant", content=response)
+        await self.session_loader.update(
+            session,
+            last_intent="greeting",
+            last_mode=Mode.CONVERSATION.value,
+            last_message_at=datetime.now(timezone.utc).isoformat(),
+            conversation_phase=session.conversation_phase or "discovery",
+            session_metadata={
+                "last_mode": Mode.CONVERSATION.value,
+                "last_response_preview": response[:240],
+            },
+        )
+        return response
+
+    async def _maybe_handle_need_idea_text(
+        self,
+        update,
+        session: Session,
+        text: str,
+        pending_question: PendingQuestion,
+    ) -> str | None:
+        idea_text = (text or "").strip()
+        if not idea_text:
+            return None
+
+        project_id = str((pending_question.payload or {}).get("project_id") or session.project_id or "").strip()
+        if not project_id:
+            return None
+
+        await self._persist_message(update, role="user", content=text)
+        result = await self._execute_deterministic_tool(
+            "project_add_idea",
+            {"project_id": project_id, "idea": idea_text},
+            session,
+        )
+        response = state._main_persona_agent.compose_final_response((result or "").strip())
+        await self._persist_message(update, role="assistant", content=response)
+
+        await self.session_loader.update(
+            session,
+            last_intent="propose_idea",
+            last_mode=Mode.PLANNING.value,
+            last_message_at=datetime.now(timezone.utc).isoformat(),
+            conversation_phase=self._infer_phase(ClassifiedIntent("propose_idea", 1.0), Mode.PLANNING, session),
+            session_metadata={
+                "last_mode": Mode.PLANNING.value,
+                "pending_question": None,
+                "last_response_preview": response[:240],
+            },
+        )
+        return response
+    async def _maybe_handle_scope_question_answer(
+        self,
+        update,
+        session: Session,
+        text: str,
+        pending_question: PendingQuestion,
+        scope_resolution: ScopeResolution,
+    ) -> str | None:
+        if scope_resolution.scope_answer == "new":
+            question = "What would you like to name the new project?"
+            pending = self._build_pending_question(
+                q_type="need_project_name",
+                choices=[],
+                payload=pending_question.payload or {},
+            )
+            return await self._reply_with_pending_question(
+                update,
+                session,
+                text,
+                question,
+                pending,
+                intent_name="propose_idea",
+                mode=Mode.PLANNING,
+            )
+
+        if scope_resolution.scope_answer == "existing":
+            question = "What should I add as the idea?"
+            pending = self._build_pending_question(
+                q_type="need_idea_text",
+                choices=[],
+                payload={"project_id": session.project_id},
+            )
+            return await self._reply_with_pending_question(
+                update,
+                session,
+                text,
+                question,
+                pending,
+                intent_name="propose_idea",
+                mode=Mode.PLANNING,
+            )
+
+        return None
+
+    async def _maybe_handle_project_name_answer(
+        self,
+        update,
+        session: Session,
+        text: str,
+    ) -> str | None:
+        project_name = (text or "").strip()
+        if not project_name:
+            return None
+
+        await self._persist_message(update, role="user", content=text)
+        create_result = await self._execute_deterministic_tool(
+            "project_create",
+            {"name": project_name},
+            session,
+        )
+        response = (create_result or "").strip()
+        follow_up = "What should I add as the idea?"
+        pending = self._build_pending_question(
+            q_type="need_idea_text",
+            choices=[],
+            payload={"project_id": session.project_id},
+        )
+        full_response = state._main_persona_agent.compose_final_response(f"{response}\n\n{follow_up}".strip())
+        await self._persist_message(update, role="assistant", content=full_response)
+
+        await self.session_loader.update(
+            session,
+            last_intent="propose_idea",
+            last_mode=Mode.PLANNING.value,
+            last_message_at=datetime.now(timezone.utc).isoformat(),
+            conversation_phase=self._infer_phase(ClassifiedIntent("propose_idea", 1.0), Mode.PLANNING, session),
+            session_metadata={
+                "last_mode": Mode.PLANNING.value,
+                "pending_question": {
+                    "type": pending.type,
+                    "choices": pending.choices,
+                    "turn_id": pending.turn_id,
+                    "expires_at": pending.expires_at,
+                    "payload": pending.payload,
+                    "created_at": pending.created_at,
+                },
+                "last_response_preview": full_response[:240],
+            },
+        )
+        return full_response
+
+    async def _maybe_handle_pending_action(
+        self,
+        update,
+        session: Session,
+        text: str,
+        pending_action: PendingAction | None,
+    ) -> str | None:
+        if not pending_action or pending_action.type != "approve_plan":
+            return None
+
+        if _APPROVE_PLAN_RE.search(text or ""):
+            await self._persist_message(update, role="user", content=text)
+            result = await self._execute_deterministic_tool(
+                "project_approve_start",
+                {"project_id": pending_action.project_id},
+                session,
+            )
+            response = state._main_persona_agent.compose_final_response((result or "").strip())
+            await self._persist_message(update, role="assistant", content=response)
+            await self.session_loader.update(
+                session,
+                last_intent="approve_plan",
+                last_mode=Mode.EXECUTION.value,
+                last_message_at=datetime.now(timezone.utc).isoformat(),
+                conversation_phase=self._infer_phase(ClassifiedIntent("approve_plan", 1.0), Mode.EXECUTION, session),
+                session_metadata={
+                    "pending_action": None,
+                    "pending_question": None,
+                    "last_mode": Mode.EXECUTION.value,
+                    "last_response_preview": response[:240],
+                },
+            )
+            return response
+
+        if _REJECT_PLAN_RE.search(text or ""):
+            response = "Okay, I will not start execution yet."
+            await self._persist_message(update, role="user", content=text)
+            await self._persist_message(update, role="assistant", content=response)
+            await self.session_loader.update(
+                session,
+                last_intent="request_stop",
+                last_mode=Mode.CONVERSATION.value,
+                last_message_at=datetime.now(timezone.utc).isoformat(),
+                conversation_phase=session.conversation_phase,
+                session_metadata={
+                    "pending_action": None,
+                    "last_mode": Mode.CONVERSATION.value,
+                    "last_response_preview": response[:240],
+                },
+            )
+            return response
+
+        return None
+
+    async def _reply_with_pending_question(
+        self,
+        update,
+        session: Session,
+        user_text: str,
+        assistant_text: str,
+        pending_question: PendingQuestion,
+        *,
+        intent_name: str,
+        mode: Mode,
+    ) -> str:
+        await self._persist_message(update, role="user", content=user_text)
+        response = state._main_persona_agent.compose_final_response((assistant_text or "").strip())
+        await self._persist_message(update, role="assistant", content=response)
+
+        await self.session_loader.update(
+            session,
+            last_intent=intent_name,
+            last_mode=mode.value,
+            last_message_at=datetime.now(timezone.utc).isoformat(),
+            conversation_phase=self._infer_phase(ClassifiedIntent(intent_name, 1.0), mode, session),
+            session_metadata={
+                "last_mode": mode.value,
+                "pending_question": {
+                    "type": pending_question.type,
+                    "choices": pending_question.choices,
+                    "turn_id": pending_question.turn_id,
+                    "expires_at": pending_question.expires_at,
+                    "payload": pending_question.payload,
+                    "created_at": pending_question.created_at,
+                },
+                "last_response_preview": response[:240],
+            },
+        )
+        return response
+    async def _execute_deterministic_tool(self, tool_name: str, tool_input: dict[str, Any], session: Session) -> str:
+        skill = self.skill_registry.get_skill_for_tool(tool_name)
+        if not skill:
+            return f"Unknown tool: {tool_name}"
+        normalized_input = tool_input if isinstance(tool_input, dict) else {}
+        skill_context = self._build_skill_context(session)
+        try:
+            return await skill.execute(tool_name, normalized_input, skill_context)
+        except Exception as exc:
+            logger.exception("Deterministic tool execution failed for %s: %s", tool_name, exc)
+            return f"ERROR: tool {tool_name} failed: {exc}"
+
+    async def _extract_idea_payload(self, user_text: str) -> dict[str, Any]:
+        if self._looks_like_idea_text(user_text) and not detect_switch_intent(user_text):
+            fallback = {
+                "idea_text": user_text.strip(),
+                "confidence": 0.7,
+            }
+        else:
+            fallback = {"idea_text": "", "confidence": 0.0}
+
+        prompt = (
+            "Extract only the project idea text from the user message.\n"
+            "Return JSON only with this schema:\n"
+            "{\"idea_text\": \"...\", \"confidence\": 0.0}\n"
+            "If idea text is unclear, return empty idea_text and low confidence.\n\n"
+            f"User message: {user_text[:800]}"
+        )
+        try:
+            response = await self.provider_router.chat(
+                messages=[{"role": "user", "content": prompt}],
+                tools=[],
+                max_tokens=180,
+                task_type="general",
+                allowed_providers=self.chat_provider_allowlist,
+            )
+            text = (response.text or "").strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
+            data = json.loads(text)
+            idea_text = str(data.get("idea_text") or "").strip()
+            confidence = float(data.get("confidence") or 0.0)
+            confidence = min(max(confidence, 0.0), 1.0)
+            if not idea_text:
+                return fallback
+            return {
+                "idea_text": idea_text,
+                "confidence": confidence,
+            }
+        except Exception as exc:
+            logger.warning("Idea extraction failed, using fallback: %s", exc)
+            return fallback
+
+    def _looks_like_idea_text(self, text: str) -> bool:
+        value = (text or "").strip().lower()
+        if not value:
+            return False
+        if len(value.split()) < 4:
+            return False
+        if value in {"new", "existing", "yes", "no", "ok", "sure"}:
+            return False
+        if value.startswith("/"):
+            return False
+        return True
+
+    def _extract_project_name_hint(self, text: str) -> str:
+        value = (text or "").strip()
+        if not value:
+            return ""
+
+        patterns = (
+            re.compile(r"\b(?:called|named)\s+([a-zA-Z0-9][a-zA-Z0-9_\- ]{1,63})", re.IGNORECASE),
+            re.compile(
+                r"\b(?:start|create|make|begin)\s+(?:a\s+)?(?:new\s+)?(?:project|app|application)\s+([a-zA-Z0-9][a-zA-Z0-9_\-]{1,63})",
+                re.IGNORECASE,
+            ),
+        )
+        for pattern in patterns:
+            match = pattern.search(value)
+            if not match:
+                continue
+            name = match.group(1).strip().strip(".!,?;:")
+            if not name:
+                continue
+            lowered = name.lower()
+            if lowered in {"project", "app", "application", "new", "different"}:
+                continue
+            return name
+        return ""
+
+    def _build_pending_question(
+        self,
+        *,
+        q_type: str,
+        choices: list[str],
+        payload: dict[str, Any] | None,
+    ) -> PendingQuestion:
+        now = datetime.now(timezone.utc)
+        return PendingQuestion(
+            type=q_type,
+            choices=choices,
+            turn_id=uuid.uuid4().hex[:12],
+            expires_at=(now + PENDING_QUESTION_TTL).isoformat(),
+            payload=payload,
+            created_at=now.isoformat(),
+        )
+
+    def _build_pending_action_update(
+        self,
+        intent: ClassifiedIntent,
+        execution: _ExecutionResult,
+        response_text: str,
+        session: Session,
+    ) -> dict[str, Any] | None:
+        if intent.intent in {"approve_plan", "approve_execution", "request_stop"}:
+            return None
+
+        generated_plan = any(
+            out.get("name") == "project_generate_plan"
+            and not (out.get("result") or "").lower().startswith("error")
+            for out in execution.tool_outcomes
+        )
+        if not generated_plan:
+            return None
+
+        if not _APPROVAL_PROMPT_RE.search(response_text or ""):
+            return None
+
+        project_id = session.project_id
+        if not project_id:
+            return None
+
+        now = datetime.now(timezone.utc)
+        pending = PendingAction(
+            type="approve_plan",
+            project_id=project_id,
+            created_at=now.isoformat(),
+            expires_at=(now + PENDING_ACTION_TTL).isoformat(),
+        )
+        return {
+            "type": pending.type,
+            "project_id": pending.project_id,
+            "created_at": pending.created_at,
+            "expires_at": pending.expires_at,
+        }
+
+    async def clear_pending_action_for_user(self, user_id: str) -> None:
+        try:
+            session = await self.session_loader.load(int(user_id))
+            await self.session_loader.clear_pending_action(session)
+        except Exception:
+            logger.exception("Failed clearing pending action for user=%s", user_id)
     def _resolve_allowed_providers(
         self,
         *,
@@ -239,13 +994,13 @@ class Orchestrator:
                 deduped.append(normalized)
         return deduped
 
-    async def _execute(self, text: str, ctx: ContextPackage, session: Session, mode: Mode) -> str:
+    async def _execute(self, text: str, ctx: ContextPackage, session: Session, mode: Mode) -> _ExecutionResult:
         skill_context = self._build_skill_context(session)
         messages = ctx.messages + [{"role": "user", "content": text}]
         rounds = 0
+        tool_outcomes: list[dict[str, str]] = []
 
         while rounds < ctx.max_rounds:
-            # Wrap provider call -- failures must not kill the loop
             try:
                 response = await self.provider_router.chat(
                     messages,
@@ -255,20 +1010,19 @@ class Orchestrator:
                     task_type="general",
                     allowed_providers=ctx.allowed_providers,
                 )
-            except Exception as e:
+            except Exception as exc:
                 logger.exception(
                     "Provider failure in %s mode (round %d/%d): %s",
                     mode.value,
                     rounds + 1,
                     ctx.max_rounds,
-                    e,
+                    exc,
                 )
-                return self._map_provider_failure(e)
+                return _ExecutionResult(text=self._map_provider_failure(exc), tool_outcomes=tool_outcomes)
 
             if not response.tool_calls:
-                return (response.text or "").strip()
+                return _ExecutionResult(text=(response.text or "").strip(), tool_outcomes=tool_outcomes)
 
-            # Execute tools
             tool_results = []
             for tc in response.tool_calls:
                 tool_input = tc.input if isinstance(tc.input, dict) else {}
@@ -294,20 +1048,24 @@ class Orchestrator:
                 else:
                     logger.warning("Blocked tool call in %s mode: %s", mode.value, tc.name)
                     result = f"Unknown tool: {tc.name}"
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tc.id,
-                    "name": tc.name,
-                    "content": result,
-                })
 
-            # Guard against empty assistant content
+                tool_outcomes.append({"name": tc.name, "result": str(result)})
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tc.id,
+                        "name": tc.name,
+                        "content": result,
+                    }
+                )
+
             assistant_content = self._build_assistant_content(response) or ""
             messages.append({"role": "assistant", "content": assistant_content})
             messages.append({"role": "user", "content": tool_results})
             rounds += 1
 
-        return await self._force_summary(messages, ctx.system_prompt)
+        summary = await self._force_summary(messages, ctx.system_prompt)
+        return _ExecutionResult(text=summary, tool_outcomes=tool_outcomes)
 
     def _map_provider_failure(self, error: Exception) -> str:
         message = str(error).lower()
@@ -321,12 +1079,10 @@ class Orchestrator:
                 "for Ollama or configure a cloud API key (Gemini/Anthropic), then try again."
             )
         return "The AI provider encountered an error. Please try again."
-
     def _make_set_active_project_callback(self, session: Session):
         async def _set_active_project(project_id: str, phase: str):
             session.project_id = project_id
             session.conversation_phase = phase
-            # Load full project row immediately so same-turn reads see it
             from db import store
 
             project = await store.get_project(self.db, project_id)
@@ -358,25 +1114,30 @@ class Orchestrator:
         )
 
     def _build_assistant_content(self, response) -> object:
-        parts: list[dict] = []
+        parts: list[dict[str, Any]] = []
         if response.text:
             parts.append({"type": "text", "text": response.text})
         for tc in response.tool_calls or []:
-            parts.append({
-                "type": "tool_use",
-                "id": tc.id,
-                "name": tc.name,
-                "input": tc.input,
-            })
+            parts.append(
+                {
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.input,
+                }
+            )
         return parts if parts else response.text
 
     async def _force_summary(self, messages: list[dict], system_prompt: str) -> str:
         try:
             summary = await self.provider_router.chat(
-                messages + [{
-                    "role": "user",
-                    "content": "Summarize the result and next step in plain language.",
-                }],
+                messages
+                + [
+                    {
+                        "role": "user",
+                        "content": "Summarize the result and next step in plain language.",
+                    }
+                ],
                 tools=[],
                 system=system_prompt,
                 max_tokens=700,
@@ -387,7 +1148,7 @@ class Orchestrator:
         except Exception:
             return ""
 
-    def _infer_phase(self, intent, mode: Mode, session: Session) -> str:
+    def _infer_phase(self, intent: ClassifiedIntent, mode: Mode, session: Session) -> str:
         if not session.project_id:
             return "discovery"
         if mode == Mode.PLANNING:
@@ -398,16 +1159,16 @@ class Orchestrator:
             return "paused"
         return session.conversation_phase or "discovery"
 
-    def _build_metadata_update(self, intent, mode: Mode, response: str, session: Session) -> dict:
-        metadata: dict[str, str] = {"last_mode": mode.value}
-        if intent.intent in {"request_plan", "propose_idea", "change_direction"}:
-            metadata["waiting_for"] = "plan_approval"
-        elif intent.intent in {"approve_plan", "approve_execution"}:
+    def _build_metadata_update(
+        self,
+        intent: ClassifiedIntent,
+        mode: Mode,
+        response: str,
+        session: Session,
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {"last_mode": mode.value}
+        if intent.intent in {"approve_plan", "approve_execution"}:
             metadata["waiting_for"] = ""
-        elif mode == Mode.REVIEW:
-            metadata["waiting_for"] = "review_feedback"
-        elif mode == Mode.CONVERSATION and not session.project_id:
-            metadata["waiting_for"] = "project_clarification"
         if response:
             metadata["last_response_preview"] = response[:240]
         return metadata
@@ -415,6 +1176,22 @@ class Orchestrator:
     async def _persist_message(self, update, *, role: str, content: str) -> None:
         if role not in {"user", "assistant"}:
             return
+
+        conversation_id = await self._get_or_create_active_conversation_id(update)
+        if conversation_id and self.db is not None:
+            try:
+                from db import store
+
+                await store.add_session_message(
+                    self.db,
+                    conversation_id=conversation_id,
+                    role=role,
+                    content=content,
+                    metadata={"channel": "orchestrator"},
+                )
+            except Exception:
+                logger.exception("Failed persisting conversation message conversation_id=%s", conversation_id)
+
         await _append_user_conversation(
             update,
             role=role,
@@ -429,3 +1206,20 @@ class Orchestrator:
     async def _load_recent_for_classifier(self, update) -> list[dict]:
         history = await _load_recent_conversation_messages(update, gap_tier=GapTier.ACTIVE)
         return history[-2:]
+
+    async def _load_last_assistant_text(self, update) -> str:
+        history = await _load_recent_conversation_messages(update, gap_tier=GapTier.ACTIVE)
+        for msg in reversed(history):
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                text_parts = [
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
+                return " ".join(part for part in text_parts if part).strip()
+        return ""

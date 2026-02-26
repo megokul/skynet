@@ -147,7 +147,6 @@ async def _build_state(router: ScriptedRouter):
         skill_registry=registry,
     )
     state._bot_app = _FakeApp()
-    state._last_project_id = None
     state._chat_history = []
 
     return db, pm, registry, cfg, original_auth
@@ -165,7 +164,6 @@ async def _teardown_state(db, cfg, original_auth):
     state._provider_router = None
     state._skill_registry = None
     state._bot_app = None
-    state._last_project_id = None
     state._chat_history = []
     cfg.ALLOWED_USER_ID = original_auth
     await db.close()
@@ -333,14 +331,12 @@ async def test_scenario_create_existing_project_graceful() -> None:
         skill = ProjectManagementSkill()
         ctx = SkillContext(project_id="", project_path="", gateway_api_url="http://127.0.0.1:8766")
 
-        from bot import state
         result = await skill.execute("project_create", {"name": "existing-project"}, ctx)
 
         # Should NOT be an error — should say it's already active
         assert "error" not in result.lower() or "already exists" in result.lower()
         assert "existing-project" in result.lower() or "active" in result.lower()
-        # _last_project_id should now point to this project
-        assert state._last_project_id is not None
+        assert ctx.project_id
     finally:
         await _teardown_state(db, cfg, orig_auth)
 
@@ -351,26 +347,27 @@ async def test_scenario_create_existing_project_graceful() -> None:
 
 @pytest.mark.asyncio
 async def test_scenario_add_idea_stale_project_id_recovers() -> None:
-    """project_add_idea with a stale/missing project_id falls back to active project."""
+    """project_add_idea should succeed when active context project is set."""
     from skills.project_skill import ProjectManagementSkill
     from skills.base import SkillContext
-    from bot import state
 
     router = ScriptedRouter([])
     db, pm, registry, cfg, orig_auth = await _build_state(router)
     try:
         real_project = await pm.create_project("realproject")
-        state._last_project_id = "stale-id-that-doesnt-exist"
 
         skill = ProjectManagementSkill()
-        ctx = SkillContext(project_id="", project_path="", gateway_api_url="http://127.0.0.1:8766")
+        ctx = SkillContext(
+            project_id=real_project["id"],
+            project_path=str(real_project.get("local_path") or ""),
+            gateway_api_url="http://127.0.0.1:8766",
+        )
 
         result = await skill.execute("project_add_idea", {"idea": "add login page"}, ctx)
 
-        # Should have recovered and added idea to realproject
+        # Should add idea to realproject
         assert "error" not in result.lower(), f"Should not error, got: {result}"
         assert "added" in result.lower()
-        assert state._last_project_id == real_project["id"]
     finally:
         await _teardown_state(db, cfg, orig_auth)
 
@@ -436,17 +433,19 @@ async def test_scenario_parallel_tool_calls() -> None:
     """LLM calling two tools in one round (parallel) should work."""
     from skills.project_skill import ProjectManagementSkill
     from skills.base import SkillContext
-    from bot import state
 
     router = ScriptedRouter([])
     db, pm, registry, cfg, orig_auth = await _build_state(router)
     try:
         # Create project first
         p = await pm.create_project("parallel-test")
-        state._last_project_id = p["id"]
 
         skill = ProjectManagementSkill()
-        ctx = SkillContext(project_id="", project_path="", gateway_api_url="http://127.0.0.1:8766")
+        ctx = SkillContext(
+            project_id=p["id"],
+            project_path=str(p.get("local_path") or ""),
+            gateway_api_url="http://127.0.0.1:8766",
+        )
 
         # Execute two tool calls
         r1 = await skill.execute("project_add_idea", {"idea": "feature A"}, ctx)
@@ -467,12 +466,10 @@ async def test_scenario_generate_plan_no_project() -> None:
     """project_generate_plan with no projects should give clear error."""
     from skills.project_skill import ProjectManagementSkill
     from skills.base import SkillContext
-    from bot import state
 
     router = ScriptedRouter([])
     db, pm, registry, cfg, orig_auth = await _build_state(router)
     try:
-        state._last_project_id = None
 
         skill = ProjectManagementSkill()
         ctx = SkillContext(project_id="", project_path="", gateway_api_url="http://127.0.0.1:8766")
@@ -511,24 +508,20 @@ async def test_scenario_unknown_tool() -> None:
 
 @pytest.mark.asyncio
 async def test_scenario_new_project_intent_with_stale_context() -> None:
-    """With boomboom as _last_project_id, 'can we start a project' reaches the LLM
-    and the scripted bot asks for a name rather than silently continuing the old project."""
+    """New project intent is handled deterministically and asks for project name."""
     router = ScriptedRouter([
         # LLM asks for the new project name — text reply, no tool calls
         _LLMResponse(text="Sure! What would you like to name the new project?"),
     ])
     db, pm, registry, cfg, orig_auth = await _build_state(router)
     try:
-        from bot import state
-
         # Simulate a previously worked-on project
-        p = await pm.create_project("boomboom")
-        state._last_project_id = p["id"]
+        await pm.create_project("boomboom")
 
         replies = await _send("can we start a project")
 
-        # LLM should have been called (not treated as a greeting)
-        assert router._idx >= 1, "LLM should be called"
+        # Deterministic routing handles this without scripted LLM.
+        assert router._idx == 0
         assert replies, "bot should reply"
 
         # The scripted LLM asked for a name — reply must contain "name" or "project"

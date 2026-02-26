@@ -22,11 +22,42 @@ _NEW_PROJECT_RE = re.compile(
     r"|\bproject\b.{0,20}\b(?:start|create|make|begin)\b",
     re.IGNORECASE,
 )
+_PURE_GREETING_RE = re.compile(
+    r"^\s*(?:hi|hello|hey|yo|hiya|sup|good (?:morning|afternoon|evening))[!. ]*\s*$",
+    re.IGNORECASE,
+)
+_GREETING_HEADS = {"hi", "hello", "hey", "yo", "hiya", "sup", "good morning", "good afternoon", "good evening"}
+_NON_GREETING_HINTS = {
+    "project", "build", "create", "start", "plan", "status", "task", "idea",
+    "help", "debug", "fix", "code", "run", "generate",
+}
 
 
 def _is_new_project_intent(text: str) -> bool:
     """Return True if the message strongly signals intent to START a brand-new project."""
     return bool(_NEW_PROJECT_RE.search((text or "").strip()))
+
+
+def _is_pure_greeting(text: str) -> bool:
+    """Compatibility helper used by tests and simple routing checks."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if _PURE_GREETING_RE.match(raw):
+        return True
+
+    cleaned = re.sub(r"[^a-zA-Z\s]", " ", raw).lower()
+    tokens = [t for t in cleaned.split() if t]
+    if not tokens:
+        return False
+    normalized = " ".join(tokens)
+    if normalized in _GREETING_HEADS:
+        return True
+    if tokens[0] not in {"hi", "hello", "hey", "yo", "hiya", "sup", "good"}:
+        return False
+    if any(tok in _NON_GREETING_HINTS for tok in tokens[1:]):
+        return False
+    return len(tokens) <= 3
 
 
 async def _resolve_project(

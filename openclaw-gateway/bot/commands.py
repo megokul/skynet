@@ -5,6 +5,7 @@ bot/commands.py -- All cmd_* handlers, handle_callback, handle_text, build_app,
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import html
 import json
 import logging
@@ -50,10 +51,14 @@ from .memory import (
     _set_memory_enabled_for_user,
 )
 from .nl_intent import (
+    _is_pure_greeting,
     _resolve_project,
 )
 
 logger = logging.getLogger("skynet.telegram")
+_CONV_START_NEW = "conv:start_new"
+_CONV_CONTINUE = "conv:continue"
+_CONV_SWITCH_PREFIX = "conv:switch:"
 
 
 async def on_project_progress(project_id: str, event_type: str, summary: str) -> None:
@@ -73,6 +78,67 @@ async def on_project_progress(project_id: str, event_type: str, summary: str) ->
     }
     title = f"Project Event: {event_type}"
     await _notify_styled(level_map.get(event_type, "info"), title, summary, project=project_id)
+
+
+async def _ensure_memory_user_row(update: Update) -> dict:
+    from db import store
+
+    if not state._project_manager:
+        raise RuntimeError("Project manager is not initialized.")
+
+    user = update.effective_user
+    if not user:
+        raise RuntimeError("User context is unavailable.")
+
+    return await store.ensure_user(
+        state._project_manager.db,
+        telegram_user_id=int(user.id),
+        username=str(getattr(user, "username", "") or ""),
+        first_name=str(getattr(user, "first_name", "") or ""),
+        last_name=str(getattr(user, "last_name", "") or ""),
+    )
+
+
+async def _create_new_conversation(update: Update, *, title: str | None = None) -> dict:
+    from db import store
+
+    user_row = await _ensure_memory_user_row(update)
+    conv_title = (title or "").strip() or datetime.now(timezone.utc).strftime("Conversation %Y-%m-%d %H:%M")
+    created = await store.create_conversation_session(
+        state._project_manager.db,
+        user_id=int(user_row["id"]),
+        title=conv_title,
+    )
+    await store.set_user_active_conversation(
+        state._project_manager.db,
+        user_id=int(user_row["id"]),
+        conversation_id=created["conversation_id"],
+    )
+    return created
+
+
+async def _build_conversation_picker_markup(update: Update) -> InlineKeyboardMarkup:
+    from db import store
+
+    user_row = await _ensure_memory_user_row(update)
+    rows = await store.list_conversation_sessions(
+        state._project_manager.db,
+        user_id=int(user_row["id"]),
+        limit=12,
+    )
+    buttons: list[list[InlineKeyboardButton]] = []
+    for row in rows:
+        title = str(row.get("title") or "Conversation").strip() or "Conversation"
+        updated = str(row.get("updated_at") or "").strip()
+        label = title
+        if updated:
+            label = f"{title} - {updated[:16].replace('T', ' ')}"
+        callback_data = f"{_CONV_SWITCH_PREFIX}{row['conversation_id']}"
+        buttons.append([InlineKeyboardButton(label[:64], callback_data=callback_data)])
+
+    if not buttons:
+        buttons.append([InlineKeyboardButton("Start New Conversation", callback_data=_CONV_START_NEW)])
+    return InlineKeyboardMarkup(buttons)
 
 
 # ------------------------------------------------------------------
@@ -139,6 +205,57 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     data = query.data or ""
 
+    if data == _CONV_START_NEW:
+        try:
+            created = await _create_new_conversation(update)
+            await query.edit_message_text(
+                (
+                    f"Started new conversation: <b>{html.escape(created.get('title') or 'Conversation')}</b>\n"
+                    "Context is now isolated to this conversation."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            await query.edit_message_text(f"Error: {exc}")
+        return
+
+    if data == _CONV_CONTINUE:
+        try:
+            markup = await _build_conversation_picker_markup(update)
+            await query.edit_message_text(
+                "Select a conversation to continue:",
+                reply_markup=markup,
+            )
+        except Exception as exc:
+            await query.edit_message_text(f"Error: {exc}")
+        return
+
+    if data.startswith(_CONV_SWITCH_PREFIX):
+        from db import store
+
+        conversation_id = data[len(_CONV_SWITCH_PREFIX):]
+        try:
+            user_row = await _ensure_memory_user_row(update)
+            target = await store.get_conversation_session(
+                state._project_manager.db,
+                conversation_id=conversation_id,
+            )
+            if not target or int(target.get("user_id") or -1) != int(user_row["id"]):
+                await query.edit_message_text("Conversation not found.")
+                return
+            await store.set_user_active_conversation(
+                state._project_manager.db,
+                user_id=int(user_row["id"]),
+                conversation_id=conversation_id,
+            )
+            await query.edit_message_text(
+                f"Switched to conversation: <b>{html.escape(str(target.get('title') or 'Conversation'))}</b>",
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            await query.edit_message_text(f"Error: {exc}")
+        return
+
     # --- v1 CONFIRM action approval ---
     if data.startswith("approve:"):
         key = data[8:]
@@ -186,6 +303,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try:
             await state._project_manager.approve_plan(project_id)
             await state._project_manager.start_execution(project_id)
+            if state._orchestrator:
+                await state._orchestrator.clear_pending_action_for_user(str(user.id))
             await query.edit_message_text(
                 "<b>Plan APPROVED</b> -- coding started!", parse_mode="HTML",
             )
@@ -196,6 +315,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         project_id = data[12:]
         try:
             await state._project_manager.cancel_project(project_id)
+            if state._orchestrator:
+                await state._orchestrator.clear_pending_action_for_user(str(user.id))
             await query.edit_message_text("<b>Plan CANCELLED</b>", parse_mode="HTML")
         except Exception as exc:
             await query.edit_message_text(f"Error: {exc}")
@@ -557,45 +678,16 @@ async def cmd_store_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorised(update):
         return
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Continue Conversation", callback_data=_CONV_CONTINUE)],
+        [InlineKeyboardButton("Start New Conversation", callback_data=_CONV_START_NEW)],
+    ])
     await update.message.reply_text(
-        "<b>SKYNET // CHATHAN - AI Project Factory</b>\n\n"
-        "<b>Project Management:</b>\n"
-        "  /newproject &lt;name&gt; - start a new project\n"
-        "  (send text) - natural chat with SKYNET\n"
-        "  /idea &lt;text&gt; - add idea to current project\n"
-        "  /plan [name] - generate project plan\n"
-        "  /projects - list all projects\n"
-        "  /status &lt;name&gt; - project status\n"
-        "  /pause &lt;name&gt; - pause project\n"
-        "  /resume_project &lt;name&gt; - resume project\n"
-        "  /cancel &lt;name&gt; - cancel project\n"
-        "  /removeproject &lt;name&gt; - permanently remove project record (with Yes/No confirmation)\n"
-        "  /quota - AI provider status\n\n"
-        "<b>Persona Memory:</b>\n"
-        "  /profile - show stored profile and preferences\n"
-        "  /forget &lt;fact-or-text&gt; - forget matching stored facts\n"
-        "  /no_store - stop storing new memory\n"
-        "  /store_on - re-enable memory storage\n\n"
-        "<b>SKYNET System:</b>\n"
-        "  /agents [project] - list agents\n"
-        "  /heartbeat - heartbeat task status\n"
-        "  /sentinel - run health checks\n"
-        "  /skills - list available skills\n\n"
-        "<b>Agent Commands:</b>\n"
-        "  /agent_status - agent connection check\n"
-        "  /git_status [path]\n"
-        "  /run_tests [path]\n"
-        "  /lint [path]\n"
-        "  /build [path]\n"
-        "  /vscode <path> - open folder/file in VS Code on laptop\n"
-        "  /check_agents - check codex/claude/cline CLI availability\n"
-        "  /run_agent <agent> [path=<dir>] <prompt> - run coding agent\n"
-        "  /cline_provider <provider> [model] - switch Cline provider/model\n"
-        "  /close_app [name]\n\n"
-        "<b>Controls:</b>\n"
-        "  /emergency_stop - kill everything\n"
-        "  /resume - resume agent\n",
+        "<b>Select an option:</b>\n"
+        "Use explicit conversations to keep context isolated.\n\n"
+        "You can still use slash commands for direct actions (/newproject, /plan, /status, etc.).",
         parse_mode="HTML",
+        reply_markup=keyboard,
     )
 
 
@@ -964,22 +1056,47 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = update.message.text.strip()
     if not text:
         return
+    lowered = text.lower()
+
+    if lowered in {"switch conversation", "switch conv", "continue conversation"}:
+        try:
+            markup = await _build_conversation_picker_markup(update)
+            await update.message.reply_text(
+                "Select a conversation to continue:",
+                reply_markup=markup,
+            )
+        except Exception as exc:
+            await update.message.reply_text(f"Error: {exc}")
+        return
+
+    if lowered in {"new conversation", "start new conversation"}:
+        try:
+            created = await _create_new_conversation(update)
+            await update.message.reply_text(
+                f"Started new conversation: <b>{html.escape(created.get('title') or 'Conversation')}</b>",
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            await update.message.reply_text(f"Error: {exc}")
+        return
 
     # 1. Memory commands (/remember, /forget, etc.)
     if await _maybe_handle_memory_text_command(update, text):
         return
 
     # 2. Profile capture (background, non-blocking)
+    # Skip for pure greetings to avoid unnecessary model calls on trivial turns.
     skip_store = _is_no_store_once_message(text)
-    _spawn_background_task(
-        _capture_profile_memory(
-            update,
-            text,
-            skip_store=skip_store,
-            persist_message=not bool(state._orchestrator),
-        ),
-        tag="profile-capture",
-    )
+    if not _is_pure_greeting(text):
+        _spawn_background_task(
+            _capture_profile_memory(
+                update,
+                text,
+                skip_store=skip_store,
+                persist_message=not bool(state._orchestrator),
+            ),
+            tag="profile-capture",
+        )
 
     # 3. Route through orchestrator.
     if not state._orchestrator:
@@ -988,7 +1105,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # Message persistence now happens inside orchestrator._handle_internal().
     reply = await state._orchestrator.handle(update, text)
-    await update.message.reply_text(reply)
+    if reply:
+        await update.message.reply_text(reply)
 
 
 # ------------------------------------------------------------------

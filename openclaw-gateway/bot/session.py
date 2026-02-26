@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from bot.invariants import PendingAction, PendingQuestion
 from db import store
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,18 @@ class Session:
     project: dict[str, Any] | None
 
 
+def get_pending_question(session: Session) -> PendingQuestion | None:
+    raw = (session.metadata or {}).get("pending_question")
+    normalized = _normalize_pending_question(raw)
+    return PendingQuestion(**normalized) if normalized else None
+
+
+def get_pending_action(session: Session) -> PendingAction | None:
+    raw = (session.metadata or {}).get("pending_action")
+    normalized = _normalize_pending_action(raw)
+    return PendingAction(**normalized) if normalized else None
+
+
 class SessionLoader:
     def __init__(self, db, project_manager):
         self.db = db
@@ -34,12 +47,14 @@ class SessionLoader:
         row = await store.get_or_create_session(self.db, user_id=user_id)
 
         # Parse last_message_at and compute time_gap
+        now = datetime.now(timezone.utc)
         last_msg_at = None
         time_gap = None
         if row.get("last_message_at"):
             try:
-                last_msg_at = datetime.fromisoformat(row["last_message_at"])
-                time_gap = datetime.utcnow() - last_msg_at
+                last_msg_at = _parse_datetime(row["last_message_at"])
+                if last_msg_at:
+                    time_gap = now - last_msg_at
             except (ValueError, TypeError):
                 pass
 
@@ -48,6 +63,15 @@ class SessionLoader:
             metadata = json.loads(row.get("session_metadata", "{}"))
         except (json.JSONDecodeError, TypeError):
             metadata = {}
+        normalized_metadata = _normalize_metadata(metadata)
+        if normalized_metadata != metadata:
+            metadata = normalized_metadata
+            await store.update_session(
+                self.db,
+                user_id=user_id,
+                session_metadata=json.dumps(metadata),
+                updated_at=_utcnow_iso(),
+            )
 
         project_id = row.get("project_id")
         project = None
@@ -78,12 +102,13 @@ class SessionLoader:
         Always stamps updated_at automatically.
         Merges session_metadata (never overwrites).
         """
-        changes["updated_at"] = datetime.utcnow().isoformat()
+        changes["updated_at"] = _utcnow_iso()
 
         # Metadata: MERGE, never overwrite
         if "session_metadata" in changes:
             merged = dict(session.metadata)
             merged.update(changes["session_metadata"])
+            merged = _normalize_metadata(merged)
             changes["session_metadata"] = json.dumps(merged)
             session.metadata = merged
 
@@ -101,12 +126,154 @@ class SessionLoader:
         if "last_message_at" in changes:
             value = changes["last_message_at"]
             try:
-                session.last_message_at = datetime.fromisoformat(value) if value else None
+                session.last_message_at = _parse_datetime(value) if value else None
             except (TypeError, ValueError):
                 session.last_message_at = None
             if session.last_message_at:
-                session.time_gap = datetime.utcnow() - session.last_message_at
+                session.time_gap = datetime.now(timezone.utc) - session.last_message_at
             else:
                 session.time_gap = None
 
         await store.update_session(self.db, user_id=session.user_id, **changes)
+
+    async def set_pending_question(
+        self,
+        session: Session,
+        pending_question: PendingQuestion | dict[str, Any],
+    ) -> None:
+        if isinstance(pending_question, PendingQuestion):
+            payload = {
+                "type": pending_question.type,
+                "choices": pending_question.choices,
+                "turn_id": pending_question.turn_id,
+                "expires_at": pending_question.expires_at,
+                "payload": pending_question.payload,
+                "created_at": pending_question.created_at,
+            }
+        else:
+            payload = dict(pending_question)
+        normalized = _normalize_pending_question(payload)
+        if not normalized:
+            raise ValueError("Invalid pending_question payload.")
+        await self.update(session, session_metadata={"pending_question": normalized})
+
+    async def clear_pending_question(self, session: Session) -> None:
+        await self.update(session, session_metadata={"pending_question": None})
+
+    async def set_pending_action(
+        self,
+        session: Session,
+        pending_action: PendingAction | dict[str, Any],
+    ) -> None:
+        if isinstance(pending_action, PendingAction):
+            payload = {
+                "type": pending_action.type,
+                "project_id": pending_action.project_id,
+                "plan_id": pending_action.plan_id,
+                "created_at": pending_action.created_at,
+                "expires_at": pending_action.expires_at,
+            }
+        else:
+            payload = dict(pending_action)
+        normalized = _normalize_pending_action(payload)
+        if not normalized:
+            raise ValueError("Invalid pending_action payload.")
+        await self.update(session, session_metadata={"pending_action": normalized})
+
+    async def clear_pending_action(self, session: Session) -> None:
+        await self.update(session, session_metadata={"pending_action": None})
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    dt = datetime.fromisoformat(str(value))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _normalize_metadata(metadata: Any) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        return {}
+    normalized = dict(metadata)
+    pq = _normalize_pending_question(normalized.get("pending_question"))
+    pa = _normalize_pending_action(normalized.get("pending_action"))
+    if pq:
+        normalized["pending_question"] = pq
+    else:
+        normalized.pop("pending_question", None)
+    if pa:
+        normalized["pending_action"] = pa
+    else:
+        normalized.pop("pending_action", None)
+    return normalized
+
+
+def _normalize_pending_question(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    q_type = str(raw.get("type") or "").strip()
+    turn_id = str(raw.get("turn_id") or "").strip()
+    expires_at = str(raw.get("expires_at") or "").strip()
+    if not q_type or not turn_id or not expires_at:
+        return None
+    if not _is_future(expires_at):
+        return None
+    choices_raw = raw.get("choices") or []
+    if isinstance(choices_raw, (tuple, list)):
+        choices = [str(x).strip() for x in choices_raw if str(x).strip()]
+    else:
+        choices = []
+    payload = raw.get("payload") if isinstance(raw.get("payload"), dict) else None
+    created_at = str(raw.get("created_at") or "").strip() or _utcnow_iso()
+    return {
+        "type": q_type,
+        "choices": choices,
+        "turn_id": turn_id,
+        "expires_at": expires_at,
+        "payload": payload,
+        "created_at": created_at,
+    }
+
+
+def _normalize_pending_action(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    action_type = str(raw.get("type") or "").strip()
+    project_id = str(raw.get("project_id") or "").strip()
+    if not action_type or not project_id:
+        return None
+    expires_raw = raw.get("expires_at")
+    expires_at = str(expires_raw).strip() if expires_raw else ""
+    if expires_at and not _is_future(expires_at):
+        return None
+    plan_id = raw.get("plan_id")
+    if plan_id is not None:
+        try:
+            plan_id = int(plan_id)
+        except (TypeError, ValueError):
+            plan_id = None
+    created_at = str(raw.get("created_at") or "").strip() or _utcnow_iso()
+    normalized: dict[str, Any] = {
+        "type": action_type,
+        "project_id": project_id,
+        "created_at": created_at,
+    }
+    if expires_at:
+        normalized["expires_at"] = expires_at
+    if plan_id is not None:
+        normalized["plan_id"] = plan_id
+    return normalized
+
+
+def _is_future(iso_value: str) -> bool:
+    try:
+        dt = _parse_datetime(iso_value)
+    except (TypeError, ValueError):
+        return False
+    return bool(dt and dt > datetime.now(timezone.utc))
