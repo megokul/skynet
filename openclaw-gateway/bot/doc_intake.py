@@ -13,6 +13,8 @@ import logging
 import re
 import time
 
+from core.prompt_library import load_prompt
+
 from . import state
 from .helpers import (
     _action_result_ok,
@@ -25,6 +27,8 @@ from .helpers import (
 )
 
 logger = logging.getLogger("skynet.telegram")
+
+_DOC_GENERATION_SYSTEM_PROMPT = load_prompt("bot/doc_intake/generate_docs_system.md")
 
 # Field names and character limits for doc generation answers.
 _DOC_INTAKE_FIELDS = ("problem", "users", "requirements", "non_goals", "success_metrics", "tech_stack")
@@ -474,16 +478,7 @@ async def _generate_detailed_doc_pack_with_llm(
     }
 
     mode = "review_and_refine" if review_pass else "generate"
-    system = (
-        "You are a principal software architect and technical writer. "
-        "Produce project-specific documentation only. "
-        "Do NOT mention SKYNET, OpenClaw, control-plane internals, or platform details "
-        "unless the user explicitly asked for them in this specific project. "
-        "Use explicit assumptions where needed, but keep them tied to this project scope. "
-        "Return ONLY valid JSON with shape: "
-        "{\"documents\": {\"<relative/path>.md\": \"<markdown>\"}}. "
-        "Do not include keys outside required paths."
-    )
+    system = _DOC_GENERATION_SYSTEM_PROMPT
     user_payload = {
         "project_name": _project_display(project),
         "project_id": str(project.get("id", "")),

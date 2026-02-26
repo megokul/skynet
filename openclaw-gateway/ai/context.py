@@ -16,6 +16,7 @@ from typing import Any, Callable, Awaitable
 
 import aiosqlite
 
+from core.prompt_library import load_prompt
 from db import store
 
 logger = logging.getLogger("skynet.ai.context")
@@ -32,16 +33,7 @@ _SUMMARISE_THRESHOLD = 0.70
 _KEEP_RECENT_FULL = 12
 
 # System prompt used for generating conversation summaries.
-_SUMMARISE_PROMPT = (
-    "You are a concise summariser. Condense the following conversation "
-    "into a short summary (max 500 words). Focus on:\n"
-    "- What code was written or changed (files, functions)\n"
-    "- Decisions made and why\n"
-    "- Current state of the project\n"
-    "- Any errors encountered and how they were resolved\n\n"
-    "Do NOT include tool call details or raw code. "
-    "Return ONLY the summary text, nothing else."
-)
+_SUMMARISE_PROMPT = load_prompt("ai/context/summarize_system.md")
 
 
 # Type alias for the summariser callback.

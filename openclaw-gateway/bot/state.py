@@ -10,9 +10,11 @@ from typing import TYPE_CHECKING, Any
 
 import bot_config as cfg
 from agents.main_persona import MainPersonaAgent
+from core.prompt_library import load_prompt
 
 if TYPE_CHECKING:
     from .orchestrator import Orchestrator
+    from core.engine import ConversationEngine
 
 
 class _TTLDict(dict):
@@ -60,6 +62,7 @@ _sentinel = None
 _searcher = None
 _skill_registry = None
 _orchestrator: "Orchestrator | None" = None
+_conversation_engine: "ConversationEngine | None" = None
 
 # Stores pending CONFIRM actions keyed by a short ID.
 _pending_confirms: _TTLDict = _TTLDict(ttl_seconds=1800)
@@ -104,32 +107,8 @@ _bot_app = None  # Application | None -- assigned in build_app()
 # Short rolling chat history for natural Telegram conversation.
 _chat_history: list[dict] = []
 _CHAT_HISTORY_MAX: int = 12
-# Universal personality + core rules — applies to every LLM call regardless of phase.
-_PERSONALITY_PROMPT = """\
-You are OpenClaw, an AI engineering collaborator running in Telegram.
-
-## Core rule: never assume, always ask
-When something important is ambiguous — which project, what feature, which tech stack, \
-whether to proceed — ASK before acting. One short, focused question is always better than \
-acting on a wrong assumption. This applies especially to:
-- Which project the user is talking about (if not clear, ask)
-- Whether they want to continue existing work or start fresh
-- What exactly they want built (capture their words, don't invent)
-- Whether they are ready to move to the next phase (plan, build, etc.)
-
-## Conversation style
-- Talk like a capable engineer working with the user, not a form or menu.
-- For greetings and short acks (hi, ok, thanks, cool, sure, got it, nice), reply briefly and
-  naturally in plain text. Do not call any tools for these — just respond conversationally.
-- Never show numbered option menus. Never tell the user to use slash commands.
-- If a tool fails, say so in one sentence and continue.
-- Do not output JSON unless explicitly asked.
-
-## Other tools
-- Use filesystem, git, build, docker, search, and IDE tools whenever execution is needed.
-- When asked to use coding agents (codex/claude/cline), use check_coding_agents and run_coding_agent.
-- Prefer delegated execution through tools for long-running work.\
-"""
+# Universal personality + core rules -- applies to every LLM call regardless of phase.
+_PERSONALITY_PROMPT = load_prompt("bot/personality_system.md")
 
 _last_model_signature: str | None = None
 _CHAT_PROVIDER_ALLOWLIST = (
@@ -159,7 +138,7 @@ def set_dependencies(
     skill_registry=None,
 ):
     """Called by main.py to inject dependencies."""
-    global _project_manager, _provider_router, _heartbeat, _sentinel, _searcher, _skill_registry, _orchestrator
+    global _project_manager, _provider_router, _heartbeat, _sentinel, _searcher, _skill_registry, _orchestrator, _conversation_engine
     _project_manager = project_manager
     _provider_router = provider_router
     _heartbeat = heartbeat
@@ -167,19 +146,19 @@ def set_dependencies(
     _searcher = searcher
     _skill_registry = skill_registry
 
-    if all((_project_manager, _provider_router, _skill_registry)):
-        from .orchestrator import Orchestrator
+    if all((_project_manager, _provider_router)):
+        from core.engine import ConversationEngine
 
-        _orchestrator = Orchestrator(
+        _conversation_engine = ConversationEngine(
             db=_project_manager.db,
-            project_manager=_project_manager,
             provider_router=_provider_router,
-            skill_registry=_skill_registry,
-            gateway_api_url=cfg.GATEWAY_API_URL,
-            chat_provider_allowlist=_CHAT_PROVIDER_ALLOWLIST,
+            project_manager=_project_manager,
         )
     else:
-        _orchestrator = None
+        _conversation_engine = None
+
+    # Legacy orchestrator is kept nullable for backward compatibility.
+    _orchestrator = None
 
 
 # ------------------------------------------------------------------

@@ -19,6 +19,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 
 import bot_config as cfg
 from ai.providers.base import ToolCall
+from core.prompt_library import render_prompt
 from . import state
 
 logger = logging.getLogger("skynet.telegram")
@@ -198,29 +199,25 @@ def _build_gap_system_context(gap_tier, project_name: str = "") -> str:
     based on how long the user has been away.
     """
     from bot.memory import GapTier
-    proj = f" (last project: '{project_name}')" if project_name else ""
+
+    project_suffix = f" (last project: '{project_name}')" if project_name else ""
     if gap_tier <= GapTier.MEDIUM:
-        # Active / short / medium — no special instruction, history does the work
+        # Active / short / medium: no special instruction, history does the work.
         return ""
     if gap_tier == GapTier.LONG:
-        return (
-            f"\n\n[Session gap: several hours{proj}] "
-            "No previous conversation is loaded. "
-            "If the user's intent is ambiguous — are they continuing or starting fresh? — "
-            "ask one short natural question. If their message clearly signals something new, proceed."
+        return "\n\n" + render_prompt(
+            "bot/context/gap_long.md",
+            project_suffix=project_suffix,
         )
     if gap_tier == GapTier.DAY:
-        return (
-            f"\n\n[Session gap: 1+ days{proj}] "
-            "No previous conversation is loaded. "
-            "Greet the user naturally and mention their last project once if it seems relevant. "
-            "Be ready for a fresh start — do not assume they want to continue."
+        return "\n\n" + render_prompt(
+            "bot/context/gap_day.md",
+            project_suffix=project_suffix,
         )
     # EXTENDED
-    return (
-        f"\n\n[Session gap: extended absence{proj}] "
-        "No previous conversation is loaded. Treat this as a fresh conversation. "
-        "Mention the last project only if the user asks about it."
+    return "\n\n" + render_prompt(
+        "bot/context/gap_extended.md",
+        project_suffix=project_suffix,
     )
 
 

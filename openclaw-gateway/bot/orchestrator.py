@@ -27,6 +27,7 @@ from bot.invariants import (
 from bot.memory import GapTier, _append_user_conversation, _load_recent_conversation_messages
 from bot.mode import Mode, ToolPolicyGate, select_mode
 from bot.session import Session, SessionLoader, get_pending_action, get_pending_question
+from core.prompt_library import load_prompt, render_prompt
 from skills.base import SkillContext
 
 logger = logging.getLogger(__name__)
@@ -38,10 +39,33 @@ INBOX_IDLE_TIMEOUT_SECONDS = 300
 PENDING_QUESTION_TTL = timedelta(minutes=15)
 PENDING_ACTION_TTL = timedelta(hours=24)
 _EMPTY_REPLY_SENTINEL = ""
+_IDEA_EXTRACT_PROMPT = "bot/orchestrator/idea_extract_user.md"
+_FORCE_SUMMARY_USER_PROMPT = load_prompt("bot/orchestrator/force_summary_user.md")
 
 _APPROVE_PLAN_RE = re.compile(r"\b(yes|approve|approved|go ahead|start|begin|proceed|do it)\b", re.IGNORECASE)
 _REJECT_PLAN_RE = re.compile(r"\b(no|cancel|stop|not now|don't|do not)\b", re.IGNORECASE)
 _APPROVAL_PROMPT_RE = re.compile(r"\b(approve|approval|tap|start)\b.*\b(plan|execution|coding)\b", re.IGNORECASE)
+_INVALID_PROJECT_NAME_HINTS: set[str] = {
+    "today",
+    "tomorrow",
+    "tonight",
+    "now",
+    "later",
+    "soon",
+    "project",
+    "app",
+    "application",
+    "new",
+    "different",
+    "this",
+    "that",
+    "it",
+    "one",
+    "something",
+    "anything",
+    "here",
+    "there",
+}
 
 
 @dataclass
@@ -641,6 +665,43 @@ class Orchestrator:
             session,
         )
         response = (create_result or "").strip()
+        creation_failed = (
+            not response
+            or response.lower().startswith("error")
+            or not session.project_id
+        )
+        if creation_failed:
+            pending = self._build_pending_question(
+                q_type="need_project_name",
+                choices=[],
+                payload={"source": "propose_idea"},
+            )
+            guidance = "Please provide a specific project name (for example: task-tracker)."
+            full_response = state._main_persona_agent.compose_final_response(
+                f"{response}\n\n{guidance}".strip() if response else guidance
+            )
+            await self._persist_message(update, role="assistant", content=full_response)
+            await self.session_loader.update(
+                session,
+                last_intent="propose_idea",
+                last_mode=Mode.PLANNING.value,
+                last_message_at=datetime.now(timezone.utc).isoformat(),
+                conversation_phase=self._infer_phase(ClassifiedIntent("propose_idea", 1.0), Mode.PLANNING, session),
+                session_metadata={
+                    "last_mode": Mode.PLANNING.value,
+                    "pending_question": {
+                        "type": pending.type,
+                        "choices": pending.choices,
+                        "turn_id": pending.turn_id,
+                        "expires_at": pending.expires_at,
+                        "payload": pending.payload,
+                        "created_at": pending.created_at,
+                    },
+                    "last_response_preview": full_response[:240],
+                },
+            )
+            return full_response
+
         follow_up = "What should I add as the idea?"
         pending = self._build_pending_question(
             q_type="need_idea_text",
@@ -781,12 +842,9 @@ class Orchestrator:
         else:
             fallback = {"idea_text": "", "confidence": 0.0}
 
-        prompt = (
-            "Extract only the project idea text from the user message.\n"
-            "Return JSON only with this schema:\n"
-            "{\"idea_text\": \"...\", \"confidence\": 0.0}\n"
-            "If idea text is unclear, return empty idea_text and low confidence.\n\n"
-            f"User message: {user_text[:800]}"
+        prompt = render_prompt(
+            _IDEA_EXTRACT_PROMPT,
+            user_message=user_text[:800],
         )
         try:
             response = await self.provider_router.chat(
@@ -845,7 +903,7 @@ class Orchestrator:
             if not name:
                 continue
             lowered = name.lower()
-            if lowered in {"project", "app", "application", "new", "different"}:
+            if lowered in _INVALID_PROJECT_NAME_HINTS:
                 continue
             return name
         return ""
@@ -1135,7 +1193,7 @@ class Orchestrator:
                 + [
                     {
                         "role": "user",
-                        "content": "Summarize the result and next step in plain language.",
+                        "content": _FORCE_SUMMARY_USER_PROMPT,
                     }
                 ],
                 tools=[],

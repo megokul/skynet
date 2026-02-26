@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     conversation_id   TEXT PRIMARY KEY,
     user_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     title             TEXT NOT NULL DEFAULT '',
+    active_role       TEXT NOT NULL DEFAULT 'igris',
     active_project_id TEXT,
     pending_question  TEXT NOT NULL DEFAULT '{}',
     pending_action    TEXT NOT NULL DEFAULT '{}',
@@ -96,6 +97,18 @@ CREATE TABLE IF NOT EXISTS messages (
     content          TEXT NOT NULL,
     metadata         TEXT NOT NULL DEFAULT '{}',
     created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS reminders (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    conversation_id  TEXT REFERENCES conversations(conversation_id) ON DELETE SET NULL,
+    title            TEXT NOT NULL,
+    due_at           TEXT,
+    notes            TEXT DEFAULT '',
+    status           TEXT NOT NULL DEFAULT 'pending',
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Legacy project-scoped conversation history (compatibility)
@@ -251,6 +264,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id, status, due_at);
 CREATE INDEX IF NOT EXISTS idx_project_conversations_project ON project_conversations(project_id);
 CREATE INDEX IF NOT EXISTS idx_events_project ON project_events(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_provider_usage_lookup ON provider_usage(provider_name, date);
@@ -272,6 +286,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
 _MIGRATIONS = [
     "ALTER TABLE tasks ADD COLUMN assigned_agent_role TEXT DEFAULT 'backend'",
+    "ALTER TABLE conversations ADD COLUMN active_role TEXT NOT NULL DEFAULT 'igris'",
 ]
 
 
@@ -319,6 +334,7 @@ async def _migrate_legacy_conversations(db: aiosqlite.Connection) -> None:
             conversation_id   TEXT PRIMARY KEY,
             user_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             title             TEXT NOT NULL DEFAULT '',
+            active_role       TEXT NOT NULL DEFAULT 'igris',
             active_project_id TEXT,
             pending_question  TEXT NOT NULL DEFAULT '{}',
             pending_action    TEXT NOT NULL DEFAULT '{}',

@@ -12,6 +12,7 @@ from bot.memory import GapTier, _compute_gap_tier, _load_recent_conversation_mes
 from bot.message_utils import strip_tool_messages
 from bot.mode import MODE_PROVIDER_ALLOWLIST, Mode
 from bot.session import Session
+from core.prompt_library import load_prompt, render_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -41,43 +42,11 @@ MODE_MAX_ROUNDS: dict[Mode, int] = {
 }
 
 MODE_INSTRUCTIONS: dict[Mode, str] = {
-    Mode.CONVERSATION: """\
-## Mode: Conversation
-Keep this lightweight and conversational.
-- Answer clearly in plain language.
-- Ask one focused follow-up question when key details are missing.
-- Avoid jumping into execution unless the user asks for concrete implementation work.
-""",
-    Mode.PLANNING: """\
-## Mode: Planning
-Capture requirements and shape a concrete plan.
-- Gather product goals, users, constraints, and preferred stack.
-- Convert concrete requirements into project ideas.
-- Offer documentation or plan generation only when the user signals readiness.
-- Keep scope explicit and avoid hidden assumptions.
-""",
-    Mode.EXECUTION: """\
-## Mode: Execution
-The user expects implementation progress.
-- Use available tools to inspect, change, and verify code.
-- Report what changed and what remains.
-- If blocked, surface the exact blocker and the next concrete action.
-- Do not claim completion without evidence from tool output.
-""",
-    Mode.REVIEW: """\
-## Mode: Review
-Focus on validation and quality checks.
-- Inspect diffs, tests, and project status before conclusions.
-- Prioritize correctness, regressions, and missing coverage.
-- Keep findings concrete and actionable.
-""",
-    Mode.RECOVERY: """\
-## Mode: Recovery
-Resume work after interruption or drift.
-- Reconstruct current state from recent context and project status.
-- Reconfirm user intent if continuation direction is ambiguous.
-- Propose the smallest safe next step to regain momentum.
-""",
+    Mode.CONVERSATION: load_prompt("bot/context/mode_conversation.md"),
+    Mode.PLANNING: load_prompt("bot/context/mode_planning.md"),
+    Mode.EXECUTION: load_prompt("bot/context/mode_execution.md"),
+    Mode.REVIEW: load_prompt("bot/context/mode_review.md"),
+    Mode.RECOVERY: load_prompt("bot/context/mode_recovery.md"),
 }
 
 
@@ -130,19 +99,25 @@ class ContextBuilder:
                     role="chat",
                 )
                 if prompt_context:
-                    skill_guidance = (
-                        "\n\n[External Skill Guidance]\n"
-                        "Use the following skill guidance if it helps solve the request:\n\n"
-                        f"{prompt_context}"
+                    skill_guidance = render_prompt(
+                        "bot/context/external_skill_guidance_block.md",
+                        skill_guidance=prompt_context,
                     )
         except Exception:
             logger.exception("Failed to inject external skill guidance")
 
         system_parts = [
             state._PERSONALITY_PROMPT,
-            f"## Classified Intent\nIntent: {intent.intent}\nConfidence: {intent.confidence:.2f}",
+            render_prompt(
+                "bot/context/classified_intent_header.md",
+                intent=intent.intent,
+                confidence=f"{intent.confidence:.2f}",
+            ),
             MODE_INSTRUCTIONS[mode],
-            "[User Profile]\n" + (profile_context.strip() or "None"),
+            render_prompt(
+                "bot/context/user_profile_block.md",
+                profile_context=profile_context.strip() or "None",
+            ),
             project_context,
             gap_context,
             skill_guidance.strip(),
@@ -179,13 +154,11 @@ class ContextBuilder:
 
     async def _build_project_context(self, mode: Mode, session: Session) -> str:
         if not session.project:
-            return "[Project Context]\nNo active project."
+            return load_prompt("bot/context/project_none.md")
 
         project = session.project
         name = _project_display(project)
         status = str(project.get("status") or "unknown")
-        lines = ["[Project Context]", f"Name: {name}", f"Status: {status}"]
-
         if mode == Mode.CONVERSATION:
             tech_stack = project.get("tech_stack")
             if isinstance(tech_stack, str):
@@ -194,8 +167,12 @@ class ContextBuilder:
                     tech_stack = parsed
                 except Exception:
                     pass
-            lines.append(f"Tech Stack: {tech_stack if tech_stack else 'unknown'}")
-            return "\n".join(lines)
+            return render_prompt(
+                "bot/context/project_conversation.md",
+                name=name,
+                status=status,
+                tech_stack=tech_stack if tech_stack else "unknown",
+            )
 
         if mode == Mode.PLANNING:
             ideas = project.get("ideas")
@@ -208,18 +185,33 @@ class ContextBuilder:
                         ideas = await store.get_ideas(self.db, project["id"])
                 except Exception:
                     ideas = []
-            lines.append("Ideas:")
+            lines: list[str] = [
+                render_prompt(
+                    "bot/context/project_planning_intro.md",
+                    name=name,
+                    status=status,
+                ).strip()
+            ]
             if ideas:
                 for idea in ideas[:20]:
                     if isinstance(idea, dict):
                         text = idea.get("message_text") or idea.get("text") or ""
                     else:
                         text = str(idea)
-                    lines.append(f"- {(text or '').strip()[:180]}")
+                    lines.append(
+                        render_prompt(
+                            "bot/context/project_planning_idea_item.md",
+                            idea_text=(text or "").strip()[:180],
+                        ).strip()
+                    )
             else:
-                lines.append("- None captured yet.")
+                lines.append(load_prompt("bot/context/project_planning_no_ideas.md"))
             return "\n".join(lines)
 
         working_dir = str(project.get("local_path") or "unknown")
-        lines.append(f"Working Directory: {working_dir}")
-        return "\n".join(lines)
+        return render_prompt(
+            "bot/context/project_execution.md",
+            name=name,
+            status=status,
+            working_dir=working_dir,
+        )

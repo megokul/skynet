@@ -10,6 +10,8 @@ from enum import IntEnum
 
 from telegram import Update
 
+from core.prompt_library import load_prompt, render_prompt
+
 from . import state
 
 logger = logging.getLogger("skynet.telegram")
@@ -135,12 +137,9 @@ def _build_summarization_prompt(messages: list[dict]) -> str:
         f"{m['role'].upper()}: {m['content'][:500]}"
         for m in messages
     )
-    return (
-        "Summarize the following conversation into 3–6 sentences.\n"
-        "Focus on: what the user wants to build, key decisions made, "
-        "constraints or preferences mentioned, and the current project phase.\n"
-        "Be factual and concise. Do NOT include greetings, filler, or meta-commentary.\n\n"
-        f"CONVERSATION:\n{transcript}\n\nSUMMARY:"
+    return render_prompt(
+        "bot/memory/summarize_user.md",
+        transcript=transcript,
     )
 
 
@@ -166,7 +165,7 @@ async def _summarize_and_store(
             return
         response = await state._provider_router.chat(
             [{"role": "user", "content": prompt}],
-            system="You are a concise conversation summarizer. Output only the summary, no preamble.",
+            system=load_prompt("bot/memory/summarize_system.md"),
             max_tokens=300,
             task_type="general",
             allowed_providers=["groq", "gemini", "claude"],

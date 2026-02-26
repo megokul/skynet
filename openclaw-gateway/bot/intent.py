@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from bot.message_utils import strip_tool_messages
 from bot.session import Session
+from core.prompt_library import render_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -44,33 +45,6 @@ class ClassifiedIntent:
     is_continuation: bool = False
 
 
-CLASSIFIER_PROMPT = """You are an intent classifier for a software development assistant bot.
-
-Given the user's message and conversation context, classify the intent.
-
-Respond with ONLY a JSON object:
-{{
-    "intent": "one of: greeting, casual_conversation, ask_question, request_explanation, propose_idea, request_plan, approve_plan, reject_plan, request_execution, request_fix, approve_execution, request_review, request_continue, request_stop, change_direction, provide_feedback, memory_command, unclear",
-    "confidence": 0.0 to 1.0,
-    "secondary_intents": [],
-    "entities": {{"project_name": null, "task_description": null}},
-    "requires_tools": false,
-    "is_continuation": false
-}}
-
-Context:
-- Active project: {project_name}
-- Project phase: {conversation_phase}
-- Last mode: {last_mode}
-- Last intent: {last_intent}
-
-Recent messages:
-{recent_context}
-
-User message: {message}
-"""
-
-
 class IntentClassifier:
     def __init__(self, provider_router):
         self.provider_router = provider_router
@@ -101,7 +75,8 @@ class IntentClassifier:
             recent_context += f"{role}: {content[:200]}\n"
 
         try:
-            prompt = CLASSIFIER_PROMPT.format(
+            prompt = render_prompt(
+                "bot/intent_classifier_user.md",
                 project_name=session.project["name"] if session.project else "None",
                 conversation_phase=session.conversation_phase,
                 last_mode=session.last_mode,

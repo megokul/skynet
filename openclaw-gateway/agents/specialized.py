@@ -18,6 +18,7 @@ import aiosqlite
 from ai.provider_router import ProviderRouter
 from ai import context as ctx
 from ai.prompts import get_agent_prompt
+from core.prompt_library import load_prompt, render_prompt
 from db import store
 from search.web_search import WebSearcher
 from skills.base import SkillContext
@@ -25,6 +26,8 @@ from skills.registry import SkillRegistry
 from .roles import AGENT_CONFIGS, DEFAULT_ROLE
 
 logger = logging.getLogger("skynet.agents.specialized")
+_TOOL_LIMIT_SUMMARY_PROMPT = load_prompt("agents/tool_limit_summary_user.md")
+_COMPLETE_TASK_PROMPT = "agents/complete_task_user.md"
 
 
 class SpecializedAgent:
@@ -122,7 +125,11 @@ class SpecializedAgent:
 
         messages.append({
             "role": "user",
-            "content": f"Complete this task: {task['title']}\n\n{task.get('description', '')}",
+            "content": render_prompt(
+                _COMPLETE_TASK_PROMPT,
+                task_title=task["title"],
+                task_description=task.get("description", ""),
+            ),
         })
 
         # Run conversation loop.
@@ -231,7 +238,7 @@ class SpecializedAgent:
         # Exceeded max rounds.
         current_messages.append({
             "role": "user",
-            "content": "You have reached the tool use limit. Summarize what you accomplished.",
+            "content": _TOOL_LIMIT_SUMMARY_PROMPT,
         })
         response = await self.router.chat(
             current_messages, system=system_prompt, max_tokens=2048,

@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any
 
+from core.prompt_library import render_prompt
+
 
 class IntentClassifier:
     """
@@ -47,11 +49,10 @@ class PayloadExtractor:
         *,
         allowed_providers: list[str] | None = None,
     ) -> dict[str, Any]:
-        prompt = (
-            "Extract structured payload from the user message.\n"
-            "Return ONLY valid JSON that matches this schema exactly:\n"
-            f"{json.dumps(schema)}\n\n"
-            f"User message: {user_text[:1200]}"
+        prompt = render_prompt(
+            "intents/payload_extract_user.md",
+            schema=json.dumps(schema),
+            user_message=user_text[:1200],
         )
         try:
             response = await self.provider_router.chat(

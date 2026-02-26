@@ -303,7 +303,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try:
             await state._project_manager.approve_plan(project_id)
             await state._project_manager.start_execution(project_id)
-            if state._orchestrator:
+            if state._conversation_engine:
+                await state._conversation_engine.clear_pending_action_for_user(str(user.id))
+            elif state._orchestrator:
                 await state._orchestrator.clear_pending_action_for_user(str(user.id))
             await query.edit_message_text(
                 "<b>Plan APPROVED</b> -- coding started!", parse_mode="HTML",
@@ -315,7 +317,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         project_id = data[12:]
         try:
             await state._project_manager.cancel_project(project_id)
-            if state._orchestrator:
+            if state._conversation_engine:
+                await state._conversation_engine.clear_pending_action_for_user(str(user.id))
+            elif state._orchestrator:
                 await state._orchestrator.clear_pending_action_for_user(str(user.id))
             await query.edit_message_text("<b>Plan CANCELLED</b>", parse_mode="HTML")
         except Exception as exc:
@@ -1098,15 +1102,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             tag="profile-capture",
         )
 
-    # 3. Route through orchestrator.
-    if not state._orchestrator:
-        await update.message.reply_text("Orchestrator is not configured.")
+    # 3. Route through conversation engine (Igris commander architecture).
+    if state._conversation_engine:
+        user = update.effective_user
+        profile = {
+            "username": getattr(user, "username", "") if user else "",
+            "first_name": getattr(user, "first_name", "") if user else "",
+            "last_name": getattr(user, "last_name", "") if user else "",
+        }
+        result = await state._conversation_engine.process_user_message(
+            telegram_user_id=int(user.id),
+            text=text,
+            user_profile=profile,
+        )
+        if result.text:
+            await update.message.reply_text(result.text)
         return
 
-    # Message persistence now happens inside orchestrator._handle_internal().
-    reply = await state._orchestrator.handle(update, text)
-    if reply:
-        await update.message.reply_text(reply)
+    # Backward compatibility fallback.
+    if state._orchestrator:
+        reply = await state._orchestrator.handle(update, text)
+        if reply:
+            await update.message.reply_text(reply)
+        return
+
+    await update.message.reply_text("Conversation engine is not configured.")
 
 
 # ------------------------------------------------------------------

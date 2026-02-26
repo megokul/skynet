@@ -299,17 +299,25 @@ async def create_conversation_session(
     *,
     user_id: int,
     title: str,
+    active_role: str = "igris",
 ) -> dict[str, Any]:
     conversation_id = _conversation_id()
     now = _now()
     await db.execute(
         """
         INSERT INTO conversations (
-            conversation_id, user_id, title, active_project_id,
+            conversation_id, user_id, title, active_role, active_project_id,
             pending_question, pending_action, created_at, updated_at
-        ) VALUES (?, ?, ?, NULL, '{}', '{}', ?, ?)
+        ) VALUES (?, ?, ?, ?, NULL, '{}', '{}', ?, ?)
         """,
-        (conversation_id, int(user_id), title.strip() or "Conversation", now, now),
+        (
+            conversation_id,
+            int(user_id),
+            title.strip() or "Conversation",
+            (active_role or "igris").strip() or "igris",
+            now,
+            now,
+        ),
     )
     await db.commit()
     row = await get_conversation_session(db, conversation_id=conversation_id)
@@ -377,6 +385,17 @@ async def update_conversation_session(
     vals = list(update_fields.values()) + [conversation_id]
     await db.execute(f"UPDATE conversations SET {sets} WHERE conversation_id = ?", vals)
     await db.commit()
+
+
+async def get_conversation_by_user_active_pointer(
+    db: aiosqlite.Connection,
+    *,
+    user_id: int,
+) -> dict[str, Any] | None:
+    active_id = await get_user_active_conversation(db, user_id=user_id)
+    if not active_id:
+        return None
+    return await get_conversation_session(db, conversation_id=active_id)
 
 
 async def add_session_message(
@@ -470,6 +489,96 @@ def _safe_json_loads(value: Any) -> dict[str, Any]:
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+# ------------------------------------------------------------------
+# Reminders
+# ------------------------------------------------------------------
+
+async def create_reminder(
+    db: aiosqlite.Connection,
+    *,
+    user_id: int,
+    title: str,
+    due_at: str | None = None,
+    notes: str = "",
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    now = _now()
+    async with db.execute(
+        """
+        INSERT INTO reminders (
+            user_id, conversation_id, title, due_at, notes, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+        """,
+        (
+            int(user_id),
+            conversation_id,
+            title.strip(),
+            due_at,
+            notes.strip(),
+            now,
+            now,
+        ),
+    ) as cur:
+        reminder_id = int(cur.lastrowid)
+    await db.commit()
+    row = await get_reminder(db, reminder_id=reminder_id)
+    if not row:
+        raise ValueError("Failed to load created reminder.")
+    return row
+
+
+async def get_reminder(
+    db: aiosqlite.Connection,
+    *,
+    reminder_id: int,
+) -> dict[str, Any] | None:
+    async with db.execute(
+        "SELECT * FROM reminders WHERE id = ?",
+        (int(reminder_id),),
+    ) as cur:
+        row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def list_reminders(
+    db: aiosqlite.Connection,
+    *,
+    user_id: int,
+    status: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    if status:
+        sql = (
+            "SELECT * FROM reminders WHERE user_id = ? AND status = ? "
+            "ORDER BY COALESCE(due_at, created_at) ASC LIMIT ?"
+        )
+        params = (int(user_id), status, int(limit))
+    else:
+        sql = (
+            "SELECT * FROM reminders WHERE user_id = ? "
+            "ORDER BY COALESCE(due_at, created_at) ASC LIMIT ?"
+        )
+        params = (int(user_id), int(limit))
+    async with db.execute(sql, params) as cur:
+        return [dict(row) for row in await cur.fetchall()]
+
+
+async def update_reminder(
+    db: aiosqlite.Connection,
+    *,
+    reminder_id: int,
+    **fields: Any,
+) -> None:
+    if not fields:
+        return
+    fields = dict(fields)
+    fields["updated_at"] = _now()
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    vals = list(fields.values()) + [int(reminder_id)]
+    await db.execute(f"UPDATE reminders SET {sets} WHERE id = ?", vals)
+    await db.commit()
 
 
 # ------------------------------------------------------------------

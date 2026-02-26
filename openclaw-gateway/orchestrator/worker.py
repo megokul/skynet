@@ -19,6 +19,7 @@ from ai.provider_router import ProviderRouter
 from ai.tool_defs import CODING_TOOLS
 from ai.prompts import CODING_PROMPT, TESTING_PROMPT
 from ai import context as ctx
+from core.prompt_library import load_prompt, render_prompt
 from db import store
 from search.web_search import WebSearcher
 
@@ -37,6 +38,9 @@ PLAN_AUTO_APPROVED = {
 ALWAYS_CONFIRM = {"git_push", "gh_create_repo", "configure_coding_agent"}
 
 MAX_TOOL_ROUNDS = 30
+_TOOL_LIMIT_SUMMARY_PROMPT = load_prompt("agents/tool_limit_summary_user.md")
+_COMPLETE_TASK_PROMPT = "agents/complete_task_user.md"
+_FINAL_TESTING_PROMPT = load_prompt("agents/final_testing_user.md")
 
 
 class Worker:
@@ -255,7 +259,11 @@ class Worker:
         )
         messages.append({
             "role": "user",
-            "content": f"Complete this task: {task['title']}\n\n{task.get('description', '')}",
+            "content": render_prompt(
+                _COMPLETE_TASK_PROMPT,
+                task_title=task["title"],
+                task_description=task.get("description", ""),
+            ),
         })
 
         final_text, updated_messages = await self._conversation_loop(
@@ -304,7 +312,7 @@ class Worker:
             project_name=project["display_name"],
             project_path=project["local_path"],
         )
-        messages = [{"role": "user", "content": "Run tests and validate the project."}]
+        messages = [{"role": "user", "content": _FINAL_TESTING_PROMPT}]
         await self._conversation_loop(messages, system_prompt, CODING_TOOLS)
 
     # Escalation chain: try preferred first, then escalate.
@@ -402,7 +410,7 @@ class Worker:
         # Exceeded max rounds — ask for summary.
         current_messages.append({
             "role": "user",
-            "content": "You have reached the tool use limit. Summarize what you accomplished.",
+            "content": _TOOL_LIMIT_SUMMARY_PROMPT,
         })
         response = await self.router.chat(
             current_messages, system=system_prompt, max_tokens=2048,

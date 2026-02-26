@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from core.prompt_library import load_prompt
+
 
 class MainPersonaAgent:
     """Policy helper for main agent behavior."""
@@ -21,13 +23,10 @@ class MainPersonaAgent:
         r"\bwrite tests?\b",
         r"\bcreate (?:an?|the)? ?(?:project|repo|service|pipeline)\b",
     )
+    _POLICY_PROMPT = load_prompt("agents/main_persona_policy.md")
 
     def compose_system_prompt(self, base_prompt: str, *, profile_context: str = "") -> str:
-        policy = (
-            "You are the main persona agent. "
-            "Provide concise final responses and prefer delegating long-running work "
-            "to planner/worker flows instead of attempting full execution inline."
-        )
+        policy = self._POLICY_PROMPT
         if profile_context.strip():
             return f"{base_prompt}\n\n{policy}\n\n[User Profile]\n{profile_context.strip()}"
         return f"{base_prompt}\n\n{policy}"

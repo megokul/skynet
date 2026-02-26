@@ -23,25 +23,14 @@ from ai.prompts import PLANNING_PROMPT
 from ai import context as ctx
 import bot_config as cfg
 from chathan.protocol import PlanSpec
+from core.prompt_library import load_prompt, render_prompt
 from db import store
 from search.web_search import WebSearcher
 from .scheduler import Scheduler
 
 logger = logging.getLogger("skynet.core.pm")
 
-# ORACLE prompt for AI-based task-to-agent assignment.
-_ORACLE_ASSIGNMENT_PROMPT = """You are SKYNET ORACLE — the AI task assignment engine.
-
-Given a list of tasks and a tech stack, assign each task to the best agent role.
-
-Available roles and their specialties:
-{roles_info}
-
-Respond with ONLY a JSON object:
-{{"assignments": [{{"task_id": "<id>", "role": "<role>"}}]}}
-
-Do not include any other text.
-"""
+_ORACLE_ASSIGNMENT_PROMPT = load_prompt("orchestrator/oracle_assignment_system.md")
 
 
 def _slugify(name: str) -> str:
@@ -193,11 +182,10 @@ class ProjectManager:
 
         messages = [{
             "role": "user",
-            "content": (
-                f"Create a detailed implementation plan for this project idea:\n\n"
-                f"{idea_text}\n\n"
-                f"The project name is: {project['display_name']}\n"
-                f"Output ONLY the JSON plan, no other text."
+            "content": render_prompt(
+                "orchestrator/generate_plan_user.md",
+                idea_text=idea_text,
+                project_name=project["display_name"],
             ),
         }]
 
@@ -378,13 +366,16 @@ class ProjectManager:
             for t in tasks
         ]
 
-        system = _ORACLE_ASSIGNMENT_PROMPT.format(roles_info=roles_info)
+        system = render_prompt(
+            "orchestrator/oracle_assignment_system.md",
+            roles_info=roles_info,
+        ) or _ORACLE_ASSIGNMENT_PROMPT.format(roles_info=roles_info)
         messages = [{
             "role": "user",
-            "content": (
-                f"Tech stack: {json.dumps(tech_stack)}\n\n"
-                f"Tasks:\n{json.dumps(task_list, indent=2)}\n\n"
-                f"Assign each task to the best agent role."
+            "content": render_prompt(
+                "orchestrator/oracle_assignment_user.md",
+                tech_stack_json=json.dumps(tech_stack),
+                task_list_json=json.dumps(task_list, indent=2),
             ),
         }]
 
