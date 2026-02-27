@@ -908,10 +908,23 @@ def _append_trace_over_ssh(payload: str) -> None:
             auth_timeout=10,
             banner_timeout=10,
         )
-        _ensure_remote_directory(client, remote_path)
+        # Open SFTP before any exec_command: some SSH servers close the
+        # transport session after an exec channel exits, causing open_sftp()
+        # to fail with "No existing session" if called afterwards.
         sftp = client.open_sftp()
         try:
             last_error: Exception | None = None
+            for candidate in _sftp_path_candidates(remote_path):
+                try:
+                    with sftp.file(candidate, "a") as remote_file:
+                        remote_file.write(payload)
+                        remote_file.flush()
+                    return
+                except Exception as exc:
+                    last_error = exc
+            # Direct append failed — parent directory likely missing.
+            # Create it via SFTP (no exec_command) then retry.
+            _ensure_remote_directory_sftp(sftp, remote_path)
             for candidate in _sftp_path_candidates(remote_path):
                 try:
                     with sftp.file(candidate, "a") as remote_file:
@@ -999,6 +1012,30 @@ def _ensure_remote_directory(client: paramiko.SSHClient, remote_path: str) -> No
     message = f"TRACE SSH ERROR: failed to create remote directory ({exit_code}): {error_text}"
     print(message)
     raise RuntimeError(message)
+
+
+def _ensure_remote_directory_sftp(sftp: paramiko.SFTPClient, remote_path: str) -> None:
+    """Create parent directories using SFTP mkdir (avoids exec_command)."""
+    normalized = remote_path.replace("\\", "/")
+    # For Windows drive paths (E:/…) prefix with / so SFTP can navigate them.
+    if _WINDOWS_PATH_PATTERN.match(normalized):
+        sftp_dir = posixpath.dirname(f"/{normalized}")
+    else:
+        sftp_dir = posixpath.dirname(normalized)
+    if not sftp_dir or sftp_dir == "/":
+        return
+    # Walk each path component, creating missing directories one by one.
+    parts = [p for p in sftp_dir.split("/") if p]
+    current = ""
+    for part in parts:
+        current = f"{current}/{part}"
+        try:
+            sftp.stat(current)
+        except (FileNotFoundError, IOError):
+            try:
+                sftp.mkdir(current)
+            except Exception:
+                pass  # Already exists or no permission — keep going.
 
 
 def _sftp_path_candidates(remote_path: str) -> list[str]:
