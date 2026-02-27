@@ -30,6 +30,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SEPARATOR = "=" * 80
 _SUMMARY_SEPARATOR = "-" * 80
 _MAX_TEXT = 2000
+_BOX_WIDTH = 79
+_BOX_CONTENT = _BOX_WIDTH - 3        # │ + space + 76 chars + │ = 79
+_DECISION_BOX_WIDTH = 66             # ┌ + 64×╌ + ┐
+_DECISION_INNER = 63                 # ╎ + space + 63 chars + ╎ = 66
+_THICK_SEPARATOR = "━" * _BOX_WIDTH
 _WINDOWS_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
 _REMOTE_TRACE_PATH = r"E:\SKYNET-SANDBOX\logs\skynet.trace.log"
 
@@ -78,6 +83,7 @@ class DevTraceNode:
     state_changes: list[_StateMutation] = field(default_factory=list)
     returns: dict[str, Any] = field(default_factory=dict)
     data_flow: list[tuple[str, Any, str, Any]] = field(default_factory=list)
+    decision: dict[str, Any] = field(default_factory=dict)
 
 
 class DevTraceSession:
@@ -294,7 +300,13 @@ class DevTraceSession:
     ) -> None:
         with self._lock:
             self._decision_points += 1
-            del phase, reasoning, node_id
+            node = self._resolve_node(phase, node_id=node_id)
+            if node is None:
+                return
+            if isinstance(reasoning, dict):
+                node.decision = {str(k): _sanitize(v) for k, v in reasoning.items()}
+            elif reasoning is not None:
+                node.decision = {"reasoning": _sanitize(reasoning)}
 
     def record_state_mutation(
         self,
@@ -381,168 +393,167 @@ class DevTraceSession:
     def render(self, *, total_execution_ms: int) -> str:
         with self._lock:
             lines: list[str] = []
-            lines.append(_SEPARATOR)
-            turn = self._header.get("turn")
-            trace_line = f"TRACE {self.trace_id}"
-            if turn is not None:
-                trace_line = f"{trace_line} | turn={_format_plain(turn)}"
-            lines.append(trace_line)
-            lines.append(f"timestamp: {self.timestamp}")
 
-            telegram_user_id = self._header.get("telegram_user_id")
-            if telegram_user_id is not None and str(telegram_user_id).strip():
-                lines.append(f"telegram_user_id: {_format_plain(telegram_user_id)}")
-
-            active_role = self._header.get("active_role")
-            if active_role is not None and str(active_role).strip():
-                lines.append(f"active_role: {_format_plain(active_role)}")
-
-            message_count_before = self._header.get("message_count_before")
-            if message_count_before is not None:
-                lines.append(f"message_count_before: {_format_plain(message_count_before)}")
-
-            lines.append(f"USER: {_format_value(self.user_input)}")
-            lines.append(_SEPARATOR)
+            # ── header box ──────────────────────────────────────────────────
+            lines.extend(self._render_header_box(total_execution_ms))
             lines.append("")
+
+            # ── execution tree ───────────────────────────────────────────────
+            lines.append("▼ EXECUTION")
+            lines.append("│")
 
             source_id = self._special_nodes.get("source") or 0
             run_id = self._special_nodes.get("run") or 0
             assistant_id = self._special_nodes.get("assistant_message") or 0
-            user_id = self._special_nodes.get("user_message") or 0
-            hidden = {nid for nid in (user_id,) if nid}
+            user_node_id = self._special_nodes.get("user_message") or 0
+            hidden: set[int] = {nid for nid in (user_node_id,) if nid}
 
+            ordered: list[int] = []
             if source_id and source_id in self._nodes:
-                lines.extend(self._render_node(source_id, prefix="", connector=None))
-                lines.append("")
+                ordered.append(source_id)
                 hidden.add(source_id)
-
             if run_id and run_id in self._nodes:
-                lines.extend(self._render_node(run_id, prefix="", connector="└──"))
-                run_node = self._nodes[run_id]
-                response_value = run_node.returns.get("response")
-                if response_value is not None:
-                    lines.append("")
-                    lines.append(f"← RETURN {run_node.file}:{run_node.line}::run")
-                    lines.append(f"      response={_format_value(response_value)}")
-                lines.append("")
+                ordered.append(run_id)
                 hidden.add(run_id)
-
-            rendered_any_root = False
-            for root_id in sorted(self._roots, key=lambda rid: self._nodes[rid].order):
-                if root_id in hidden or root_id == assistant_id:
-                    continue
-                lines.extend(self._render_node(root_id, prefix="", connector="└──"))
-                lines.append("")
-                rendered_any_root = True
-                hidden.add(root_id)
-
+            for root_id in sorted(self._roots, key=lambda r: self._nodes[r].order):
+                if root_id not in hidden and root_id != assistant_id:
+                    ordered.append(root_id)
+                    hidden.add(root_id)
             if assistant_id and assistant_id in self._nodes:
-                lines.extend(self._render_node(assistant_id, prefix="", connector=None))
+                ordered.append(assistant_id)
+
+            for idx, nid in enumerate(ordered):
+                is_last = idx == len(ordered) - 1
+                lines.extend(self._render_node(nid, prefix="", is_last=is_last, depth=0))
+                if not is_last:
+                    lines.append("│")
+
+            lines.append("")
+
+            # ── state changes ────────────────────────────────────────────────
+            mutations = self._collect_all_state_mutations()
+            role_chain_str = " → ".join(self._role_chain) if len(self._role_chain) >= 2 else ""
+            if mutations or role_chain_str:
+                lines.append("▼ STATE CHANGES")
+                for mut in mutations:
+                    lines.append(
+                        f"│  ✎ {mut.key}: {_format_inline(mut.old_value)} → {_format_inline(mut.new_value)}"
+                    )
+                if role_chain_str:
+                    lines.append(f"│  ⟳ role: {role_chain_str}")
                 lines.append("")
 
-            if not source_id and not run_id and not rendered_any_root and not assistant_id:
-                pass
-
-            lines.append(_SEPARATOR)
-            lines.append("TRACE SUMMARY")
-            lines.append(_SUMMARY_SEPARATOR)
-
-            conversation_id = self._header.get("conversation_id")
-            if conversation_id is not None and str(conversation_id).strip():
-                lines.append(f"conversation_id: {_format_plain(conversation_id)}")
-
-            if telegram_user_id is not None and str(telegram_user_id).strip():
-                lines.append(f"telegram_user_id: {_format_plain(telegram_user_id)}")
-
-            message_count_after = self._header.get("message_count_after")
-            if message_count_before is not None and message_count_after is not None:
-                lines.append(
-                    f"message_count: {_format_plain(message_count_before)} → {_format_plain(message_count_after)}"
-                )
-
-            if self._role_chain:
-                lines.append("role_transitions:")
-                lines.append(f"  {' → '.join(self._role_chain)}")
-
-            final_active_role = self._header.get("final_active_role")
-            if final_active_role is None and self._role_chain:
-                final_active_role = self._role_chain[-1]
-            if final_active_role is not None and str(final_active_role).strip():
-                lines.append(f"final_active_role: {_format_plain(final_active_role)}")
-
-            lines.append(f"total_time: {int(total_execution_ms)} ms")
-            lines.append(_SEPARATOR)
+            lines.append(_THICK_SEPARATOR)
             lines.append("END TRACE")
-            lines.append(_SEPARATOR)
+            lines.append(_THICK_SEPARATOR)
             return "\n".join(lines) + "\n"
 
-    def _render_node(self, node_id: int, *, prefix: str, connector: str | None) -> list[str]:
+    def _render_header_box(self, total_ms: int) -> list[str]:
+        lines: list[str] = []
+        horiz = "─" * (_BOX_WIDTH - 2)
+        lines.append(f"┌{horiz}┐")
+
+        turn = self._header.get("turn")
+        trace_text = self.trace_id
+        if turn is not None:
+            trace_text += f" | turn={_format_plain(turn)}"
+        lines.append(_box_line("TRACE", trace_text))
+        lines.append(_box_line("TIME", f"{self.timestamp}  ({total_ms}ms)"))
+
+        uid = self._header.get("telegram_user_id")
+        if uid is not None and str(uid).strip():
+            lines.append(_box_line("USER", str(uid)))
+
+        active_role = self._header.get("active_role")
+        if active_role is not None and str(active_role).strip():
+            if len(self._role_chain) >= 2:
+                role_display = " → ".join(self._role_chain)
+            else:
+                role_display = str(active_role)
+            lines.append(_box_line("ROLE", role_display))
+
+        msg_before = self._header.get("message_count_before")
+        msg_after = self._header.get("message_count_after")
+        if msg_before is not None and msg_after is not None:
+            lines.append(_box_line("MSGS", f"{_format_plain(msg_before)} → {_format_plain(msg_after)}"))
+        elif msg_before is not None:
+            lines.append(_box_line("MSGS", str(_format_plain(msg_before))))
+
+        lines.append(f"├{horiz}┤")
+        lines.append(_box_line("INPUT", _format_inline(self.user_input)))
+
+        run_id = self._special_nodes.get("run") or 0
+        output: Any = None
+        if run_id and run_id in self._nodes:
+            n = self._nodes[run_id]
+            output = (
+                n.returns.get("response")
+                or n.returns.get("response_text")
+                or n.returns.get("assistant_response")
+            )
+        if output is not None:
+            lines.append(_box_line("OUTPUT", _format_inline(output)))
+
+        lines.append(f"└{horiz}┘")
+        return lines
+
+    def _collect_all_state_mutations(self) -> list[_StateMutation]:
+        result: list[_StateMutation] = []
+        for node_id in sorted(self._nodes, key=lambda n: self._nodes[n].order):
+            result.extend(self._nodes[node_id].state_changes)
+        return result
+
+    def _render_node(self, node_id: int, *, prefix: str, is_last: bool, depth: int) -> list[str]:
         node = self._nodes[node_id]
         lines: list[str] = []
-        lead = ""
-        if connector is not None:
-            lead = f"{prefix}{connector} "
-        lines.append(f"{lead}{node.file}:{node.line}::{node.function}(")
 
-        if connector is None:
-            param_indent = f"{prefix}    "
-            close_indent = prefix
-            section_base = "  "
-            child_prefix = ""
-        else:
-            branch_indent = "│   " if connector == "├──" else "    "
-            param_indent = f"{prefix}{branch_indent}    "
-            close_indent = f"{prefix}{branch_indent}"
-            section_base = f"{prefix}{branch_indent}"
-            child_prefix = f"{prefix}{branch_indent}"
+        # call line: ├─► / └─►  (one extra dash per depth level)
+        dashes = "─" * (depth + 1)
+        connector = "└" if is_last else "├"
+        params_str = _format_params_inline(node.params)
+        lines.append(f"{prefix}{connector}{dashes}► {node.file}:{node.line} → {node.function}({params_str})")
 
-        for key, value in node.params.items():
-            lines.extend(_render_param_lines(key, value, indent=param_indent))
-        lines.append(f"{close_indent})")
+        # prefix for body lines below this call
+        child_prefix = prefix + ("    " if is_last else "│   ")
 
-        sections: list[tuple[str, Any]] = []
+        # context entries (inline, no header label)
         if node.context:
-            sections.append(("CONTEXT", node.context))
-        if node.prompts:
-            sections.append(("PROMPT", node.prompts))
-        if node.state_changes:
-            sections.append(("STATE", node.state_changes))
-        if node.returns:
-            sections.append(("RETURN", node.returns))
+            for key, value in node.context.items():
+                lines.append(f"{child_prefix}│  {key}={_format_value(value)}")
 
-        for idx, (name, payload) in enumerate(sections):
-            marker = "└─" if idx == len(sections) - 1 else "├─"
-            lines.append(f"{section_base}{marker} {name}:")
-            detail_indent = f"{section_base}{'      ' if marker == '└─' else '│     '}"
-            if name == "CONTEXT":
-                for key, value in payload.items():
-                    lines.append(f"{detail_indent}{key}={_format_value(value)}")
-            elif name == "PROMPT":
-                for prompt in payload:
-                    prompt_line = str(prompt.prompt_file)
-                    if prompt.model and prompt.model != "router:auto":
-                        prompt_line = f"{prompt_line} (model={prompt.model})"
-                    lines.append(f"{detail_indent}{prompt_line}")
-            elif name == "STATE":
-                for mutation in payload:
-                    lines.append(
-                        f"{detail_indent}{mutation.key}: {_format_inline(mutation.old_value)} → {_format_inline(mutation.new_value)}"
-                    )
-            else:
-                for key, value in _iter_return_items(payload):
-                    lines.append(f"{detail_indent}{key}={_format_value(value)}")
+        # decision block
+        if node.decision:
+            lines.append(f"{child_prefix}│")
+            lines.extend(
+                _render_decision_box(
+                    node.decision, node.prompts, node.returns,
+                    box_prefix=child_prefix + "│  ",
+                )
+            )
 
+        # children
         children = [cid for cid in node.children if cid in self._nodes]
-        if not children:
-            return lines
+        if children:
+            lines.append(f"{child_prefix}│")
+            for i, child_id in enumerate(children):
+                child_is_last = i == len(children) - 1
+                lines.extend(
+                    self._render_node(child_id, prefix=child_prefix, is_last=child_is_last, depth=depth + 1)
+                )
+                if not child_is_last:
+                    lines.append(f"{child_prefix}│")
 
-        for index, child_id in enumerate(children):
-            child_connector = "└──" if index == len(children) - 1 else "├──"
-            lines.extend(self._render_node(child_id, prefix=child_prefix, connector=child_connector))
+        # return values
+        ret_items = _iter_return_items_v3(node.returns)
+        if ret_items:
+            parts = [f"{k}={_format_inline(v)}" for k, v in ret_items]
+            lines.append(f"{child_prefix}← {', '.join(parts)}")
+
         return lines
 
 
 def _iter_return_items(values: dict[str, Any]) -> list[tuple[str, Any]]:
+    """Legacy: kept for compatibility with callers that filter out response keys."""
     rendered: list[tuple[str, Any]] = []
     for key, value in values.items():
         if key in {"assistant_response", "response_text", "response"}:
@@ -553,6 +564,112 @@ def _iter_return_items(values: dict[str, Any]) -> list[tuple[str, Any]]:
             continue
         rendered.append((str(key), value))
     return rendered
+
+
+def _iter_return_items_v3(values: dict[str, Any]) -> list[tuple[str, Any]]:
+    """v3: includes response keys so they appear on the ← return line."""
+    rendered: list[tuple[str, Any]] = []
+    for key, value in values.items():
+        if isinstance(value, dict) and key.endswith("_result"):
+            for nested_key, nested_value in value.items():
+                rendered.append((str(nested_key), nested_value))
+            continue
+        rendered.append((str(key), value))
+    return rendered
+
+
+def _format_params_inline(params: dict[str, Any]) -> str:
+    """Format function parameters as a compact inline string."""
+    if not params:
+        return ""
+    parts = [f"{k}={_format_inline(v)}" for k, v in params.items()]
+    result = ", ".join(parts)
+    return result[:120] + ("…" if len(result) > 120 else "")
+
+
+def _box_line(label: str, value: str) -> str:
+    """Single row in the 79-wide header box: │ LABEL  value...padding│."""
+    content = f"{label:<6}{value}"
+    if len(content) > _BOX_CONTENT:
+        content = content[:_BOX_CONTENT - 1] + "…"
+    return f"│ {content:<{_BOX_CONTENT}}│"
+
+
+def _render_decision_box(
+    decision: dict[str, Any],
+    prompts: list[_PromptInfo],
+    returns: dict[str, Any],
+    *,
+    box_prefix: str,
+) -> list[str]:
+    """Render a dashed-border decision block (╌╌╌ style)."""
+    lines: list[str] = []
+    dashes = "╌" * (_DECISION_BOX_WIDTH - 2)
+    inner = _DECISION_INNER
+
+    def row(text: str = "") -> str:
+        truncated = text[:inner]
+        return f"{box_prefix}╎ {truncated:<{inner}}╎"
+
+    lines.append(f"{box_prefix}┌{dashes}┐")
+
+    # decision name
+    routing_rule = str(decision.get("routing_rule") or "")
+    selected_intent = str(decision.get("selected_intent") or "")
+    name = routing_rule or selected_intent or "decision"
+    lines.append(row(f"🧠 DECISION: {name}"))
+    lines.append(row())
+
+    # LLM call block vs rule match block
+    if prompts:
+        lines.append(row("🤖 LLM CALL"))
+        seen_models: set[str] = set()
+        for p in prompts:
+            model_str = p.model if p.model else "router:auto"
+            if model_str not in seen_models:
+                lines.append(row(f"   model:   {model_str}"))
+                seen_models.add(model_str)
+        for p in prompts:
+            lines.append(row(f"   prompt:  {p.prompt_file}"))
+    else:
+        lines.append(row("📋 RULE MATCH"))
+        reasoning_str = str(decision.get("reasoning") or "")
+        if reasoning_str:
+            wrapped = textwrap.wrap(reasoning_str, width=inner - 14, break_long_words=False)
+            if wrapped:
+                lines.append(row(f"   rule:    {wrapped[0]}"))
+                for extra in wrapped[1:]:
+                    lines.append(row(f"            {extra}"))
+        for k, v in decision.items():
+            if k in ("reasoning", "routing_rule", "selected_intent"):
+                continue
+            lines.append(row(f"   {k:<12}{_format_plain(v)}"))
+
+    lines.append(row())
+
+    # result line
+    confidence = decision.get("classifier_confidence")
+    if selected_intent:
+        conf_str = f" (confidence={confidence})" if confidence is not None else ""
+        if confidence is not None and float(confidence) < 0.70:
+            lines.append(row(f"⚠  LOW CONF ({confidence} < 0.70) → fallback applied"))
+        else:
+            lines.append(row(f"✅ RESULT: intent={_format_inline(selected_intent)}{conf_str}"))
+    else:
+        ret_items = [
+            f"{k}={_format_inline(v)}"
+            for k, v in returns.items()
+            if k not in ("response", "assistant_response", "response_text")
+        ]
+        if ret_items:
+            lines.append(row(f"✅ RESULT: {', '.join(ret_items)}"))
+        else:
+            reasoning_str = str(decision.get("reasoning") or "")
+            if reasoning_str:
+                lines.append(row(f"✅ RESULT: {reasoning_str}"))
+
+    lines.append(f"{box_prefix}└{dashes}┘")
+    return lines
 
 
 def _render_param_lines(key: str, value: Any, *, indent: str) -> list[str]:

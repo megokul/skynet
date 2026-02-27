@@ -192,28 +192,31 @@ def test_dev_trace_renders_strict_tree_format(trace_capture: list[str]) -> None:
 
     assert len(trace_capture) == 1
     content = trace_capture[0]
-    assert "TRACE conv_8d8680b870c14458 | turn=44" in content
-    assert "timestamp: " in content
-    assert "telegram_user_id: 7152683074" in content
-    assert "active_role: igris" in content
-    assert "message_count_before: 42" in content
-    assert 'USER: "i want to start a project"' in content
 
-    assert "openclaw-gateway/bot/commands.py:2009::handle_text(" in content
-    assert "CONTEXT:" in content
+    # ── header box ──
+    assert "TRACE conv_8d8680b870c14458 | turn=44" in content
+    assert "TIME  " in content
+    assert "7152683074" in content
+    assert "igris" in content
+    assert "42" in content and "44" in content
+    assert '"i want to start a project"' in content
+
+    # ── execution tree ──
+    assert "▼ EXECUTION" in content
+    assert "openclaw-gateway/bot/commands.py:2009 → handle_text(" in content
     assert 'conversation_id="conv_8d8680b870c14458"' in content
     assert "incoming_message_id=43" in content
-
-    assert "└── openclaw-gateway/core/engine.py:443::run(" in content
-    assert "└─ RETURN:" in content or "├─ RETURN:" in content
+    assert "openclaw-gateway/core/engine.py:443 → run(" in content
     assert 'response="Idea added to testthisshit. Igris is back in command."' in content
-    assert "← RETURN openclaw-gateway/core/engine.py:443::run" in content
-    assert "TRACE SUMMARY" in content
-    assert "message_count: 42 → 44" in content
-    assert "role_transitions:" in content
+
+    # ── state changes ──
+    assert "▼ STATE CHANGES" in content
     assert "igris → project_specialist → igris" in content
-    assert "final_active_role: igris" in content
+    assert "⟳ role:" in content
+
+    # ── footer ──
     assert "END TRACE" in content
+    assert "━" in content
 
 
 def test_dev_trace_append_only_and_omits_missing_lines(trace_capture: list[str]) -> None:
