@@ -30,6 +30,7 @@ _SEPARATOR = "=" * 80
 _MAX_TEXT = 2000
 _KEY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 _WINDOWS_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
+_REMOTE_TRACE_PATH = r"E:\SKYNET-SANDBOX\logs\skynet.trace.log"
 
 _WRITE_LOCK = threading.Lock()
 _TRACE_CONTEXT: contextvars.ContextVar["DevTraceSession | None"] = contextvars.ContextVar(
@@ -598,10 +599,11 @@ def _append_trace_block(text: str) -> None:
 
 
 def _append_trace_over_ssh(payload: str) -> None:
-    host = _required_env("TRACE_SSH_HOST")
-    user = _required_env("TRACE_SSH_USER")
-    key_path = _required_env("TRACE_SSH_KEY_PATH")
-    remote_path = _required_env("TRACE_REMOTE_PATH")
+    host = _required_env_any("TRACE_SSH_HOST", "OPENCLAW_SSH_HOST")
+    user = _required_env_any("TRACE_SSH_USER", "OPENCLAW_SSH_USER")
+    key_path = _required_env_any("TRACE_SSH_KEY_PATH", "OPENCLAW_SSH_KEY_PATH")
+    port = _int_env_any(default=22, names=("TRACE_SSH_PORT", "OPENCLAW_SSH_PORT"))
+    remote_path = _resolve_remote_trace_path()
 
     key_file = Path(key_path).expanduser()
     if not key_file.exists():
@@ -614,6 +616,7 @@ def _append_trace_over_ssh(payload: str) -> None:
     try:
         client.connect(
             hostname=host,
+            port=port,
             username=user,
             key_filename=str(key_file),
             look_for_keys=False,
@@ -654,6 +657,49 @@ def _required_env(name: str) -> str:
     message = f"TRACE SSH ERROR: required environment variable `{name}` is not set"
     print(message)
     raise RuntimeError(message)
+
+
+def _required_env_any(*names: str) -> str:
+    for name in names:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    joined = ", ".join(f"`{name}`" for name in names)
+    message = f"TRACE SSH ERROR: required environment variable is not set; expected one of: {joined}"
+    print(message)
+    raise RuntimeError(message)
+
+
+def _int_env_any(*, default: int, names: tuple[str, ...]) -> int:
+    for name in names:
+        raw = (os.getenv(name) or "").strip()
+        if not raw:
+            continue
+        try:
+            return int(raw)
+        except ValueError:
+            continue
+    return int(default)
+
+
+def _resolve_remote_trace_path() -> str:
+    configured = (os.getenv("TRACE_REMOTE_PATH") or "").strip()
+    if not configured:
+        return _REMOTE_TRACE_PATH
+
+    if _normalize_windows_path(configured) != _normalize_windows_path(_REMOTE_TRACE_PATH):
+        message = (
+            "TRACE SSH ERROR: `TRACE_REMOTE_PATH` must be "
+            f"`{_REMOTE_TRACE_PATH}` for worker-only trace persistence"
+        )
+        print(message)
+        raise RuntimeError(message)
+    return configured
+
+
+def _normalize_windows_path(path: str) -> str:
+    value = str(path or "").strip().replace("/", "\\").rstrip("\\")
+    return value.lower()
 
 
 def _ensure_remote_directory(client: paramiko.SSHClient, remote_path: str) -> None:
