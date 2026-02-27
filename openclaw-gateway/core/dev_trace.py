@@ -18,6 +18,7 @@ import posixpath
 import re
 import shlex
 import threading
+import textwrap
 import time
 from typing import Any
 
@@ -161,12 +162,12 @@ class DevTraceSession:
         function: str | None = None,
         parent_id: int | None = None,
         params: dict[str, Any] | None = None,
-        stack_depth: int = 1,
+        stack_depth: int = 2,
     ) -> int:
         with self._lock:
             resolved_phase = DevTracePhase(int(phase))
             captured_file, captured_line, captured_function, captured_params = _capture_callsite_and_params(
-                stack_depth=stack_depth + 1
+                stack_depth=stack_depth
             )
 
             final_file = str(file or captured_file)
@@ -182,7 +183,7 @@ class DevTraceSession:
 
             inferred_parent = parent_id if parent_id in self._nodes else None
             if inferred_parent is None:
-                inferred_parent = self._infer_parent_from_stack(stack_depth=stack_depth + 1)
+                inferred_parent = self._infer_parent_from_stack(stack_depth=stack_depth)
 
             node_id = self._next_node_id
             self._next_node_id += 1
@@ -426,14 +427,13 @@ class DevTraceSession:
                 hidden.add(run_id)
 
             rendered_any_root = False
-            if not source_id and not run_id and not assistant_id:
-                for root_id in sorted(self._roots, key=lambda rid: self._nodes[rid].order):
-                    if root_id in hidden or root_id == assistant_id:
-                        continue
-                    lines.extend(self._render_node(root_id, prefix="", connector="└──"))
-                    lines.append("")
-                    rendered_any_root = True
-                    hidden.add(root_id)
+            for root_id in sorted(self._roots, key=lambda rid: self._nodes[rid].order):
+                if root_id in hidden or root_id == assistant_id:
+                    continue
+                lines.extend(self._render_node(root_id, prefix="", connector="└──"))
+                lines.append("")
+                rendered_any_root = True
+                hidden.add(root_id)
 
             if assistant_id and assistant_id in self._nodes:
                 lines.extend(self._render_node(assistant_id, prefix="", connector=None))
@@ -496,7 +496,7 @@ class DevTraceSession:
             child_prefix = f"{prefix}{branch_indent}"
 
         for key, value in node.params.items():
-            lines.append(f"{param_indent}{key}={_format_value(value)}")
+            lines.extend(_render_param_lines(key, value, indent=param_indent))
         lines.append(f"{close_indent})")
 
         sections: list[tuple[str, Any]] = []
@@ -511,18 +511,17 @@ class DevTraceSession:
 
         for idx, (name, payload) in enumerate(sections):
             marker = "└─" if idx == len(sections) - 1 else "├─"
-            if name == "PROMPT" and payload:
-                prompt = payload[0]
-                line = str(prompt.prompt_file)
-                if prompt.model and prompt.model != "router:auto":
-                    line = f"{line} (model={prompt.model})"
-                lines.append(f"{section_base}{marker} PROMPT: {line}")
-                continue
             lines.append(f"{section_base}{marker} {name}:")
             detail_indent = f"{section_base}{'      ' if marker == '└─' else '│     '}"
             if name == "CONTEXT":
                 for key, value in payload.items():
                     lines.append(f"{detail_indent}{key}={_format_value(value)}")
+            elif name == "PROMPT":
+                for prompt in payload:
+                    prompt_line = str(prompt.prompt_file)
+                    if prompt.model and prompt.model != "router:auto":
+                        prompt_line = f"{prompt_line} (model={prompt.model})"
+                    lines.append(f"{detail_indent}{prompt_line}")
             elif name == "STATE":
                 for mutation in payload:
                     lines.append(
@@ -555,6 +554,35 @@ def _iter_return_items(values: dict[str, Any]) -> list[tuple[str, Any]]:
     return rendered
 
 
+def _render_param_lines(key: str, value: Any, *, indent: str) -> list[str]:
+    normalized = _sanitize(value)
+    if isinstance(normalized, (list, dict)):
+        pretty = json.dumps(normalized, ensure_ascii=False, sort_keys=True, indent=2)
+        pretty_lines = pretty.splitlines()
+        if not pretty_lines:
+            return [f"{indent}{key}={_format_value(normalized)}"]
+        rendered = [f"{indent}{key}={pretty_lines[0]}"]
+        for line in pretty_lines[1:]:
+            rendered.append(f"{indent}{line}")
+        return rendered
+
+    value_text = _format_value(normalized)
+    if isinstance(normalized, str) and len(value_text) > 140:
+        wrapped = textwrap.wrap(
+            value_text,
+            width=120,
+            break_long_words=False,
+            break_on_hyphens=False,
+        )
+        if not wrapped:
+            return [f"{indent}{key}={value_text}"]
+        rendered = [f"{indent}{key}={wrapped[0]}"]
+        for line in wrapped[1:]:
+            rendered.append(f"{indent}{line}")
+        return rendered
+    return [f"{indent}{key}={value_text}"]
+
+
 def start_trace_session(
     *,
     trace_id: str,
@@ -585,7 +613,7 @@ def trace_control_flow(
     function: str | None = None,
     parent_id: int | None = None,
     params: dict[str, Any] | None = None,
-    stack_depth: int = 1,
+    stack_depth: int = 2,
 ) -> int | None:
     session = get_current_trace_session()
     if session is None:
@@ -597,7 +625,7 @@ def trace_control_flow(
         function=function,
         parent_id=parent_id,
         params=params,
-        stack_depth=stack_depth + 1,
+        stack_depth=stack_depth,
     )
 
 
