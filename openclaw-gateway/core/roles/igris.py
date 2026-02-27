@@ -277,6 +277,11 @@ class IgrisRole(Role):
                 prompt_file="core/roles/igris_direct_user.md",
                 model="router:auto",
             )
+            trace_prompt(
+                DevTracePhase.ROUTING,
+                prompt_file="core/roles/igris_system.md",
+                model="router:auto",
+            )
             response = await context.provider_router.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
@@ -288,6 +293,11 @@ class IgrisRole(Role):
             trace_prompt(
                 DevTracePhase.ROUTING,
                 prompt_file="core/roles/igris_direct_user.md",
+                model=str(getattr(response, "model", "") or "router:auto"),
+            )
+            trace_prompt(
+                DevTracePhase.ROUTING,
+                prompt_file="core/roles/igris_system.md",
                 model=str(getattr(response, "model", "") or "router:auto"),
             )
             text = (response.text or "").strip()

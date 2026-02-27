@@ -198,6 +198,11 @@ class IntentExtractor:
                 prompt_file="core/intent_extract_user.md",
                 model="router:auto",
             )
+            trace_prompt(
+                DevTracePhase.INTENT,
+                prompt_file="core/intent_extract_system.md",
+                model="router:auto",
+            )
             response = await self._provider_router.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
@@ -209,6 +214,11 @@ class IntentExtractor:
             trace_prompt(
                 DevTracePhase.INTENT,
                 prompt_file="core/intent_extract_user.md",
+                model=str(getattr(response, "model", "") or "router:auto"),
+            )
+            trace_prompt(
+                DevTracePhase.INTENT,
+                prompt_file="core/intent_extract_system.md",
                 model=str(getattr(response, "model", "") or "router:auto"),
             )
             data = self._load_json(response.text or "")
@@ -348,6 +358,11 @@ class IntentExtractor:
         - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
         """
 
+        trace_control_flow(
+            DevTracePhase.SPECIALIST,
+            params={"instruction": instruction, "schema": schema, "user_input": user_text},
+            stack_depth=2,
+        )
         prompt = render_prompt(
             "core/payload_extract_user.md",
             instruction=instruction,
@@ -359,6 +374,16 @@ class IntentExtractor:
             commander_guidance=self._commander_guidance,
         ).strip()
         try:
+            trace_prompt(
+                DevTracePhase.SPECIALIST,
+                prompt_file="core/payload_extract_user.md",
+                model="router:auto",
+            )
+            trace_prompt(
+                DevTracePhase.SPECIALIST,
+                prompt_file="core/payload_extract_system.md",
+                model="router:auto",
+            )
             response = await self._provider_router.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
@@ -366,6 +391,16 @@ class IntentExtractor:
                 max_tokens=260,
                 task_type="general",
                 allowed_providers=self._allowed_providers,
+            )
+            trace_prompt(
+                DevTracePhase.SPECIALIST,
+                prompt_file="core/payload_extract_user.md",
+                model=str(getattr(response, "model", "") or "router:auto"),
+            )
+            trace_prompt(
+                DevTracePhase.SPECIALIST,
+                prompt_file="core/payload_extract_system.md",
+                model=str(getattr(response, "model", "") or "router:auto"),
             )
             data = self._load_json(response.text or "")
             return data if isinstance(data, dict) else {}

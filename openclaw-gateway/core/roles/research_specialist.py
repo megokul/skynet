@@ -65,6 +65,11 @@ class ResearchSpecialistRole(Role):
                 prompt_file="core/roles/research_user.md",
                 model="router:auto",
             )
+            trace_prompt(
+                DevTracePhase.SPECIALIST,
+                prompt_file="core/roles/research_system.md",
+                model="router:auto",
+            )
             response = await context.provider_router.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
@@ -76,6 +81,11 @@ class ResearchSpecialistRole(Role):
             trace_prompt(
                 DevTracePhase.SPECIALIST,
                 prompt_file="core/roles/research_user.md",
+                model=str(getattr(response, "model", "") or "router:auto"),
+            )
+            trace_prompt(
+                DevTracePhase.SPECIALIST,
+                prompt_file="core/roles/research_system.md",
                 model=str(getattr(response, "model", "") or "router:auto"),
             )
             text = (response.text or "").strip() or "I need a bit more detail for research."

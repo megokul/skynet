@@ -7,6 +7,7 @@ This module is the single active trace system for orchestration boundaries.
 from __future__ import annotations
 
 import contextvars
+import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import IntEnum
@@ -948,6 +949,14 @@ def _sanitize(value: Any) -> Any:
         return clean[:_MAX_TEXT] + ("...<truncated>" if len(clean) > _MAX_TEXT else "")
     if isinstance(value, (int, float, bool)) or value is None:
         return value
+    if dataclasses.is_dataclass(value):
+        sanitized: dict[str, Any] = {}
+        for item in dataclasses.fields(value):
+            try:
+                sanitized[str(item.name)] = _sanitize(getattr(value, item.name))
+            except Exception:
+                sanitized[str(item.name)] = "<unavailable>"
+        return sanitized
     if isinstance(value, dict):
         return {str(k): _sanitize(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
