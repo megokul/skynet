@@ -19,6 +19,7 @@ from core.dev_trace import (
     trace_data_flow,
     trace_decision,
     trace_output,
+    trace_prompt,
 )
 from core.prompt_library import commander_prompt_block, render_prompt
 
@@ -182,6 +183,11 @@ class IntentExtractor:
                     "reasoning": "heuristic path not matched",
                 },
             )
+            trace_prompt(
+                DevTracePhase.INTENT,
+                prompt_file="core/intent_extract_user.md",
+                model="router:auto",
+            )
             response = await self._provider_router.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
@@ -189,6 +195,11 @@ class IntentExtractor:
                 max_tokens=220,
                 task_type="general",
                 allowed_providers=self._allowed_providers,
+            )
+            trace_prompt(
+                DevTracePhase.INTENT,
+                prompt_file="core/intent_extract_user.md",
+                model=str(getattr(response, "model", "") or "router:auto"),
             )
             data = self._load_json(response.text or "")
             # Normalization below makes downstream handling predictable even when

@@ -14,6 +14,7 @@ from core.dev_trace import (
     trace_control_flow,
     trace_decision,
     trace_output,
+    trace_prompt,
     trace_role_enter,
 )
 from core.prompt_library import engineering_prompt_block, render_prompt
@@ -59,6 +60,11 @@ class ResearchSpecialistRole(Role):
             engineering_guidance=self._guidance,
         ).strip()
         try:
+            trace_prompt(
+                DevTracePhase.SPECIALIST,
+                prompt_file="core/roles/research_user.md",
+                model="router:auto",
+            )
             response = await context.provider_router.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
@@ -66,6 +72,11 @@ class ResearchSpecialistRole(Role):
                 max_tokens=500,
                 task_type="general",
                 allowed_providers=None,
+            )
+            trace_prompt(
+                DevTracePhase.SPECIALIST,
+                prompt_file="core/roles/research_user.md",
+                model=str(getattr(response, "model", "") or "router:auto"),
             )
             text = (response.text or "").strip() or "I need a bit more detail for research."
             trace_decision(

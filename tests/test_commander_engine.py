@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-import logging
 from pathlib import Path
 import sys
 
@@ -48,6 +47,20 @@ def _ensure_paths() -> None:
     gateway_root = str(repo_root / "openclaw-gateway")
     if gateway_root not in sys.path:
         sys.path.insert(0, gateway_root)
+
+
+@pytest.fixture(autouse=True)
+def trace_blocks(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    _ensure_paths()
+    from core import dev_trace
+
+    blocks: list[str] = []
+
+    def _capture(text: str) -> None:
+        blocks.append(text)
+
+    monkeypatch.setattr(dev_trace, "_append_trace_block", _capture)
+    return blocks
 
 
 class _ProviderResponse:
@@ -279,7 +292,7 @@ class _FakeProjectManager:
 
 
 @pytest.mark.asyncio
-async def test_igris_delegates_to_project_specialist() -> None:
+async def test_igris_delegates_to_project_specialist(trace_blocks: list[str]) -> None:
     """
     Test scenario `test_igris_delegates_to_project_specialist`.
     
@@ -306,23 +319,6 @@ async def test_igris_delegates_to_project_specialist() -> None:
     from core.engine import ConversationEngine
     from db import schema
 
-    class _CaptureHandler(logging.Handler):
-        def __init__(self) -> None:
-            super().__init__(level=logging.DEBUG)
-            self.lines: list[str] = []
-
-        def emit(self, record: logging.LogRecord) -> None:
-            self.lines.append(record.getMessage())
-
-    mirror_logger = logging.getLogger("skynet.trace.mirror")
-    old_handlers = list(mirror_logger.handlers)
-    old_level = mirror_logger.level
-    old_propagate = mirror_logger.propagate
-    capture_handler = _CaptureHandler()
-    mirror_logger.handlers = [capture_handler]
-    mirror_logger.setLevel(logging.DEBUG)
-    mirror_logger.propagate = False
-
     db = await schema.init_db(":memory:")
     try:
         router = _FakeProviderRouter([
@@ -337,21 +333,19 @@ async def test_igris_delegates_to_project_specialist() -> None:
         conversations = await engine.list_user_conversations(telegram_user_id=1001)
         assert conversations
         assert conversations[0].active_role == "project_specialist"
-        trace_content = "\n".join(capture_handler.lines)
-        assert "PHASE 1 — Entry & Normalisation" in trace_content
-        assert "PHASE 2 — Intent Resolution" in trace_content
-        assert "PHASE 3 — Role Routing" in trace_content
-        assert "PHASE 4 — Specialist Execution" in trace_content
-        assert "PHASE 5 — Role Restoration" in trace_content
-        assert "PHASE 6 — Response Construction" in trace_content
-        assert "TRACE SUMMARY" in trace_content
-        assert "[ROLE ENTER]" in trace_content
-        assert "└── " in trace_content
+        assert trace_blocks
+        trace_content = "".join(trace_blocks)
+        assert "trace_id:" in trace_content
+        assert "call_sequence:" in trace_content
+        assert 'phase: "PHASE 1 - Entry & Normalisation"' in trace_content
+        assert 'phase: "PHASE 2 - Intent Resolution"' in trace_content
+        assert 'phase: "PHASE 3 - Role Routing"' in trace_content
+        assert 'phase: "PHASE 4 - Specialist Execution"' in trace_content
+        assert 'phase: "PHASE 6 - Response Construction"' in trace_content
+        assert "summary:" in trace_content
+        assert "role_events:" in trace_content
         assert "[STEP" not in trace_content
     finally:
-        mirror_logger.handlers = old_handlers
-        mirror_logger.setLevel(old_level)
-        mirror_logger.propagate = old_propagate
         await db.close()
 
 
