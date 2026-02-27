@@ -129,7 +129,11 @@ class IntentExtractor:
         - Return value typed as `ExtractedIntent` when available; otherwise side effects only.
         """
 
-        trace_control_flow(DevTracePhase.INTENT, stack_depth=2)
+        trace_control_flow(
+            DevTracePhase.INTENT,
+            params={"user_input": user_text},
+            stack_depth=2,
+        )
         trace_data_flow(
             DevTracePhase.INTENT,
             source_name="user_input",
@@ -151,12 +155,18 @@ class IntentExtractor:
             )
             trace_output(
                 DevTracePhase.INTENT,
-                key="intent_result",
-                value={
-                    "intent": heuristic.intent,
-                    "confidence": heuristic.confidence,
-                    "recommended_role": heuristic.recommended_role or "",
-                },
+                key="intent",
+                value=heuristic.intent,
+            )
+            trace_output(
+                DevTracePhase.INTENT,
+                key="confidence",
+                value=heuristic.confidence,
+            )
+            trace_output(
+                DevTracePhase.INTENT,
+                key="recommended_role",
+                value=heuristic.recommended_role or "",
             )
             return heuristic
 
@@ -233,12 +243,18 @@ class IntentExtractor:
             )
             trace_output(
                 DevTracePhase.INTENT,
-                key="intent_result",
-                value={
-                    "intent": intent,
-                    "confidence": bounded_confidence,
-                    "recommended_role": recommended_role or "",
-                },
+                key="intent",
+                value=intent,
+            )
+            trace_output(
+                DevTracePhase.INTENT,
+                key="confidence",
+                value=bounded_confidence,
+            )
+            trace_output(
+                DevTracePhase.INTENT,
+                key="recommended_role",
+                value=recommended_role or "",
             )
             return ExtractedIntent(
                 intent=intent,
@@ -261,12 +277,18 @@ class IntentExtractor:
             )
             trace_output(
                 DevTracePhase.INTENT,
-                key="intent_result",
-                value={
-                    "intent": "exploratory",
-                    "confidence": 0.0,
-                    "recommended_role": "igris",
-                },
+                key="intent",
+                value="exploratory",
+            )
+            trace_output(
+                DevTracePhase.INTENT,
+                key="confidence",
+                value=0.0,
+            )
+            trace_output(
+                DevTracePhase.INTENT,
+                key="recommended_role",
+                value="igris",
             )
             return ExtractedIntent(intent="exploratory", confidence=0.0, entities={}, recommended_role="igris")
 

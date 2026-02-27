@@ -335,15 +335,12 @@ async def test_igris_delegates_to_project_specialist(trace_blocks: list[str]) ->
         assert conversations[0].active_role == "project_specialist"
         assert trace_blocks
         trace_content = "".join(trace_blocks)
-        assert "trace_id:" in trace_content
-        assert "call_sequence:" in trace_content
-        assert 'phase: "PHASE 1 - Entry & Normalisation"' in trace_content
-        assert 'phase: "PHASE 2 - Intent Resolution"' in trace_content
-        assert 'phase: "PHASE 3 - Role Routing"' in trace_content
-        assert 'phase: "PHASE 4 - Specialist Execution"' in trace_content
-        assert 'phase: "PHASE 6 - Response Construction"' in trace_content
-        assert "summary:" in trace_content
-        assert "role_events:" in trace_content
+        assert "TRACE " in trace_content
+        assert "USER: " in trace_content
+        assert "TRACE SUMMARY" in trace_content
+        assert "role_transitions:" in trace_content
+        assert "END TRACE" in trace_content
+        assert "└── " in trace_content
         assert "[STEP" not in trace_content
     finally:
         await db.close()

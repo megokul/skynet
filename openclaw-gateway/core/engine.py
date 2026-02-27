@@ -18,8 +18,10 @@ from core.conversation_manager import Conversation, ConversationManager
 from core.dev_trace import (
     DevTracePhase,
     clear_trace_session,
+    get_current_trace_session,
     start_trace_session,
     trace_control_flow,
+    trace_context,
     trace_data_flow,
     trace_decision,
     trace_output,
@@ -345,17 +347,23 @@ class ConversationEngine:
             user_id=telegram_user_id or "unknown",
             user_input=str(trace_origin.get("original_message") or merged_text),
         )
+        trace_session.set_header_field("conversation_id", conversation_id)
+        if telegram_user_id:
+            trace_session.set_header_field("telegram_user_id", telegram_user_id)
         source_file = str(trace_origin.get("source_file") or "")
         source_line = int(trace_origin.get("source_line") or 0)
         source_function = str(trace_origin.get("source_function") or "")
+        source_node_id: int | None = None
         if source_file and source_line and source_function:
-            trace_control_flow(
+            source_node_id = trace_control_flow(
                 DevTracePhase.ENTRY,
                 file=source_file,
                 line=source_line,
                 function=source_function,
+                params={"text": str(trace_origin.get("original_message") or merged_text)},
                 stack_depth=2,
             )
+            trace_session.mark_source_node(source_node_id)
         trace_control_flow(DevTracePhase.ENTRY, stack_depth=2)
         trace_data_flow(
             DevTracePhase.ENTRY,
@@ -383,13 +391,25 @@ class ConversationEngine:
                 )
                 return "ERROR: conversation not found."
 
+            trace_session.set_header_field("active_role", conversation.active_role or "igris")
+            message_count_before = await self.conversation_manager.count_messages(conversation_id)
+            trace_session.set_header_field("message_count_before", message_count_before)
             trace_role_enter(DevTracePhase.ROUTING, conversation.active_role or "igris")
-            await self.conversation_manager.add_message(
+            incoming_message_id = await self.conversation_manager.add_message(
                 conversation_id,
                 role="user",
                 content=merged_text,
                 metadata={"source": "telegram"},
             )
+            if source_node_id is not None:
+                trace_context(
+                    DevTracePhase.ENTRY,
+                    node_id=source_node_id,
+                    values={
+                        "conversation_id": conversation_id,
+                        "incoming_message_id": incoming_message_id,
+                    },
+                )
 
             # Core role execution cycle.
             response_text = await self.run(conversation, merged_text)
@@ -402,6 +422,12 @@ class ConversationEngine:
             )
             trace_output(DevTracePhase.RESPONSE, key="assistant_response", value=response_text)
             trace_output(DevTracePhase.RESPONSE, key="active_role", value=conversation.active_role)
+            message_count_after = await self.conversation_manager.count_messages(conversation_id)
+            trace_session.set_header_field("message_count_after", message_count_after)
+            trace_session.set_header_field("turn", message_count_after)
+            final_conversation = await self.conversation_manager.get_conversation(conversation_id)
+            if final_conversation is not None:
+                trace_session.set_header_field("final_active_role", final_conversation.active_role)
             return response_text
         finally:
             # Always close trace even if role execution raises.
@@ -432,7 +458,17 @@ class ConversationEngine:
         - Return value typed as `str` when available; otherwise side effects only.
         """
 
-        trace_control_flow(DevTracePhase.ROUTING, stack_depth=2)
+        run_node_id = trace_control_flow(
+            DevTracePhase.ROUTING,
+            params={
+                "conversation_id": conversation.id,
+                "active_role": conversation.active_role or "igris",
+            },
+            stack_depth=2,
+        )
+        session = get_current_trace_session()
+        if session is not None:
+            session.mark_run_node(run_node_id)
         trace_data_flow(
             DevTracePhase.ROUTING,
             source_name="conversation.active_role",
@@ -440,7 +476,9 @@ class ConversationEngine:
             target_name="engine.selected_role",
             target_value=conversation.active_role or "igris",
         )
-        return await self._run_role_cycle(conversation, user_text)
+        response = await self._run_role_cycle(conversation, user_text)
+        trace_output(DevTracePhase.ROUTING, key="response", value=response, node_id=run_node_id)
+        return response
 
     def select_role(self, role_name: str):
         """

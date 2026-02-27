@@ -95,7 +95,11 @@ class IgrisRole(Role):
         - Return value typed as `RoleOutput` when available; otherwise side effects only.
         """
 
-        trace_control_flow(DevTracePhase.ROUTING, stack_depth=2)
+        trace_control_flow(
+            DevTracePhase.ROUTING,
+            params={"user_input": user_text},
+            stack_depth=2,
+        )
         trace_role_enter(DevTracePhase.ROUTING, "igris")
         trace_output(DevTracePhase.ROUTING, key="conversation_id", value=context.conversation.id)
 
@@ -182,7 +186,11 @@ class IgrisRole(Role):
         - Return value typed as `str | None` when available; otherwise side effects only.
         """
 
-        trace_control_flow(DevTracePhase.ROUTING, stack_depth=2)
+        trace_control_flow(
+            DevTracePhase.ROUTING,
+            params={"intent": intent_name},
+            stack_depth=2,
+        )
         normalized_recommended = (recommended_role or "").strip().lower()
         if normalized_recommended in _SPECIALIST_ROLES and confidence >= 0.45:
             trace_decision(
@@ -195,6 +203,7 @@ class IgrisRole(Role):
                     "mapped_role": normalized_recommended,
                 },
             )
+            trace_output(DevTracePhase.ROUTING, key="selected_role", value=normalized_recommended)
             return normalized_recommended
 
         # Deterministic fallback mapping keeps the commander behavior stable if
@@ -211,6 +220,7 @@ class IgrisRole(Role):
                     "mapped_role": mapped,
                 },
             )
+            trace_output(DevTracePhase.ROUTING, key="selected_role", value=mapped)
             return mapped
         trace_decision(
             DevTracePhase.ROUTING,
@@ -223,6 +233,7 @@ class IgrisRole(Role):
                 "reasoning": "confidence below thresholds or no mapping",
             },
         )
+        trace_output(DevTracePhase.ROUTING, key="selected_role", value="none")
         return None
 
     async def _compose_direct_response(self, context: RoleContext, intent_name: str, user_text: str) -> str:

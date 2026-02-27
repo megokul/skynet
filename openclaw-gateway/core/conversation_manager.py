@@ -16,6 +16,7 @@ from typing import Any
 
 from core.dev_trace import (
     DevTracePhase,
+    get_current_trace_session,
     trace_control_flow,
     trace_output,
     trace_role_switch,
@@ -182,25 +183,27 @@ class ConversationManager:
         before = await self.get_conversation(conversation_id)
         resolved = (role or "igris").strip() or "igris"
         phase = DevTracePhase.RESTORATION if resolved == "igris" else DevTracePhase.ROUTING
-        trace_control_flow(phase, stack_depth=2)
+        node_id = trace_control_flow(phase, params={"new_role": resolved}, stack_depth=2)
         if before is not None:
             trace_role_switch(
                 phase,
                 from_role=before.active_role,
                 to_role=resolved,
+                node_id=node_id,
             )
             trace_state_mutation(
                 phase,
                 key="conversation.active_role",
                 old_value=before.active_role,
                 new_value=resolved,
+                node_id=node_id,
             )
         await store.update_conversation_session(
             self.db,
             conversation_id=conversation_id,
             active_role=resolved,
         )
-        trace_output(phase, key="active_role", value=resolved)
+        trace_output(phase, key="active_role", value=resolved, node_id=node_id)
 
     async def set_active_project(self, conversation_id: str, project_id: str | None) -> None:
         """Set or clear project scope for a conversation."""
@@ -301,7 +304,14 @@ class ConversationManager:
         timeline reconstruction straightforward during debugging.
         """
         phase = DevTracePhase.ENTRY if role == "user" else DevTracePhase.RESPONSE
-        trace_control_flow(phase, stack_depth=2)
+        node_id = trace_control_flow(
+            phase,
+            params={
+                "role": role,
+                "content": content,
+            },
+            stack_depth=2,
+        )
         before_count = await self._count_messages(conversation_id)
         message_id = await store.add_session_message(
             self.db,
@@ -316,10 +326,23 @@ class ConversationManager:
             key="conversation.message_count",
             old_value=before_count,
             new_value=after_count,
+            node_id=node_id,
         )
-        trace_output(phase, key="message_id", value=message_id)
-        trace_output(phase, key="message_role", value=role)
+        if role == "user":
+            trace_output(phase, key="incoming_message_id", value=message_id, node_id=node_id)
+        elif role == "assistant":
+            trace_output(phase, key="outgoing_message_id", value=message_id, node_id=node_id)
+        session = get_current_trace_session()
+        if session is not None:
+            if role == "assistant":
+                session.mark_assistant_message_node(node_id)
+            elif role == "user":
+                session.mark_user_message_node(node_id)
         return message_id
+
+    async def count_messages(self, conversation_id: str) -> int:
+        """Public count helper for trace header metadata."""
+        return await self._count_messages(conversation_id)
 
     async def list_messages(self, conversation_id: str, limit: int = 100) -> list[dict[str, Any]]:
         """List conversation messages in chronological order."""

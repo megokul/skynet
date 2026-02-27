@@ -343,7 +343,11 @@ class ProjectSpecialistRole(Role):
         started = time.perf_counter()
         project_id = context.conversation.active_project_id
         idea_text = (user_text or "").strip()
-        trace_control_flow(DevTracePhase.SPECIALIST, stack_depth=2)
+        trace_control_flow(
+            DevTracePhase.SPECIALIST,
+            params={"project_id": project_id, "idea_text": idea_text},
+            stack_depth=2,
+        )
         if not idea_text:
             return RoleOutput(command="continue", response="What idea should I add to the active project?")
 
@@ -371,6 +375,7 @@ class ProjectSpecialistRole(Role):
             key="append_execution_ms",
             value=int(round((time.perf_counter() - started) * 1000.0)),
         )
+        trace_output(DevTracePhase.SPECIALIST, key="success", value=True)
         project = await store.get_project(context.db, project_id)
         name = (project or {}).get("display_name") or (project or {}).get("name") or "the active project"
         return RoleOutput(

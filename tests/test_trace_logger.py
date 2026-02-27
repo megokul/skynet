@@ -1,4 +1,4 @@
-"""Structured YAML trace regression tests for `core/dev_trace.py`."""
+"""Strict tree trace regression tests for `core/dev_trace.py`."""
 
 from __future__ import annotations
 
@@ -32,55 +32,159 @@ def trace_capture(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return captured
 
 
-def test_dev_trace_renders_yaml_ledger_structure(trace_capture: list[str]) -> None:
+def test_dev_trace_renders_strict_tree_format(trace_capture: list[str]) -> None:
     session, token = dev_trace.start_trace_session(
-        trace_id="conv_trace_1",
-        user_id="123456",
-        user_input="create project called orbit",
+        trace_id="conv_8d8680b870c14458",
+        user_id="7152683074",
+        user_input="i want to start a project",
     )
     try:
-        session.record_control_flow(
+        session.set_header_field("conversation_id", "conv_8d8680b870c14458")
+        session.set_header_field("telegram_user_id", "7152683074")
+        session.set_header_field("active_role", "igris")
+        session.set_header_field("message_count_before", 42)
+        session.set_header_field("message_count_after", 44)
+        session.set_header_field("turn", 44)
+        session.set_header_field("final_active_role", "igris")
+
+        source_id = session.record_control_flow(
             DevTracePhase.ENTRY,
             file="openclaw-gateway/bot/commands.py",
-            line=2029,
+            line=2009,
             function="handle_text",
-            params={"text": "create project called orbit"},
+            params={"text": "i want to start a project"},
         )
-        session.record_data_flow(
+        session.mark_source_node(source_id)
+        session.record_context(
             DevTracePhase.ENTRY,
-            source_name="user_input",
-            source_value="  create project called orbit  ",
-            target_name="normalized_input",
-            target_value="create project called orbit",
+            node_id=source_id,
+            values={
+                "conversation_id": "conv_8d8680b870c14458",
+                "incoming_message_id": 43,
+            },
+        )
+
+        run_id = session.record_control_flow(
+            DevTracePhase.ROUTING,
+            file="openclaw-gateway/core/engine.py",
+            line=443,
+            function="run",
+            params={"conversation_id": "conv_8d8680b870c14458", "active_role": "igris"},
+        )
+        session.mark_run_node(run_id)
+
+        classify_id = session.record_control_flow(
+            DevTracePhase.INTENT,
+            file="openclaw-gateway/core/intent_extractor.py",
+            line=131,
+            function="classify_intent",
+            parent_id=run_id,
+            params={"user_input": "i want to start a project"},
         )
         session.record_prompt(
             DevTracePhase.INTENT,
+            node_id=classify_id,
             prompt_file="core/intent_extract_user.md",
-            model="gpt-oss-120b",
+            model="router:auto",
         )
-        session.record_decision(
-            DevTracePhase.INTENT,
-            {
-                "classifier_confidence": 0.98,
-                "selected_intent": "project.create",
+        session.record_output(DevTracePhase.INTENT, node_id=classify_id, key="intent", value="project.create")
+        session.record_output(DevTracePhase.INTENT, node_id=classify_id, key="confidence", value=0.98)
+
+        select_id = session.record_control_flow(
+            DevTracePhase.ROUTING,
+            file="openclaw-gateway/core/roles/igris.py",
+            line=184,
+            function="select_specialist",
+            parent_id=run_id,
+            params={"intent": "project.create"},
+        )
+        session.record_output(
+            DevTracePhase.ROUTING,
+            node_id=select_id,
+            key="selected_role",
+            value="project_specialist",
+        )
+
+        append_id = session.record_control_flow(
+            DevTracePhase.SPECIALIST,
+            file="openclaw-gateway/core/roles/project_specialist.py",
+            line=346,
+            function="_append_idea_to_active",
+            parent_id=run_id,
+            params={
+                "project_id": "ffbb755decb0",
+                "idea_text": "i want to start a project",
             },
         )
-        session.record_role_enter(DevTracePhase.ROUTING, "igris")
+        session.record_state_mutation(
+            DevTracePhase.SPECIALIST,
+            node_id=append_id,
+            key="idea_count",
+            old_value=0,
+            new_value=1,
+        )
+        session.record_output(DevTracePhase.SPECIALIST, node_id=append_id, key="success", value=True)
+
+        restore_id = session.record_control_flow(
+            DevTracePhase.RESTORATION,
+            file="openclaw-gateway/core/conversation_manager.py",
+            line=167,
+            function="set_active_role",
+            parent_id=run_id,
+            params={"new_role": "igris"},
+        )
+        session.record_state_mutation(
+            DevTracePhase.RESTORATION,
+            node_id=restore_id,
+            key="active_role",
+            old_value="project_specialist",
+            new_value="igris",
+        )
+
+        session.record_role_enter(DevTracePhase.ROUTING, role="igris", node_id=run_id)
         session.record_role_switch(
             DevTracePhase.ROUTING,
             from_role="igris",
             to_role="project_specialist",
+            node_id=run_id,
         )
-        session.record_state_mutation(
+        session.record_role_switch(
+            DevTracePhase.RESTORATION,
+            from_role="project_specialist",
+            to_role="igris",
+            node_id=restore_id,
+        )
+
+        session.record_output(
             DevTracePhase.ROUTING,
-            key="conversation.active_role",
-            old_value="igris",
-            new_value="project_specialist",
+            node_id=run_id,
+            key="response",
+            value="Idea added to testthisshit. Igris is back in command.",
+        )
+
+        assistant_id = session.record_control_flow(
+            DevTracePhase.RESPONSE,
+            file="openclaw-gateway/core/conversation_manager.py",
+            line=240,
+            function="add_message",
+            params={
+                "role": "assistant",
+                "content": "Idea added to testthisshit. Igris is back in command.",
+            },
+        )
+        session.mark_assistant_message_node(assistant_id)
+        session.record_state_mutation(
+            DevTracePhase.RESPONSE,
+            node_id=assistant_id,
+            key="message_count",
+            old_value=43,
+            new_value=44,
         )
         session.record_output(
             DevTracePhase.RESPONSE,
-            key="assistant_response",
-            value="Project created. What should it do?",
+            node_id=assistant_id,
+            key="outgoing_message_id",
+            value=44,
         )
     finally:
         session.end()
@@ -88,53 +192,38 @@ def test_dev_trace_renders_yaml_ledger_structure(trace_capture: list[str]) -> No
 
     assert len(trace_capture) == 1
     content = trace_capture[0]
-    assert "trace_id: conv_trace_1" in content
-    assert "timestamp:" in content
-    assert "user_id: 123456" in content
-    assert "input:" in content
-    assert '  text: "create project called orbit"' in content
-    assert "call_sequence:" in content
-    assert "depth: 0" in content
-    assert 'phase: "PHASE 1 - Entry & Normalisation"' in content
-    assert 'file: "openclaw-gateway/bot/commands.py"' in content
-    assert "params:" in content
-    assert "prompt:" in content
-    assert 'file: "core/intent_extract_user.md"' in content
-    assert 'model: "gpt-oss-120b"' in content
-    assert "data_flow:" in content
-    assert 'from: "user_input"' in content
-    assert 'to: "normalized_input"' in content
-    assert "decision_reasoning:" in content
-    assert "role_events:" in content
-    assert "state_change:" in content
-    assert "conversation.active_role:" in content
-    assert 'before: "igris"' in content
-    assert 'after: "project_specialist"' in content
-    assert "output:" in content
-    assert '"assistant_response": "Project created. What should it do?"' in content
-    assert "data_lineage:" in content
-    assert 'normalized_input: "create project called orbit"' in content
-    assert "summary:" in content
-    assert "total_time_ms:" in content
-    assert "decisions:" in content
-    assert "role_chain:" in content
+    assert "TRACE conv_8d8680b870c14458 | turn=44" in content
+    assert "timestamp: " in content
+    assert "telegram_user_id: 7152683074" in content
+    assert "active_role: igris" in content
+    assert "message_count_before: 42" in content
+    assert 'USER: "i want to start a project"' in content
+
+    assert "openclaw-gateway/bot/commands.py:2009::handle_text(" in content
+    assert "CONTEXT:" in content
+    assert 'conversation_id="conv_8d8680b870c14458"' in content
+    assert "incoming_message_id=43" in content
+
+    assert "└── openclaw-gateway/core/engine.py:443::run(" in content
+    assert "└─ RETURN:" in content or "├─ RETURN:" in content
+    assert 'response="Idea added to testthisshit. Igris is back in command."' in content
+    assert "← RETURN openclaw-gateway/core/engine.py:443::run" in content
+    assert "TRACE SUMMARY" in content
+    assert "message_count: 42 → 44" in content
+    assert "role_transitions:" in content
+    assert "igris → project_specialist → igris" in content
+    assert "final_active_role: igris" in content
     assert "END TRACE" in content
-    assert "[STEP" not in content
 
 
-def test_dev_trace_append_only_and_mutation_filter(trace_capture: list[str]) -> None:
+def test_dev_trace_append_only_and_omits_missing_lines(trace_capture: list[str]) -> None:
     first, first_token = dev_trace.start_trace_session(
         trace_id="conv_trace_a",
         user_id="u1",
         user_input="A",
     )
     try:
-        first.record_state_mutation(
-            DevTracePhase.ENTRY,
-            key="unchanged_key",
-            old_value="same",
-            new_value="same",
-        )
+        first.set_header_field("conversation_id", "conv_trace_a")
     finally:
         first.end()
         dev_trace.clear_trace_session(first_token)
@@ -145,7 +234,10 @@ def test_dev_trace_append_only_and_mutation_filter(trace_capture: list[str]) -> 
         user_input="B",
     )
     try:
-        second.record_output(DevTracePhase.RESPONSE, key="result", value="ok")
+        second.set_header_field("conversation_id", "conv_trace_b")
+        second.set_header_field("message_count_before", 3)
+        second.set_header_field("message_count_after", 4)
+        second.set_header_field("turn", 4)
     finally:
         second.end()
         dev_trace.clear_trace_session(second_token)
@@ -153,7 +245,10 @@ def test_dev_trace_append_only_and_mutation_filter(trace_capture: list[str]) -> 
     assert len(trace_capture) == 2
     combined = "".join(trace_capture)
     assert combined.count("END TRACE") == 2
-    assert "trace_id: conv_trace_a" in combined
-    assert "trace_id: conv_trace_b" in combined
-    assert combined.index("trace_id: conv_trace_a") < combined.index("trace_id: conv_trace_b")
-    assert "unchanged_key" not in combined
+    assert "TRACE conv_trace_a" in combined
+    assert "TRACE conv_trace_b | turn=4" in combined
+    assert combined.index("TRACE conv_trace_a") < combined.index("TRACE conv_trace_b")
+    # Missing lines should be omitted when values are unavailable.
+    first_block = trace_capture[0]
+    assert "message_count_before:" not in first_block
+    assert "message_count:" not in first_block
