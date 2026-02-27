@@ -1,9 +1,4 @@
-"""Trace logger structure regression tests.
-
-Purpose:
-- Validate required start/step/end fields in human-readable trace output.
-- Ensure decorator-based trace steps include parameters, prompt refs, and timing.
-- Guard the trace log contract consumed by debugging workflows."""
+"""Cognitive trace regression tests for `core/dev_trace.py`."""
 
 from __future__ import annotations
 
@@ -12,28 +7,6 @@ import sys
 
 
 def _ensure_paths() -> None:
-    """
-    Ensure paths.
-    
-    Purpose:
-    - Implement `_ensure_paths` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - None.
-    
-    Returns:
-    - Return value typed as `None` when available; otherwise side effects only.
-    """
-
     repo_root = Path(__file__).parent.parent
     gateway_root = str(repo_root / "openclaw-gateway")
     if gateway_root not in sys.path:
@@ -42,93 +15,126 @@ def _ensure_paths() -> None:
 
 _ensure_paths()
 
-from core import tracing
+from core import dev_trace
+from core.dev_trace import DevTracePhase
 
 
-def test_trace_logger_writes_required_structure(tmp_path: Path, monkeypatch) -> None:
-    """
-    Test scenario `test_trace_logger_writes_required_structure`.
-    
-    Purpose:
-    - Implement `test_trace_logger_writes_required_structure` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `tmp_path`: input used by this function to compute or route work.
-    - `monkeypatch`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `None` when available; otherwise side effects only.
-    """
-
+def test_dev_trace_writes_required_cognitive_structure(tmp_path: Path, monkeypatch) -> None:
     trace_file = tmp_path / "logs" / "skynet.trace.log"
-    monkeypatch.setattr(tracing, "_TRACE_FILE", trace_file)
+    monkeypatch.setattr(dev_trace, "_TRACE_FILE", trace_file)
 
-    logger = tracing.TraceLogger(
-        trace_id="conv_xxxxxxxxx",
+    session, token = dev_trace.start_trace_session(
+        trace_id="conv_trace_1",
         user_id="123456",
-        entrypoint="handle_text()",
-        input_text="user message",
+        user_input="create project called orbit",
     )
-    token = tracing.set_current_trace(logger)
     try:
-        @tracing.trace(
-            role="igris",
-            prompt="prompts/supervisor/intent_classifier.md",
-            step_name="classify_intent",
+        session.record_control_flow(
+            DevTracePhase.ENTRY,
+            file="openclaw-gateway/bot/commands.py",
+            line=2029,
+            function="handle_text",
         )
-        def classify_intent(text: str) -> dict[str, str]:
-            """
-            Classify intent.
-            
-            Purpose:
-            - Implement `classify_intent` within this module's workflow.
-            - Keep behavior localized so callers have one stable entrypoint.
-            
-            How it works:
-            - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-            - Produces deterministic return data or side effects expected by calling code.
-            
-            Why this exists:
-            - Prevents duplicated logic in upstream orchestration paths.
-            - Improves debuggability by centralizing this behavior in one named function.
-            
-            Parameters:
-            - `text`: input used by this function to compute or route work.
-            
-            Returns:
-            - Return value typed as `dict[str, str]` when available; otherwise side effects only.
-            """
-
-            return {"intent": "project.create"}
-
-        classify_intent("user message")
+        session.record_data_flow(
+            DevTracePhase.ENTRY,
+            source_name="user_input",
+            source_value="  create project called orbit  ",
+            target_name="normalized_input",
+            target_value="create project called orbit",
+        )
+        session.record_decision(
+            DevTracePhase.INTENT,
+            {
+                "classifier_confidence": 0.98,
+                "evaluated_intents": ["project.create (0.98)", "weather.query (0.01)"],
+                "selected_intent": "project.create",
+                "reasoning": "highest confidence",
+            },
+        )
+        session.record_role_enter(DevTracePhase.ROUTING, "igris")
+        session.record_role_switch(
+            DevTracePhase.ROUTING,
+            from_role="igris",
+            to_role="project_specialist",
+        )
+        session.record_state_mutation(
+            DevTracePhase.ROUTING,
+            key="conversation.active_role",
+            old_value="igris",
+            new_value="project_specialist",
+        )
+        session.record_output(
+            DevTracePhase.RESPONSE,
+            key="assistant_response",
+            value="Project created. What should it do?",
+        )
     finally:
-        logger.end()
-        tracing.clear_current_trace(token)
+        session.end()
+        dev_trace.clear_trace_session(token)
 
     content = trace_file.read_text(encoding="utf-8")
-    assert "TRACE START" in content
-    assert "trace_id: conv_xxxxxxxxx" in content
-    assert "entrypoint: handle_text()" in content
-    assert 'input: "user message"' in content
-    assert "[STEP 1] classify_intent()" in content
-    assert "file: test_trace_logger.py" in content
-    assert "path: tests/test_trace_logger.py" in content
-    assert "role: igris" in content
-    assert "prompt: prompts/supervisor/intent_classifier.md" in content
-    assert "parameters:" in content
-    assert '  text: "user message"' in content
-    assert "result:" in content
-    assert '  intent: "project.create"' in content
-    assert "execution_time:" in content
-    assert "TRACE END" in content
-    assert "total_execution_time:" in content
+    assert "TRACE conv_trace_1" in content
+    assert "USER INPUT:" in content
+    assert '  "create project called orbit"' in content
+    assert "PHASE 1 — Entry & Normalisation" in content
+    assert "PHASE 2 — Intent Resolution" in content
+    assert "PHASE 3 — Role Routing" in content
+    assert "PHASE 4 — Specialist Execution" in content
+    assert "PHASE 5 — Role Restoration" in content
+    assert "PHASE 6 — Response Construction" in content
+    assert "CONTROL FLOW" in content
+    assert "└── openclaw-gateway/bot/commands.py:2029::handle_text(...)" in content
+    assert "DATA FLOW" in content
+    assert "→ normalized_input" in content
+    assert "DECISION REASONING" in content
+    assert "[ROLE ENTER] igris" in content
+    assert "[ROLE SWITCH]" in content
+    assert "STATE MUTATION" in content
+    assert "conversation.active_role:" in content
+    assert '"igris" → "project_specialist"' in content
+    assert "OUTPUT" in content
+    assert 'assistant_response = "Project created. What should it do?"' in content
+    assert "TRACE SUMMARY" in content
+    assert "Decision Points:" in content
+    assert "Role Transitions:" in content
+    assert "igris → project_specialist" in content
+    assert "END TRACE" in content
+    assert "[STEP" not in content
+
+
+def test_dev_trace_is_append_only_and_filters_unchanged_mutations(tmp_path: Path, monkeypatch) -> None:
+    trace_file = tmp_path / "logs" / "skynet.trace.log"
+    monkeypatch.setattr(dev_trace, "_TRACE_FILE", trace_file)
+
+    first, first_token = dev_trace.start_trace_session(
+        trace_id="conv_trace_a",
+        user_id="u1",
+        user_input="A",
+    )
+    try:
+        first.record_state_mutation(
+            DevTracePhase.ENTRY,
+            key="unchanged_key",
+            old_value="same",
+            new_value="same",
+        )
+    finally:
+        first.end()
+        dev_trace.clear_trace_session(first_token)
+
+    second, second_token = dev_trace.start_trace_session(
+        trace_id="conv_trace_b",
+        user_id="u2",
+        user_input="B",
+    )
+    try:
+        second.record_output(DevTracePhase.RESPONSE, key="result", value="ok")
+    finally:
+        second.end()
+        dev_trace.clear_trace_session(second_token)
+
+    content = trace_file.read_text(encoding="utf-8")
+    assert content.count("END TRACE") == 2
+    assert "TRACE conv_trace_a" in content
+    assert "TRACE conv_trace_b" in content
+    assert "unchanged_key" not in content

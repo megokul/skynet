@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import logging
 
+from core.dev_trace import (
+    DevTracePhase,
+    trace_control_flow,
+    trace_decision,
+    trace_output,
+    trace_role_enter,
+)
 from core.prompt_library import engineering_prompt_block, render_prompt
 from core.roles.base import Role, RoleContext, RoleOutput
-from core.trace import trace_flow
-from core.tracing import trace
 
 logger = logging.getLogger("skynet.core.roles.research")
 
@@ -37,22 +42,14 @@ class ResearchSpecialistRole(Role):
     name = "research_specialist"
     _guidance = engineering_prompt_block()
 
-    @trace(
-        role="research_specialist",
-        prompt="prompts/core/roles/research_user.md",
-        step_name="research_specialist_handle",
-    )
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
         """
         Generate a research-style answer with engineering guidance prompts.
 
         This role is read-only and completes in one turn.
         """
-        trace_flow(
-            "role.research.handle.start",
-            conversation_id=context.conversation.id,
-            question=user_text,
-        )
+        trace_control_flow(DevTracePhase.SPECIALIST, stack_depth=2)
+        trace_role_enter(DevTracePhase.SPECIALIST, self.name)
         prompt = render_prompt(
             "core/roles/research_user.md",
             question=user_text[:1500],
@@ -71,17 +68,24 @@ class ResearchSpecialistRole(Role):
                 allowed_providers=None,
             )
             text = (response.text or "").strip() or "I need a bit more detail for research."
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "research specialist llm response",
+                    "selected_action": "complete",
+                    "reasoning": "response generated successfully",
+                },
+            )
         except Exception as exc:
             logger.exception("Research specialist failed")
-            trace_flow(
-                "role.research.handle.error",
-                conversation_id=context.conversation.id,
-                error=str(exc),
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "research error fallback",
+                    "selected_action": "complete",
+                    "reasoning": str(exc),
+                },
             )
             text = f"Research failed right now: {exc}"
-        trace_flow(
-            "role.research.handle.complete",
-            conversation_id=context.conversation.id,
-            response=text,
-        )
+        trace_output(DevTracePhase.SPECIALIST, key="research_response", value=text)
         return RoleOutput(command="complete", response=text)

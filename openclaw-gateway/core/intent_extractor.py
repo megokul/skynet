@@ -13,9 +13,14 @@ import logging
 import re
 from typing import Any
 
+from core.dev_trace import (
+    DevTracePhase,
+    trace_control_flow,
+    trace_data_flow,
+    trace_decision,
+    trace_output,
+)
 from core.prompt_library import commander_prompt_block, render_prompt
-from core.trace import trace_flow
-from core.tracing import trace
 
 logger = logging.getLogger("skynet.core.intent_extractor")
 
@@ -89,12 +94,13 @@ class IntentExtractor:
         self._allowed_providers = allowed_providers
         self._commander_guidance = commander_prompt_block()
 
-    @trace(
-        role="igris",
-        prompt="prompts/core/intent_extract_user.md",
-        step_name="classify_intent",
-    )
-    async def extract(self, user_text: str, *, active_role: str, active_project_id: str | None) -> ExtractedIntent:
+    async def classify_intent(
+        self,
+        user_text: str,
+        *,
+        active_role: str,
+        active_project_id: str | None,
+    ) -> ExtractedIntent:
         # Deterministic short-circuit for explicit project-start phrases.
         # This keeps routing stable even when providers return unstructured text
         # and avoids unnecessary LLM calls for obvious commands.
@@ -122,14 +128,34 @@ class IntentExtractor:
         - Return value typed as `ExtractedIntent` when available; otherwise side effects only.
         """
 
+        trace_control_flow(DevTracePhase.INTENT, stack_depth=2)
+        trace_data_flow(
+            DevTracePhase.INTENT,
+            source_name="user_input",
+            source_value=user_text,
+            target_name="intent_classifier.input",
+            target_value=user_text[:1200],
+        )
         heuristic = self._heuristic_intent(user_text)
         if heuristic is not None:
-            trace_flow(
-                "intent_extract.heuristic",
-                intent=heuristic.intent,
-                confidence=heuristic.confidence,
-                recommended_role=heuristic.recommended_role or "",
-                user_text=user_text[:300],
+            trace_decision(
+                DevTracePhase.INTENT,
+                {
+                    "classifier_confidence": heuristic.confidence,
+                    "evaluated_intents": [f"{heuristic.intent} ({heuristic.confidence:.2f})"],
+                    "selected_intent": heuristic.intent,
+                    "recommended_role": heuristic.recommended_role or "",
+                    "reasoning": "deterministic heuristic matched high-signal phrase",
+                },
+            )
+            trace_output(
+                DevTracePhase.INTENT,
+                key="intent_result",
+                value={
+                    "intent": heuristic.intent,
+                    "confidence": heuristic.confidence,
+                    "recommended_role": heuristic.recommended_role or "",
+                },
             )
             return heuristic
 
@@ -147,11 +173,14 @@ class IntentExtractor:
             commander_guidance=self._commander_guidance,
         ).strip()
         try:
-            trace_flow(
-                "intent_extract.request",
-                active_role=active_role,
-                active_project_id=active_project_id or "",
-                user_text=user_text[:300],
+            trace_decision(
+                DevTracePhase.INTENT,
+                {
+                    "routing_rule": "llm structured classification",
+                    "active_role": active_role,
+                    "active_project_id": active_project_id or "",
+                    "reasoning": "heuristic path not matched",
+                },
             )
             response = await self._provider_router.chat(
                 messages=[{"role": "user", "content": prompt}],
@@ -169,16 +198,40 @@ class IntentExtractor:
             entities = data.get("entities") if isinstance(data.get("entities"), dict) else {}
             recommended = data.get("recommended_role")
             recommended_role = str(recommended).strip() if recommended else None
-            trace_flow(
-                "intent_extract.response",
-                intent=intent,
-                confidence=confidence,
-                recommended_role=recommended_role or "",
-                entities=entities,
+            bounded_confidence = max(0.0, min(confidence, 1.0))
+            trace_data_flow(
+                DevTracePhase.INTENT,
+                source_name="model_response.text",
+                source_value=response.text or "",
+                target_name="normalized_intent",
+                target_value={
+                    "intent": intent,
+                    "confidence": bounded_confidence,
+                    "recommended_role": recommended_role or "",
+                    "entities": entities,
+                },
+            )
+            trace_decision(
+                DevTracePhase.INTENT,
+                {
+                    "classifier_confidence": bounded_confidence,
+                    "evaluated_intents": [f"{intent} ({bounded_confidence:.2f})"],
+                    "selected_intent": intent,
+                    "reasoning": "highest confidence from classifier response",
+                },
+            )
+            trace_output(
+                DevTracePhase.INTENT,
+                key="intent_result",
+                value={
+                    "intent": intent,
+                    "confidence": bounded_confidence,
+                    "recommended_role": recommended_role or "",
+                },
             )
             return ExtractedIntent(
                 intent=intent,
-                confidence=max(0.0, min(confidence, 1.0)),
+                confidence=bounded_confidence,
                 entities=entities,
                 recommended_role=recommended_role,
             )
@@ -187,13 +240,32 @@ class IntentExtractor:
             # We default to exploratory + low confidence so the caller can choose
             # conservative behavior.
             logger.exception("Intent extraction failed")
-            trace_flow(
-                "intent_extract.error",
-                error=str(exc),
-                active_role=active_role,
-                active_project_id=active_project_id or "",
+            trace_decision(
+                DevTracePhase.INTENT,
+                {
+                    "selected_intent": "exploratory",
+                    "classifier_confidence": 0.0,
+                    "reasoning": f"classifier error fallback: {exc}",
+                },
+            )
+            trace_output(
+                DevTracePhase.INTENT,
+                key="intent_result",
+                value={
+                    "intent": "exploratory",
+                    "confidence": 0.0,
+                    "recommended_role": "igris",
+                },
             )
             return ExtractedIntent(intent="exploratory", confidence=0.0, entities={}, recommended_role="igris")
+
+    async def extract(self, user_text: str, *, active_role: str, active_project_id: str | None) -> ExtractedIntent:
+        """Compatibility alias for callers still using the old method name."""
+        return await self.classify_intent(
+            user_text,
+            active_role=active_role,
+            active_project_id=active_project_id,
+        )
 
     @staticmethod
     def _heuristic_intent(user_text: str) -> ExtractedIntent | None:
@@ -210,11 +282,6 @@ class IntentExtractor:
             )
         return None
 
-    @trace(
-        role="igris",
-        prompt="prompts/core/payload_extract_user.md",
-        step_name="extract_payload",
-    )
     async def extract_payload(
         self,
         user_text: str,
@@ -259,12 +326,6 @@ class IntentExtractor:
             commander_guidance=self._commander_guidance,
         ).strip()
         try:
-            trace_flow(
-                "payload_extract.request",
-                instruction=instruction,
-                schema=schema,
-                user_text=user_text[:300],
-            )
             response = await self._provider_router.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
@@ -274,20 +335,10 @@ class IntentExtractor:
                 allowed_providers=self._allowed_providers,
             )
             data = self._load_json(response.text or "")
-            trace_flow(
-                "payload_extract.response",
-                keys=sorted(data.keys()) if isinstance(data, dict) else [],
-                payload=data if isinstance(data, dict) else {},
-            )
             return data if isinstance(data, dict) else {}
         except Exception as exc:
             # Callers expect a dict in all cases; empty dict is the safe default.
             logger.exception("Payload extraction failed")
-            trace_flow(
-                "payload_extract.error",
-                error=str(exc),
-                instruction=instruction,
-            )
             return {}
 
     @staticmethod

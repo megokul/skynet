@@ -278,7 +278,7 @@ class _FakeProjectManager:
 
 
 @pytest.mark.asyncio
-async def test_igris_delegates_to_project_specialist() -> None:
+async def test_igris_delegates_to_project_specialist(tmp_path: Path, monkeypatch) -> None:
     """
     Test scenario `test_igris_delegates_to_project_specialist`.
     
@@ -302,8 +302,12 @@ async def test_igris_delegates_to_project_specialist() -> None:
     """
 
     _ensure_paths()
+    from core import dev_trace
     from core.engine import ConversationEngine
     from db import schema
+
+    trace_file = tmp_path / "logs" / "skynet.trace.log"
+    monkeypatch.setattr(dev_trace, "_TRACE_FILE", trace_file)
 
     db = await schema.init_db(":memory:")
     try:
@@ -319,6 +323,17 @@ async def test_igris_delegates_to_project_specialist() -> None:
         conversations = await engine.list_user_conversations(telegram_user_id=1001)
         assert conversations
         assert conversations[0].active_role == "project_specialist"
+        trace_content = trace_file.read_text(encoding="utf-8")
+        assert "PHASE 1 — Entry & Normalisation" in trace_content
+        assert "PHASE 2 — Intent Resolution" in trace_content
+        assert "PHASE 3 — Role Routing" in trace_content
+        assert "PHASE 4 — Specialist Execution" in trace_content
+        assert "PHASE 5 — Role Restoration" in trace_content
+        assert "PHASE 6 — Response Construction" in trace_content
+        assert "TRACE SUMMARY" in trace_content
+        assert "[ROLE ENTER]" in trace_content
+        assert "└── " in trace_content
+        assert "[STEP" not in trace_content
     finally:
         await db.close()
 

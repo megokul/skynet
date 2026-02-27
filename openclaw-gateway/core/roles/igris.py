@@ -9,10 +9,16 @@ from __future__ import annotations
 
 import logging
 
+from core.dev_trace import (
+    DevTracePhase,
+    trace_control_flow,
+    trace_data_flow,
+    trace_decision,
+    trace_output,
+    trace_role_enter,
+)
 from core.prompt_library import commander_prompt_block, render_prompt
 from core.roles.base import Role, RoleContext, RoleOutput
-from core.trace import trace_flow
-from core.tracing import trace
 
 logger = logging.getLogger("skynet.core.roles.igris")
 
@@ -64,7 +70,6 @@ class IgrisRole(Role):
     name = "igris"
     _guidance = commander_prompt_block()
 
-    @trace(role="igris", step_name="igris_handle_message")
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
         """
         Handle message.
@@ -89,26 +94,39 @@ class IgrisRole(Role):
         - Return value typed as `RoleOutput` when available; otherwise side effects only.
         """
 
-        trace_flow(
-            "role.igris.handle.start",
-            conversation_id=context.conversation.id,
-            active_project_id=context.conversation.active_project_id or "",
-            text=user_text,
-        )
+        trace_control_flow(DevTracePhase.ROUTING, stack_depth=2)
+        trace_role_enter(DevTracePhase.ROUTING, "igris")
+        trace_output(DevTracePhase.ROUTING, key="conversation_id", value=context.conversation.id)
 
         # Fast path for pure greetings: avoid an unnecessary LLM round trip for
         # a deterministic response.
         lowered = (user_text or "").strip().lower()
         if lowered in {"hi", "hello", "hey", "yo"}:
+            trace_decision(
+                DevTracePhase.ROUTING,
+                {
+                    "routing_rule": "deterministic greeting fast path",
+                    "selected_action": "respond",
+                    "reasoning": "simple greeting does not require specialist",
+                },
+            )
             return RoleOutput(command="respond", response="Igris online. How should we proceed?")
 
         extractor = context.intent_extractor
         if extractor is None:
+            trace_decision(
+                DevTracePhase.ROUTING,
+                {
+                    "routing_rule": "extractor unavailable",
+                    "selected_action": "respond",
+                    "reasoning": "cannot classify intent without extractor",
+                },
+            )
             return RoleOutput(command="respond", response="Igris is unavailable right now.")
 
         # For non-trivial messages, use the structured extractor to produce
         # intent + confidence + optional role recommendation.
-        intent = await extractor.extract(
+        intent = await extractor.classify_intent(
             user_text,
             active_role=context.conversation.active_role,
             active_project_id=context.conversation.active_project_id,
@@ -117,27 +135,25 @@ class IgrisRole(Role):
         # Delegation stays explicit and confidence-gated; low-confidence intents
         # remain with commander for direct response.
         target = self.select_specialist(intent.intent, intent.recommended_role, intent.confidence)
-        trace_flow(
-            "role.igris.intent",
-            conversation_id=context.conversation.id,
-            intent=intent.intent,
-            confidence=intent.confidence,
-            recommended_role=intent.recommended_role or "",
-            selected_target=target or "",
+        trace_data_flow(
+            DevTracePhase.ROUTING,
+            source_name="intent.classification",
+            source_value={
+                "intent": intent.intent,
+                "confidence": intent.confidence,
+                "recommended_role": intent.recommended_role or "",
+            },
+            target_name="routing.target_role",
+            target_value=target or "none",
         )
         if target:
             return RoleOutput(command="delegate", target_role=target)
 
         # Fall back to direct commander response for non-delegated intents.
         response = await self._compose_direct_response(context, intent.intent, user_text)
-        trace_flow(
-            "role.igris.respond",
-            conversation_id=context.conversation.id,
-            response=response,
-        )
+        trace_output(DevTracePhase.ROUTING, key="direct_response", value=response)
         return RoleOutput(command="respond", response=response)
 
-    @trace(role="igris", step_name="select_specialist")
     def select_specialist(self, intent_name: str, recommended_role: str | None, confidence: float) -> str | None:
         # Prefer model-recommended specialist when it is valid and confidence is
         # strong enough to avoid random role switching.
@@ -165,22 +181,49 @@ class IgrisRole(Role):
         - Return value typed as `str | None` when available; otherwise side effects only.
         """
 
+        trace_control_flow(DevTracePhase.ROUTING, stack_depth=2)
         normalized_recommended = (recommended_role or "").strip().lower()
         if normalized_recommended in _SPECIALIST_ROLES and confidence >= 0.45:
+            trace_decision(
+                DevTracePhase.ROUTING,
+                {
+                    "routing_rule": "recommended role with confidence gate",
+                    "intent": intent_name,
+                    "recommended_role": normalized_recommended,
+                    "classifier_confidence": confidence,
+                    "mapped_role": normalized_recommended,
+                },
+            )
             return normalized_recommended
 
         # Deterministic fallback mapping keeps the commander behavior stable if
         # providers omit recommended_role.
         mapped = _INTENT_ROLE_MAP.get((intent_name or "").strip().lower())
         if mapped and confidence >= 0.35:
+            trace_decision(
+                DevTracePhase.ROUTING,
+                {
+                    "routing_rule": "intent-role fallback mapping",
+                    "intent": intent_name,
+                    "recommended_role": normalized_recommended,
+                    "classifier_confidence": confidence,
+                    "mapped_role": mapped,
+                },
+            )
             return mapped
+        trace_decision(
+            DevTracePhase.ROUTING,
+            {
+                "routing_rule": "stay_with_igris",
+                "intent": intent_name,
+                "recommended_role": normalized_recommended,
+                "classifier_confidence": confidence,
+                "mapped_role": "none",
+                "reasoning": "confidence below thresholds or no mapping",
+            },
+        )
         return None
 
-    @trace(
-        role="igris",
-        prompt="prompts/core/roles/igris_direct_user.md",
-        step_name="compose_direct_response",
-    )
     async def _compose_direct_response(self, context: RoleContext, intent_name: str, user_text: str) -> str:
         """
         Compose direct response.

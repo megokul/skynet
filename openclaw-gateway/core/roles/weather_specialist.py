@@ -10,10 +10,15 @@ from __future__ import annotations
 import logging
 import aiohttp
 
+from core.dev_trace import (
+    DevTracePhase,
+    trace_control_flow,
+    trace_decision,
+    trace_output,
+    trace_role_enter,
+)
 from core.prompt_library import load_prompt
 from core.roles.base import Role, RoleContext, RoleOutput
-from core.trace import trace_flow
-from core.tracing import trace
 
 logger = logging.getLogger("skynet.core.roles.weather")
 
@@ -38,7 +43,6 @@ class WeatherSpecialistRole(Role):
     name = "weather_specialist"
     _location_extract_instruction = load_prompt("core/roles/weather_location_extract_instruction.md")
 
-    @trace(role="weather_specialist", step_name="weather_specialist_handle")
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
         """
         Weather role lifecycle:
@@ -46,42 +50,49 @@ class WeatherSpecialistRole(Role):
         2. Query geocoding and forecast endpoints.
         3. Return concise result and complete role turn.
         """
-        trace_flow(
-            "role.weather.handle.start",
-            conversation_id=context.conversation.id,
-            text=user_text,
-        )
+        trace_control_flow(DevTracePhase.SPECIALIST, stack_depth=2)
+        trace_role_enter(DevTracePhase.SPECIALIST, self.name)
         location = await self._extract_location(context, user_text)
         if not location:
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "weather requires location",
+                    "selected_action": "continue",
+                    "reasoning": "location extraction returned empty",
+                },
+            )
             return RoleOutput(command="continue", response="Which location should I check weather for?")
 
         try:
             summary = await self._fetch_weather(location)
-            trace_flow(
-                "role.weather.handle.complete",
-                conversation_id=context.conversation.id,
-                location=location,
-                summary=summary,
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "fetch weather and complete",
+                    "selected_action": "complete",
+                    "location": location,
+                    "reasoning": "location extracted successfully",
+                },
             )
+            trace_output(DevTracePhase.SPECIALIST, key="weather_summary", value=summary)
             return RoleOutput(command="complete", response=summary, result={"location": location})
         except Exception as exc:
             logger.exception("Weather fetch failed location=%s", location)
-            trace_flow(
-                "role.weather.handle.error",
-                conversation_id=context.conversation.id,
-                location=location,
-                error=str(exc),
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "weather fetch error fallback",
+                    "selected_action": "complete",
+                    "location": location,
+                    "reasoning": str(exc),
+                },
             )
             return RoleOutput(
                 command="complete",
                 response=f"I could not fetch weather for '{location}' right now: {exc}",
             )
 
-    @trace(
-        role="weather_specialist",
-        prompt="prompts/core/roles/weather_location_extract_instruction.md",
-        step_name="extract_weather_location",
-    )
     async def _extract_location(self, context: RoleContext, user_text: str) -> str:
         """
         Use structured payload extraction for location.
@@ -101,10 +112,10 @@ class WeatherSpecialistRole(Role):
         location = str(data.get("location") or "").strip()
         confidence = float(data.get("confidence") or 0.0)
         if location and confidence >= 0.45:
+            trace_output(DevTracePhase.SPECIALIST, key="weather_location", value=location)
             return location
         return (user_text or "").strip()
 
-    @trace(role="weather_specialist", step_name="fetch_weather")
     async def _fetch_weather(self, location: str) -> str:
         """
         Fetch weather via Open-Meteo APIs.

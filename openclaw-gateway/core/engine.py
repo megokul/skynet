@@ -15,14 +15,22 @@ import logging
 from typing import Any
 
 from core.conversation_manager import Conversation, ConversationManager
+from core.dev_trace import (
+    DevTracePhase,
+    clear_trace_session,
+    start_trace_session,
+    trace_control_flow,
+    trace_data_flow,
+    trace_decision,
+    trace_output,
+    trace_role_enter,
+)
 from core.inbox import InboxManager, InboxMessage
 from core.intent_extractor import IntentExtractor
 from core.roles.base import RoleContext, RoleOutput
 from core.roles.registry import build_default_registry
 from core.router import Router
 from core.scheduler import BackgroundScheduler
-from core.trace import trace_flow
-from core.tracing import clear_current_trace, trace, trace_manager
 from db import store
 
 logger = logging.getLogger("skynet.core.engine")
@@ -104,6 +112,7 @@ class ConversationEngine:
         user_profile: dict[str, Any] | None = None,
         conversation_id: str | None = None,
         entrypoint: str = "handle_text()",
+        trace_origin: dict[str, Any] | None = None,
     ) -> EngineResult:
         # Ensure user exists/up-to-date before any conversation routing so
         # conversation ownership checks remain stable.
@@ -145,19 +154,13 @@ class ConversationEngine:
             user_id=int(user["id"]),
             requested_conversation_id=conversation_id,
         )
-        trace_flow(
-            "engine.user_message.received",
-            telegram_user_id=telegram_user_id,
-            conversation_id=conversation.id,
-            text=text,
-            requested_conversation_id=conversation_id,
-        )
         reply = await self.inbox.append(
             conversation.id,
             text,
             metadata={
                 "telegram_user_id": int(telegram_user_id),
                 "entrypoint": entrypoint,
+                "trace_origin": dict(trace_origin or {}),
             },
         )
         return EngineResult(conversation_id=conversation.id, text=reply)
@@ -329,32 +332,58 @@ class ConversationEngine:
         merged_text = "\n".join(item.text for item in batch)
         telegram_user_id = ""
         entrypoint = "handle_text()"
+        trace_origin: dict[str, Any] = {}
         if batch and isinstance(batch[0].metadata, dict):
             telegram_user_id = str(batch[0].metadata.get("telegram_user_id") or "")
             entrypoint = str(batch[0].metadata.get("entrypoint") or "handle_text()")
+            maybe_trace_origin = batch[0].metadata.get("trace_origin")
+            if isinstance(maybe_trace_origin, dict):
+                trace_origin = dict(maybe_trace_origin)
 
-        trace_logger, trace_token = trace_manager.start(
+        trace_session, trace_token = start_trace_session(
             trace_id=conversation_id,
             user_id=telegram_user_id or "unknown",
-            entrypoint=entrypoint,
-            input_text=merged_text,
+            user_input=str(trace_origin.get("original_message") or merged_text),
         )
-        trace_flow(
-            "engine.batch.start",
-            conversation_id=conversation_id,
-            batch_size=len(batch),
-            merged_text=merged_text,
+        source_file = str(trace_origin.get("source_file") or "")
+        source_line = int(trace_origin.get("source_line") or 0)
+        source_function = str(trace_origin.get("source_function") or "")
+        if source_file and source_line and source_function:
+            trace_control_flow(
+                DevTracePhase.ENTRY,
+                file=source_file,
+                line=source_line,
+                function=source_function,
+                stack_depth=2,
+            )
+        trace_control_flow(DevTracePhase.ENTRY, stack_depth=2)
+        trace_data_flow(
+            DevTracePhase.ENTRY,
+            source_name="user_text.normalized",
+            source_value=str(trace_origin.get("normalized_message") or merged_text),
+            target_name="inbox.merged_text",
+            target_value=merged_text,
+        )
+        trace_output(DevTracePhase.ENTRY, key="conversation_id", value=conversation_id)
+        trace_output(DevTracePhase.ENTRY, key="entrypoint", value=entrypoint)
+        trace_decision(
+            DevTracePhase.ENTRY,
+            {
+                "batch_size": len(batch),
+                "reasoning": "coalesced inbox messages into a single turn",
+            },
         )
         try:
             conversation = await self.conversation_manager.get_conversation(conversation_id)
             if not conversation:
-                trace_flow(
-                    "engine.batch.error",
-                    conversation_id=conversation_id,
-                    reason="conversation_not_found",
+                trace_output(
+                    DevTracePhase.RESPONSE,
+                    key="error",
+                    value="conversation_not_found",
                 )
                 return "ERROR: conversation not found."
 
+            trace_role_enter(DevTracePhase.ROUTING, conversation.active_role or "igris")
             await self.conversation_manager.add_message(
                 conversation_id,
                 role="user",
@@ -371,19 +400,14 @@ class ConversationEngine:
                 content=response_text,
                 metadata={"source": "engine", "active_role": conversation.active_role},
             )
-            trace_flow(
-                "engine.batch.complete",
-                conversation_id=conversation_id,
-                response=response_text,
-                active_role=conversation.active_role,
-            )
+            trace_output(DevTracePhase.RESPONSE, key="assistant_response", value=response_text)
+            trace_output(DevTracePhase.RESPONSE, key="active_role", value=conversation.active_role)
             return response_text
         finally:
             # Always close trace even if role execution raises.
-            trace_logger.end()
-            clear_current_trace(trace_token)
+            trace_session.end()
+            clear_trace_session(trace_token)
 
-    @trace(role="engine", step_name="run")
     async def run(self, conversation: Conversation, user_text: str) -> str:
         """
         Run.
@@ -408,9 +432,16 @@ class ConversationEngine:
         - Return value typed as `str` when available; otherwise side effects only.
         """
 
+        trace_control_flow(DevTracePhase.ROUTING, stack_depth=2)
+        trace_data_flow(
+            DevTracePhase.ROUTING,
+            source_name="conversation.active_role",
+            source_value=conversation.active_role or "igris",
+            target_name="engine.selected_role",
+            target_value=conversation.active_role or "igris",
+        )
         return await self._run_role_cycle(conversation, user_text)
 
-    @trace(role="engine", step_name="select_role")
     def select_role(self, role_name: str):
         """
         Select role.
@@ -434,7 +465,10 @@ class ConversationEngine:
         - Function-specific value or side effects consumed by upstream callers.
         """
 
-        return self.role_registry.get(role_name)
+        trace_control_flow(DevTracePhase.ROUTING, stack_depth=2)
+        selected = self.role_registry.get(role_name)
+        trace_output(DevTracePhase.ROUTING, key="selected_role", value=selected.name)
+        return selected
 
     async def _run_role_cycle(self, conversation: Conversation, user_text: str) -> str:
         """
@@ -462,11 +496,16 @@ class ConversationEngine:
 
         role_name = conversation.active_role or "igris"
         role = self.select_role(role_name)
-        trace_flow(
-            "engine.role_cycle.start",
-            conversation_id=conversation.id,
-            role=role_name,
-            text=user_text,
+        trace_control_flow(DevTracePhase.ROUTING, stack_depth=2)
+        trace_role_enter(DevTracePhase.ROUTING, role_name)
+        trace_decision(
+            DevTracePhase.ROUTING,
+            {
+                "routing_rule": "conversation active role",
+                "conversation_id": conversation.id,
+                "selected_role": role_name,
+                "reasoning": "active role owns this turn",
+            },
         )
 
         context = RoleContext(
@@ -480,14 +519,8 @@ class ConversationEngine:
         )
 
         output = await role.handle_message(context, user_text)
-        trace_flow(
-            "engine.role_cycle.output",
-            conversation_id=conversation.id,
-            role=role_name,
-            command=output.command,
-            target_role=output.target_role,
-            response=output.response or "",
-        )
+        trace_output(DevTracePhase.ROUTING, key="role_output.command", value=output.command)
+        trace_output(DevTracePhase.ROUTING, key="role_output.target_role", value=output.target_role or "")
         return await self._apply_role_output(conversation, user_text, output)
 
     async def _apply_role_output(self, conversation: Conversation, user_text: str, output: RoleOutput) -> str:
@@ -521,68 +554,74 @@ class ConversationEngine:
         """
 
         command = output.command
-        trace_flow(
-            "engine.role_output.apply",
-            conversation_id=conversation.id,
-            command=command,
-            target_role=output.target_role,
+        trace_control_flow(DevTracePhase.ROUTING, stack_depth=2)
+        trace_decision(
+            DevTracePhase.ROUTING,
+            {
+                "command": command,
+                "target_role": output.target_role or "",
+                "routing_rule": "RoleOutput command protocol",
+            },
         )
 
         if command == "respond":
             text = (output.response or "").strip()
+            trace_output(DevTracePhase.RESPONSE, key="response_text", value=text or "Igris acknowledged.")
             return text or "Igris acknowledged."
 
         if command == "delegate":
             target_role = (output.target_role or "igris").strip() or "igris"
-            trace_flow(
-                "engine.role_output.delegate",
-                conversation_id=conversation.id,
-                target_role=target_role,
-                from_role=conversation.active_role,
-                text=user_text,
+            trace_role_enter(DevTracePhase.SPECIALIST, target_role)
+            trace_decision(
+                DevTracePhase.ROUTING,
+                {
+                    "routing_rule": "delegate to specialist",
+                    "from_role": conversation.active_role or "igris",
+                    "to_role": target_role,
+                    "reasoning": "igris selected specialist for intent handling",
+                },
             )
             await self.conversation_manager.set_active_role(conversation.id, target_role)
             refreshed = await self.conversation_manager.get_conversation(conversation.id)
             if not refreshed:
-                trace_flow(
-                    "engine.role_output.error",
-                    conversation_id=conversation.id,
-                    reason="state_lost_after_delegate",
+                trace_output(
+                    DevTracePhase.RESPONSE,
+                    key="error",
+                    value="state_lost_after_delegate",
                 )
                 return "ERROR: conversation state lost."
 
             specialist_output = await self.execute_specialist(refreshed, target_role, user_text)
-            trace_flow(
-                "engine.specialist.output",
-                conversation_id=conversation.id,
-                specialist_role=target_role,
-                command=specialist_output.command,
-                response=specialist_output.response or "",
-            )
+            trace_output(DevTracePhase.SPECIALIST, key="specialist.command", value=specialist_output.command)
             return await self._apply_specialist_output(refreshed, specialist_output)
 
         if command == "continue":
             text = (output.response or "").strip()
+            trace_output(DevTracePhase.RESPONSE, key="response_text", value=text or "Please continue.")
             return text or "Please continue."
 
         if command == "complete":
+            trace_decision(
+                DevTracePhase.RESTORATION,
+                {
+                    "routing_rule": "complete -> restore igris",
+                    "from_role": conversation.active_role or "unknown",
+                    "to_role": "igris",
+                },
+            )
             await self.conversation_manager.set_active_role(conversation.id, "igris")
             if output.result and output.result.get("active_project_id"):
                 await self.conversation_manager.set_active_project(
                     conversation.id,
                     str(output.result["active_project_id"]),
                 )
-            trace_flow(
-                "engine.role_output.complete",
-                conversation_id=conversation.id,
-                result=output.result or {},
-            )
             text = (output.response or "").strip()
+            trace_output(DevTracePhase.RESPONSE, key="response_text", value=text or "Task complete. Igris resumed control.")
             return text or "Task complete. Igris resumed control."
 
+        trace_output(DevTracePhase.RESPONSE, key="response_text", value="Igris could not interpret the role response.")
         return "Igris could not interpret the role response."
 
-    @trace(role="engine", step_name="execute_specialist")
     async def execute_specialist(
         self,
         conversation: Conversation,
@@ -614,6 +653,15 @@ class ConversationEngine:
         - Return value typed as `RoleOutput` when available; otherwise side effects only.
         """
 
+        trace_control_flow(DevTracePhase.SPECIALIST, stack_depth=2)
+        trace_role_enter(DevTracePhase.SPECIALIST, target_role)
+        trace_data_flow(
+            DevTracePhase.SPECIALIST,
+            source_name="delegate.target_role",
+            source_value=target_role,
+            target_name="specialist.execution_role",
+            target_value=target_role,
+        )
         specialist = self.select_role(target_role)
         spec_context = RoleContext(
             db=self.db,
@@ -624,7 +672,9 @@ class ConversationEngine:
             scheduler=self.scheduler,
             intent_extractor=self.intent_extractor,
         )
-        return await specialist.handle_message(spec_context, user_text)
+        result = await specialist.handle_message(spec_context, user_text)
+        trace_output(DevTracePhase.SPECIALIST, key="specialist_result.command", value=result.command)
+        return result
 
     async def _apply_specialist_output(self, conversation: Conversation, output: RoleOutput) -> str:
         """
@@ -650,30 +700,56 @@ class ConversationEngine:
         - Return value typed as `str` when available; otherwise side effects only.
         """
 
-        trace_flow(
-            "engine.specialist_output.apply",
-            conversation_id=conversation.id,
-            command=output.command,
-            target_role=output.target_role,
-            result=output.result or {},
+        trace_control_flow(DevTracePhase.SPECIALIST, stack_depth=2)
+        trace_decision(
+            DevTracePhase.SPECIALIST,
+            {
+                "command": output.command,
+                "target_role": output.target_role or "",
+                "result": output.result or {},
+            },
         )
         if output.command == "complete":
+            trace_decision(
+                DevTracePhase.RESTORATION,
+                {
+                    "routing_rule": "specialist complete -> restore igris",
+                    "from_role": conversation.active_role or "unknown",
+                    "to_role": "igris",
+                },
+            )
             await self.conversation_manager.set_active_role(conversation.id, "igris")
             if output.result and output.result.get("active_project_id"):
                 await self.conversation_manager.set_active_project(
                     conversation.id,
                     str(output.result["active_project_id"]),
                 )
-            return (output.response or "Task complete. Igris resumed control.").strip()
+            text = (output.response or "Task complete. Igris resumed control.").strip()
+            trace_output(DevTracePhase.RESPONSE, key="response_text", value=text)
+            return text
 
         if output.command == "continue":
-            return (output.response or "Please continue.").strip()
+            text = (output.response or "Please continue.").strip()
+            trace_output(DevTracePhase.RESPONSE, key="response_text", value=text)
+            return text
 
         if output.command == "delegate":
             # Allow specialist-to-specialist delegation but keep deterministic
             # single-hop behavior per user turn.
             target = (output.target_role or "igris").strip() or "igris"
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "specialist delegation",
+                    "from_role": conversation.active_role or "unknown",
+                    "to_role": target,
+                },
+            )
             await self.conversation_manager.set_active_role(conversation.id, target)
-            return f"Delegating to {target}."
+            text = f"Delegating to {target}."
+            trace_output(DevTracePhase.RESPONSE, key="response_text", value=text)
+            return text
 
-        return (output.response or "Igris resumed control.").strip()
+        text = (output.response or "Igris resumed control.").strip()
+        trace_output(DevTracePhase.RESPONSE, key="response_text", value=text)
+        return text

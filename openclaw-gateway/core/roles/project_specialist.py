@@ -11,9 +11,16 @@ from datetime import datetime, timezone
 import re
 import time
 
+from core.dev_trace import (
+    DevTracePhase,
+    trace_control_flow,
+    trace_data_flow,
+    trace_decision,
+    trace_output,
+    trace_role_enter,
+    trace_state_mutation,
+)
 from core.roles.base import Role, RoleContext, RoleOutput
-from core.trace import trace_flow
-from core.tracing import trace, trace_step
 from db import store
 
 _INVALID_NAMES = {
@@ -85,7 +92,6 @@ class ProjectSpecialistRole(Role):
 
     name = "project_specialist"
 
-    @trace(role="project_specialist", step_name="project_specialist_handle")
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
         """
         Main project-specialist state machine.
@@ -98,18 +104,30 @@ class ProjectSpecialistRole(Role):
         conversation = context.conversation
         pending = conversation.pending_question or {}
         pending_type = str(pending.get("type") or "")
-        trace_flow(
-            "role.project.handle.start",
-            conversation_id=conversation.id,
-            active_project_id=conversation.active_project_id or "",
-            pending_type=pending_type,
-            text=user_text,
-        )
+        trace_control_flow(DevTracePhase.SPECIALIST, stack_depth=2)
+        trace_role_enter(DevTracePhase.SPECIALIST, self.name)
+        trace_output(DevTracePhase.SPECIALIST, key="pending_type", value=pending_type)
 
         if pending_type == "need_project_name":
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "pending question continuation",
+                    "selected_action": "capture_project_name",
+                    "reasoning": "conversation is waiting for project name",
+                },
+            )
             return await self._handle_project_name(context, user_text)
 
         if pending_type == "need_project_requirements":
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "pending question continuation",
+                    "selected_action": "capture_project_requirements",
+                    "reasoning": "conversation is waiting for requirements",
+                },
+            )
             return await self._handle_requirements(context, user_text)
 
         # Explicit "start/create new project" requests should preempt active
@@ -117,7 +135,22 @@ class ProjectSpecialistRole(Role):
         if _is_new_project_intent(user_text):
             hinted_name = _extract_project_name_hint(user_text)
             if hinted_name:
+                trace_decision(
+                    DevTracePhase.SPECIALIST,
+                    {
+                        "routing_rule": "new project intent with inline name",
+                        "selected_action": "capture_project_name",
+                        "hinted_name": hinted_name,
+                    },
+                )
                 return await self._handle_project_name(context, hinted_name)
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "new project intent without name",
+                    "selected_action": "ask_for_project_name",
+                },
+            )
             await context.conversation_manager.set_pending_question(
                 conversation.id,
                 {
@@ -133,10 +166,13 @@ class ProjectSpecialistRole(Role):
             )
 
         if conversation.active_project_id:
-            trace_flow(
-                "role.project.branch.append_idea_active",
-                conversation_id=conversation.id,
-                active_project_id=conversation.active_project_id,
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "active project scope",
+                    "selected_action": "append_idea",
+                    "active_project_id": conversation.active_project_id,
+                },
             )
             return await self._append_idea_to_active(context, user_text)
 
@@ -154,7 +190,6 @@ class ProjectSpecialistRole(Role):
             response="What should I name the new project?",
         )
 
-    @trace(role="project_specialist", step_name="capture_project_name")
     async def _handle_project_name(self, context: RoleContext, user_text: str) -> RoleOutput:
         """
         Capture/validate project name and prepare requirements collection.
@@ -164,17 +199,27 @@ class ProjectSpecialistRole(Role):
         """
         conversation = context.conversation
         proposed = (user_text or "").strip().strip(".!,?;:")
+        trace_control_flow(DevTracePhase.SPECIALIST, stack_depth=2)
         if not proposed:
             return RoleOutput(command="continue", response="Please share a project name.")
 
         normalized = _slugify_name(proposed)
-        trace_flow(
-            "role.project.name.proposed",
-            conversation_id=conversation.id,
-            proposed=proposed,
-            normalized=normalized,
+        trace_data_flow(
+            DevTracePhase.SPECIALIST,
+            source_name="project_name.proposed",
+            source_value=proposed,
+            target_name="project_name.normalized",
+            target_value=normalized,
         )
         if not normalized or normalized in _INVALID_NAMES:
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "project name validation",
+                    "selected_action": "ask_for_specific_name",
+                    "reasoning": "name was ambiguous or invalid",
+                },
+            )
             return RoleOutput(
                 command="continue",
                 response="That name is too ambiguous. Please provide a specific project name.",
@@ -183,18 +228,22 @@ class ProjectSpecialistRole(Role):
         project = await store.get_project_by_name(context.db, normalized)
         if project is None:
             if context.project_manager is not None and hasattr(context.project_manager, "create_project"):
-                trace_flow(
-                    "role.project.create_project.manager",
-                    conversation_id=conversation.id,
-                    project_name=proposed,
+                trace_decision(
+                    DevTracePhase.SPECIALIST,
+                    {
+                        "routing_rule": "create project via project_manager",
+                        "project_name": proposed,
+                    },
                 )
                 project = await context.project_manager.create_project(proposed)
             else:
-                trace_flow(
-                    "role.project.create_project.store",
-                    conversation_id=conversation.id,
-                    project_name=proposed,
-                    normalized=normalized,
+                trace_decision(
+                    DevTracePhase.SPECIALIST,
+                    {
+                        "routing_rule": "create project via store fallback",
+                        "project_name": proposed,
+                        "normalized_name": normalized,
+                    },
                 )
                 project = await store.create_project(
                     context.db,
@@ -202,6 +251,15 @@ class ProjectSpecialistRole(Role):
                     display_name=proposed,
                     local_path="",
                 )
+        else:
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "reuse existing project",
+                    "project_id": project["id"],
+                    "reasoning": "matching normalized project already exists",
+                },
+            )
 
         await context.conversation_manager.set_active_project(conversation.id, project["id"])
         await context.conversation_manager.set_pending_question(
@@ -213,6 +271,7 @@ class ProjectSpecialistRole(Role):
                 "created_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+        trace_output(DevTracePhase.SPECIALIST, key="project_id", value=project["id"])
 
         return RoleOutput(
             command="continue",
@@ -223,7 +282,6 @@ class ProjectSpecialistRole(Role):
             result={"project_id": project["id"]},
         )
 
-    @trace(role="project_specialist", step_name="capture_project_requirements")
     async def _handle_requirements(self, context: RoleContext, user_text: str) -> RoleOutput:
         """
         Persist initial project requirements as both idea and description.
@@ -232,7 +290,15 @@ class ProjectSpecialistRole(Role):
         """
         conversation = context.conversation
         project_id = conversation.active_project_id
+        trace_control_flow(DevTracePhase.SPECIALIST, stack_depth=2)
         if not project_id:
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "requirements without active project",
+                    "selected_action": "ask_for_project_name",
+                },
+            )
             await context.conversation_manager.set_pending_question(
                 conversation.id,
                 {
@@ -248,15 +314,18 @@ class ProjectSpecialistRole(Role):
         if not requirements:
             return RoleOutput(command="continue", response="Please describe the project requirements.")
 
+        trace_decision(
+            DevTracePhase.SPECIALIST,
+            {
+                "routing_rule": "capture requirements",
+                "project_id": project_id,
+                "selected_action": "persist requirements and complete",
+            },
+        )
         await store.add_idea(context.db, project_id, requirements)
         await store.update_project(context.db, project_id, description=requirements)
         await context.conversation_manager.clear_pending_question(conversation.id)
-        trace_flow(
-            "role.project.requirements.captured",
-            conversation_id=conversation.id,
-            project_id=project_id,
-            requirements=requirements,
-        )
+        trace_output(DevTracePhase.SPECIALIST, key="requirements", value=requirements)
 
         return RoleOutput(
             command="complete",
@@ -274,6 +343,7 @@ class ProjectSpecialistRole(Role):
         started = time.perf_counter()
         project_id = context.conversation.active_project_id
         idea_text = (user_text or "").strip()
+        trace_control_flow(DevTracePhase.SPECIALIST, stack_depth=2)
         if not idea_text:
             return RoleOutput(command="continue", response="What idea should I add to the active project?")
 
@@ -289,26 +359,17 @@ class ProjectSpecialistRole(Role):
         except Exception:
             pass
 
-        trace_step(
-            function_name="append_project_idea",
-            file_name="project_specialist.py",
-            function_path="openclaw-gateway/core/roles/project_specialist.py",
-            role="project_specialist",
-            prompt="prompts/project_specialist/append_idea.md",
-            parameters={
-                "project_id": project_id,
-                "idea_text": idea_text,
-            },
-            state_before={"project.idea_count": before_count},
-            state_after={"project.idea_count": after_count},
-            result={"success": True},
-            execution_time_ms=(time.perf_counter() - started) * 1000.0,
+        trace_state_mutation(
+            DevTracePhase.SPECIALIST,
+            key="project.idea_count",
+            old_value=before_count,
+            new_value=after_count,
         )
-        trace_flow(
-            "role.project.idea.appended",
-            conversation_id=context.conversation.id,
-            project_id=project_id,
-            idea_text=idea_text,
+        trace_output(DevTracePhase.SPECIALIST, key="idea_text", value=idea_text)
+        trace_output(
+            DevTracePhase.SPECIALIST,
+            key="append_execution_ms",
+            value=int(round((time.perf_counter() - started) * 1000.0)),
         )
         project = await store.get_project(context.db, project_id)
         name = (project or {}).get("display_name") or (project or {}).get("name") or "the active project"

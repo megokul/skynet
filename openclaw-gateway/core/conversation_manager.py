@@ -14,6 +14,13 @@ from datetime import datetime, timedelta, timezone
 import time
 from typing import Any
 
+from core.dev_trace import (
+    DevTracePhase,
+    trace_control_flow,
+    trace_output,
+    trace_role_switch,
+    trace_state_mutation,
+)
 from core.trace import trace_flow
 from core.tracing import trace_step
 from db import store
@@ -172,30 +179,28 @@ class ConversationManager:
 
     async def set_active_role(self, conversation_id: str, role: str) -> None:
         """Switch control role for a conversation (for delegation lifecycle)."""
-        started = time.perf_counter()
         before = await self.get_conversation(conversation_id)
         resolved = (role or "igris").strip() or "igris"
+        phase = DevTracePhase.RESTORATION if resolved == "igris" else DevTracePhase.ROUTING
+        trace_control_flow(phase, stack_depth=2)
+        if before is not None:
+            trace_role_switch(
+                phase,
+                from_role=before.active_role,
+                to_role=resolved,
+            )
+            trace_state_mutation(
+                phase,
+                key="conversation.active_role",
+                old_value=before.active_role,
+                new_value=resolved,
+            )
         await store.update_conversation_session(
             self.db,
             conversation_id=conversation_id,
             active_role=resolved,
         )
-        trace_step(
-            function_name="set_active_role",
-            file_name="conversation_manager.py",
-            function_path="openclaw-gateway/core/conversation_manager.py",
-            role="state",
-            parameters={"conversation_id": conversation_id, "role": resolved},
-            state_before={"active_role": before.active_role if before else None},
-            state_after={"active_role": resolved},
-            result={"success": True},
-            execution_time_ms=(time.perf_counter() - started) * 1000.0,
-        )
-        trace_flow(
-            "conversation.role.set",
-            conversation_id=conversation_id,
-            active_role=resolved,
-        )
+        trace_output(phase, key="active_role", value=resolved)
 
     async def set_active_project(self, conversation_id: str, project_id: str | None) -> None:
         """Set or clear project scope for a conversation."""
@@ -295,7 +300,8 @@ class ConversationManager:
         We also emit trace state_before/state_after message counts to make
         timeline reconstruction straightforward during debugging.
         """
-        started = time.perf_counter()
+        phase = DevTracePhase.ENTRY if role == "user" else DevTracePhase.RESPONSE
+        trace_control_flow(phase, stack_depth=2)
         before_count = await self._count_messages(conversation_id)
         message_id = await store.add_session_message(
             self.db,
@@ -305,29 +311,14 @@ class ConversationManager:
             metadata=metadata,
         )
         after_count = before_count + 1
-        trace_step(
-            function_name="add_message",
-            file_name="conversation_manager.py",
-            function_path="openclaw-gateway/core/conversation_manager.py",
-            role="state",
-            parameters={
-                "conversation_id": conversation_id,
-                "role": role,
-                "content": content,
-            },
-            state_before={"conversation.message_count": before_count},
-            state_after={"conversation.message_count": after_count},
-            result={"message_id": message_id},
-            execution_time_ms=(time.perf_counter() - started) * 1000.0,
+        trace_state_mutation(
+            phase,
+            key="conversation.message_count",
+            old_value=before_count,
+            new_value=after_count,
         )
-        trace_flow(
-            "conversation.message.add",
-            conversation_id=conversation_id,
-            message_id=message_id,
-            role=role,
-            content=content,
-            metadata=metadata or {},
-        )
+        trace_output(phase, key="message_id", value=message_id)
+        trace_output(phase, key="message_role", value=role)
         return message_id
 
     async def list_messages(self, conversation_id: str, limit: int = 100) -> list[dict[str, Any]]:

@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import logging
 
+from core.dev_trace import (
+    DevTracePhase,
+    trace_control_flow,
+    trace_decision,
+    trace_output,
+    trace_role_enter,
+)
 from core.roles.base import Role, RoleContext, RoleOutput
-from core.trace import trace_flow
-from core.tracing import trace
 from db import store
 
 logger = logging.getLogger("skynet.core.roles.coding")
@@ -36,7 +41,6 @@ class CodingSpecialistRole(Role):
 
     name = "coding_specialist"
 
-    @trace(role="coding_specialist", step_name="coding_specialist_handle")
     async def handle_message(self, context: RoleContext, user_text: str) -> RoleOutput:
         """
         Queue coding execution for the active project.
@@ -45,13 +49,18 @@ class CodingSpecialistRole(Role):
         execution work to the scheduler and returns a queued-job acknowledgement.
         """
         project_id = context.conversation.active_project_id
-        trace_flow(
-            "role.coding.handle.start",
-            conversation_id=context.conversation.id,
-            project_id=project_id or "",
-            instructions=user_text,
-        )
+        trace_control_flow(DevTracePhase.SPECIALIST, stack_depth=2)
+        trace_role_enter(DevTracePhase.SPECIALIST, self.name)
+        trace_output(DevTracePhase.SPECIALIST, key="active_project_id", value=project_id or "")
         if not project_id:
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "require active project",
+                    "selected_action": "continue",
+                    "reasoning": "no active project scope available",
+                },
+            )
             return RoleOutput(
                 command="continue",
                 response="No active project in this conversation. Ask Igris to create or select a project first.",
@@ -59,6 +68,14 @@ class CodingSpecialistRole(Role):
 
         project = await store.get_project(context.db, project_id)
         if not project:
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "project existence check",
+                    "selected_action": "complete",
+                    "reasoning": "active project row missing",
+                },
+            )
             return RoleOutput(command="complete", response="The active project no longer exists.")
 
         instructions = (user_text or "").strip()
@@ -70,20 +87,26 @@ class CodingSpecialistRole(Role):
                 requested_by="coding_specialist",
                 instructions=instructions,
             )
-            trace_flow(
-                "role.coding.job.queued",
-                conversation_id=context.conversation.id,
-                project_id=project_id,
-                job_id=job_id or "",
-                instructions=instructions,
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "queue background coding job",
+                    "project_id": project_id,
+                    "selected_action": "complete",
+                    "reasoning": "scheduler available",
+                },
             )
+            trace_output(DevTracePhase.SPECIALIST, key="queued_job_id", value=job_id or "")
         else:
             logger.warning("Coding scheduler unavailable for project_id=%s", project_id)
-            trace_flow(
-                "role.coding.job.not_queued",
-                conversation_id=context.conversation.id,
-                project_id=project_id,
-                reason="scheduler_unavailable",
+            trace_decision(
+                DevTracePhase.SPECIALIST,
+                {
+                    "routing_rule": "queue background coding job",
+                    "project_id": project_id,
+                    "selected_action": "complete",
+                    "reasoning": "scheduler unavailable",
+                },
             )
 
         return RoleOutput(
