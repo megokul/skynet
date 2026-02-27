@@ -521,8 +521,8 @@ class DevTraceSession:
             for key, value in node.context.items():
                 lines.append(f"{child_prefix}│  {key}={_format_value(value)}")
 
-        # decision block
-        if node.decision:
+        # decision / prompt block — render if either data is present
+        if node.decision or node.prompts:
             lines.append(f"{child_prefix}│")
             lines.extend(
                 _render_decision_box(
