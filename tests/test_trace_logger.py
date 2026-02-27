@@ -1,7 +1,8 @@
-"""Cognitive trace regression tests for `core/dev_trace.py`."""
+"""Cognitive trace regression tests for mirror-only `core/dev_trace.py`."""
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import sys
 
@@ -19,60 +20,93 @@ from core import dev_trace
 from core.dev_trace import DevTracePhase
 
 
-def test_dev_trace_writes_required_cognitive_structure(tmp_path: Path, monkeypatch) -> None:
-    trace_file = tmp_path / "logs" / "skynet.trace.log"
-    monkeypatch.setattr(dev_trace, "_TRACE_FILE", trace_file)
+class _CaptureHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.lines: list[str] = []
 
-    session, token = dev_trace.start_trace_session(
-        trace_id="conv_trace_1",
-        user_id="123456",
-        user_input="create project called orbit",
-    )
+    def emit(self, record: logging.LogRecord) -> None:
+        self.lines.append(record.getMessage())
+
+
+def _capture_mirror_text() -> tuple[logging.Logger, _CaptureHandler, list[logging.Handler], int, bool]:
+    logger = logging.getLogger("skynet.trace.mirror")
+    old_handlers = list(logger.handlers)
+    old_level = logger.level
+    old_propagate = logger.propagate
+    handler = _CaptureHandler()
+    logger.handlers = [handler]
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+    return logger, handler, old_handlers, old_level, old_propagate
+
+
+def _restore_mirror_logger(
+    logger: logging.Logger,
+    old_handlers: list[logging.Handler],
+    old_level: int,
+    old_propagate: bool,
+) -> None:
+    logger.handlers = old_handlers
+    logger.setLevel(old_level)
+    logger.propagate = old_propagate
+
+
+def test_dev_trace_writes_required_cognitive_structure() -> None:
+    logger, handler, old_handlers, old_level, old_propagate = _capture_mirror_text()
     try:
-        session.record_control_flow(
-            DevTracePhase.ENTRY,
-            file="openclaw-gateway/bot/commands.py",
-            line=2029,
-            function="handle_text",
+        session, token = dev_trace.start_trace_session(
+            trace_id="conv_trace_1",
+            user_id="123456",
+            user_input="create project called orbit",
         )
-        session.record_data_flow(
-            DevTracePhase.ENTRY,
-            source_name="user_input",
-            source_value="  create project called orbit  ",
-            target_name="normalized_input",
-            target_value="create project called orbit",
-        )
-        session.record_decision(
-            DevTracePhase.INTENT,
-            {
-                "classifier_confidence": 0.98,
-                "evaluated_intents": ["project.create (0.98)", "weather.query (0.01)"],
-                "selected_intent": "project.create",
-                "reasoning": "highest confidence",
-            },
-        )
-        session.record_role_enter(DevTracePhase.ROUTING, "igris")
-        session.record_role_switch(
-            DevTracePhase.ROUTING,
-            from_role="igris",
-            to_role="project_specialist",
-        )
-        session.record_state_mutation(
-            DevTracePhase.ROUTING,
-            key="conversation.active_role",
-            old_value="igris",
-            new_value="project_specialist",
-        )
-        session.record_output(
-            DevTracePhase.RESPONSE,
-            key="assistant_response",
-            value="Project created. What should it do?",
-        )
+        try:
+            session.record_control_flow(
+                DevTracePhase.ENTRY,
+                file="openclaw-gateway/bot/commands.py",
+                line=2029,
+                function="handle_text",
+            )
+            session.record_data_flow(
+                DevTracePhase.ENTRY,
+                source_name="user_input",
+                source_value="  create project called orbit  ",
+                target_name="normalized_input",
+                target_value="create project called orbit",
+            )
+            session.record_decision(
+                DevTracePhase.INTENT,
+                {
+                    "classifier_confidence": 0.98,
+                    "evaluated_intents": ["project.create (0.98)", "weather.query (0.01)"],
+                    "selected_intent": "project.create",
+                    "reasoning": "highest confidence",
+                },
+            )
+            session.record_role_enter(DevTracePhase.ROUTING, "igris")
+            session.record_role_switch(
+                DevTracePhase.ROUTING,
+                from_role="igris",
+                to_role="project_specialist",
+            )
+            session.record_state_mutation(
+                DevTracePhase.ROUTING,
+                key="conversation.active_role",
+                old_value="igris",
+                new_value="project_specialist",
+            )
+            session.record_output(
+                DevTracePhase.RESPONSE,
+                key="assistant_response",
+                value="Project created. What should it do?",
+            )
+        finally:
+            session.end()
+            dev_trace.clear_trace_session(token)
     finally:
-        session.end()
-        dev_trace.clear_trace_session(token)
+        _restore_mirror_logger(logger, old_handlers, old_level, old_propagate)
 
-    content = trace_file.read_text(encoding="utf-8")
+    content = "\n".join(handler.lines)
     assert "TRACE conv_trace_1" in content
     assert "USER INPUT:" in content
     assert '  "create project called orbit"' in content
@@ -102,38 +136,39 @@ def test_dev_trace_writes_required_cognitive_structure(tmp_path: Path, monkeypat
     assert "[STEP" not in content
 
 
-def test_dev_trace_is_append_only_and_filters_unchanged_mutations(tmp_path: Path, monkeypatch) -> None:
-    trace_file = tmp_path / "logs" / "skynet.trace.log"
-    monkeypatch.setattr(dev_trace, "_TRACE_FILE", trace_file)
-
-    first, first_token = dev_trace.start_trace_session(
-        trace_id="conv_trace_a",
-        user_id="u1",
-        user_input="A",
-    )
+def test_dev_trace_is_append_only_and_filters_unchanged_mutations() -> None:
+    logger, handler, old_handlers, old_level, old_propagate = _capture_mirror_text()
     try:
-        first.record_state_mutation(
-            DevTracePhase.ENTRY,
-            key="unchanged_key",
-            old_value="same",
-            new_value="same",
+        first, first_token = dev_trace.start_trace_session(
+            trace_id="conv_trace_a",
+            user_id="u1",
+            user_input="A",
         )
-    finally:
-        first.end()
-        dev_trace.clear_trace_session(first_token)
+        try:
+            first.record_state_mutation(
+                DevTracePhase.ENTRY,
+                key="unchanged_key",
+                old_value="same",
+                new_value="same",
+            )
+        finally:
+            first.end()
+            dev_trace.clear_trace_session(first_token)
 
-    second, second_token = dev_trace.start_trace_session(
-        trace_id="conv_trace_b",
-        user_id="u2",
-        user_input="B",
-    )
-    try:
-        second.record_output(DevTracePhase.RESPONSE, key="result", value="ok")
+        second, second_token = dev_trace.start_trace_session(
+            trace_id="conv_trace_b",
+            user_id="u2",
+            user_input="B",
+        )
+        try:
+            second.record_output(DevTracePhase.RESPONSE, key="result", value="ok")
+        finally:
+            second.end()
+            dev_trace.clear_trace_session(second_token)
     finally:
-        second.end()
-        dev_trace.clear_trace_session(second_token)
+        _restore_mirror_logger(logger, old_handlers, old_level, old_propagate)
 
-    content = trace_file.read_text(encoding="utf-8")
+    content = "\n".join(handler.lines)
     assert content.count("END TRACE") == 2
     assert "TRACE conv_trace_a" in content
     assert "TRACE conv_trace_b" in content

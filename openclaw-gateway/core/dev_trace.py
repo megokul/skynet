@@ -1,8 +1,10 @@
 """
 Development-focused cognitive trace system for orchestration boundaries.
 
-This module buffers one trace per conversation turn and appends the rendered
-trace block to `logs/skynet.trace.log` only at conversation end.
+This module buffers one trace per conversation turn and emits the rendered
+trace block at conversation end through the trace mirror channel
+(`skynet.trace.mirror`), which can be SSH-mirrored to worker paths such as
+`E:\\SKYNET-SANDBOX\\logs\\skynet.trace.log`.
 """
 
 from __future__ import annotations
@@ -13,13 +15,13 @@ from datetime import datetime, timezone
 from enum import IntEnum
 import inspect
 import json
+import logging
 from pathlib import Path
 import threading
 import time
 from typing import Any
 
 
-_TRACE_FILE = Path(__file__).resolve().parents[1] / "logs" / "skynet.trace.log"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _WRITE_LOCK = threading.Lock()
 _TRACE_CONTEXT: contextvars.ContextVar["DevTraceSession | None"] = contextvars.ContextVar(
@@ -488,10 +490,29 @@ def trace_role_switch(phase: DevTracePhase | int, *, from_role: str, to_role: st
 
 
 def _append_trace_block(text: str) -> None:
-    _TRACE_FILE.parent.mkdir(parents=True, exist_ok=True)
     with _WRITE_LOCK:
-        with _TRACE_FILE.open("a", encoding="utf-8") as handle:
-            handle.write(text)
+        _emit_mirror(text)
+
+
+def _emit_mirror(text: str) -> None:
+    """
+    Mirror trace text through configured sink handlers (for SSH/S3 live copies).
+
+    This preserves live remote trace visibility when `skynet.trace.mirror`
+    handlers are configured by `logging_setup.configure_logging(...)`.
+    """
+    mirror_logger = logging.getLogger("skynet.trace.mirror")
+    if not mirror_logger.handlers:
+        return
+    payload = text.replace("\r\n", "\n")
+    if not payload.strip():
+        return
+    try:
+        for line in payload.split("\n"):
+            mirror_logger.info("%s", line)
+    except Exception:
+        # Mirror failures should never break primary local trace persistence.
+        return
 
 
 def _to_repo_relative(path: str) -> str:

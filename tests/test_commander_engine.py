@@ -1,4 +1,4 @@
-"""Integration-style tests for commander engine and specialist delegation flows.
+﻿"""Integration-style tests for commander engine and specialist delegation flows.
 
 Purpose:
 - Validate role delegation, conversation switching, and project lifecycle behavior.
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+import logging
 from pathlib import Path
 import sys
 
@@ -278,7 +279,7 @@ class _FakeProjectManager:
 
 
 @pytest.mark.asyncio
-async def test_igris_delegates_to_project_specialist(tmp_path: Path, monkeypatch) -> None:
+async def test_igris_delegates_to_project_specialist() -> None:
     """
     Test scenario `test_igris_delegates_to_project_specialist`.
     
@@ -302,12 +303,25 @@ async def test_igris_delegates_to_project_specialist(tmp_path: Path, monkeypatch
     """
 
     _ensure_paths()
-    from core import dev_trace
     from core.engine import ConversationEngine
     from db import schema
 
-    trace_file = tmp_path / "logs" / "skynet.trace.log"
-    monkeypatch.setattr(dev_trace, "_TRACE_FILE", trace_file)
+    class _CaptureHandler(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__(level=logging.DEBUG)
+            self.lines: list[str] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.lines.append(record.getMessage())
+
+    mirror_logger = logging.getLogger("skynet.trace.mirror")
+    old_handlers = list(mirror_logger.handlers)
+    old_level = mirror_logger.level
+    old_propagate = mirror_logger.propagate
+    capture_handler = _CaptureHandler()
+    mirror_logger.handlers = [capture_handler]
+    mirror_logger.setLevel(logging.DEBUG)
+    mirror_logger.propagate = False
 
     db = await schema.init_db(":memory:")
     try:
@@ -323,7 +337,7 @@ async def test_igris_delegates_to_project_specialist(tmp_path: Path, monkeypatch
         conversations = await engine.list_user_conversations(telegram_user_id=1001)
         assert conversations
         assert conversations[0].active_role == "project_specialist"
-        trace_content = trace_file.read_text(encoding="utf-8")
+        trace_content = "\n".join(capture_handler.lines)
         assert "PHASE 1 — Entry & Normalisation" in trace_content
         assert "PHASE 2 — Intent Resolution" in trace_content
         assert "PHASE 3 — Role Routing" in trace_content
@@ -335,6 +349,9 @@ async def test_igris_delegates_to_project_specialist(tmp_path: Path, monkeypatch
         assert "└── " in trace_content
         assert "[STEP" not in trace_content
     finally:
+        mirror_logger.handlers = old_handlers
+        mirror_logger.setLevel(old_level)
+        mirror_logger.propagate = old_propagate
         await db.close()
 
 
@@ -705,3 +722,4 @@ async def test_inbox_messages_are_sequential_and_not_dropped() -> None:
         assert r2.text == "ack:B"
     finally:
         await db.close()
+
