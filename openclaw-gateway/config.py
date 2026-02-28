@@ -90,7 +90,7 @@ OPENROUTER_FALLBACK_MODELS: str = _s("OPENROUTER_FALLBACK_MODELS", "")
 DEEPSEEK_API_KEY: str           = _s("DEEPSEEK_API_KEY")
 OPENAI_API_KEY: str             = _s("OPENAI_API_KEY")
 ANTHROPIC_API_KEY: str          = _s("ANTHROPIC_API_KEY")
-OLLAMA_DEFAULT_MODEL: str       = _s("OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:7b")
+OLLAMA_DEFAULT_MODEL: str       = _s("OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:32b-instruct-q4_K_M")
 AI_PROVIDER_PRIORITY: str       = _s(
     "AI_PROVIDER_PRIORITY",
     "ollama,gemini,claude,openai,deepseek,openrouter,groq",
