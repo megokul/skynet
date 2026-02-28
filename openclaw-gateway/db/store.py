@@ -79,17 +79,19 @@ async def create_project(
     user_id: int,
     name: str,
     project_type: str = "Other",
+    description: str = "",
 ) -> dict[str, Any]:
     """Create a new project and return its row."""
     project_id = _new_id()
     now = _now()
     await db.execute(
         """
-        INSERT INTO projects (id, user_id, name, project_type, status,
-                              created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'ideation', ?, ?)
+        INSERT INTO projects (id, user_id, name, project_type, description,
+                              status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'approved', ?, ?)
         """,
-        (project_id, int(user_id), name.strip(), project_type.strip(), now, now),
+        (project_id, int(user_id), name.strip(), project_type.strip(),
+         description.strip(), now, now),
     )
     await db.commit()
     return await get_project(db, project_id)

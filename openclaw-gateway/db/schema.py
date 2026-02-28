@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS projects (
     user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name         TEXT    NOT NULL,
     project_type TEXT    NOT NULL DEFAULT 'Other',
+    description  TEXT    NOT NULL DEFAULT '',
     status       TEXT    NOT NULL DEFAULT 'ideation',
     created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -73,4 +74,14 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
     db.row_factory = aiosqlite.Row
     await db.executescript(SCHEMA_SQL)
     await db.commit()
+
+    # Migration: add description column if it doesn't exist yet.
+    try:
+        await db.execute(
+            "ALTER TABLE projects ADD COLUMN description TEXT NOT NULL DEFAULT ''"
+        )
+        await db.commit()
+    except Exception:
+        pass  # column already exists — fine
+
     return db

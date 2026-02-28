@@ -24,6 +24,12 @@ CB_TYPE_LIBRARY  = "type:library"
 CB_TYPE_BOT      = "type:bot"
 CB_TYPE_OTHER    = "type:other"
 
+CB_PLAN_APPROVE  = "plan:approve"
+CB_PLAN_CHANGES  = "plan:changes"
+
+CB_GITHUB_YES    = "github:yes"
+CB_GITHUB_NO     = "github:no"
+
 # Human-readable label for each project type callback
 PROJECT_TYPE_LABELS: dict[str, str] = {
     CB_TYPE_WEB:     "Web App",
@@ -84,4 +90,24 @@ def back_to_main() -> InlineKeyboardMarkup:
     """Minimal back button used on 'Coming soon' and error screens."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU)],
+    ])
+
+
+def plan_review() -> InlineKeyboardMarkup:
+    """Shown after the Project Specialist generates a plan."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Approve",           callback_data=CB_PLAN_APPROVE),
+            InlineKeyboardButton("✏️ Request Changes",   callback_data=CB_PLAN_CHANGES),
+        ],
+    ])
+
+
+def github_choice() -> InlineKeyboardMarkup:
+    """Ask the user whether to create a GitHub repo."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Yes, create repo", callback_data=CB_GITHUB_YES),
+            InlineKeyboardButton("⬛ No thanks",         callback_data=CB_GITHUB_NO),
+        ],
     ])

@@ -98,3 +98,7 @@ AI_PROVIDER_PRIORITY: str       = _s(
 
 # ── Web Search ────────────────────────────────────────────────────────────────
 BRAVE_SEARCH_API_KEY: str = _s("BRAVE_SEARCH_API_KEY")
+
+# ── GitHub ─────────────────────────────────────────────────────────────────────
+GITHUB_PAT: str      = _s("GITHUB_PAT")       # Personal Access Token (repo scope)
+GITHUB_USERNAME: str = _s("GITHUB_USERNAME")  # Owner username for repo creation
