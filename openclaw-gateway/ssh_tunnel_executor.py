@@ -18,7 +18,7 @@ from typing import Any
 
 import paramiko
 
-import bot_config as bot_cfg
+import config as bot_cfg
 from search.web_search import WebSearcher
 
 

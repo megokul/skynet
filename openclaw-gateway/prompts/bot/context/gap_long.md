@@ -1,1 +1,0 @@
-[Session gap: several hours{project_suffix}] No previous conversation is loaded. If the user's intent is ambiguous - are they continuing or starting fresh? - ask one short natural question. If their message clearly signals something new, proceed.

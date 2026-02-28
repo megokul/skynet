@@ -23,7 +23,7 @@ from typing import Any
 import websockets
 from websockets.asyncio.server import ServerConnection
 
-import gateway_config as cfg
+import config as cfg
 
 logger = logging.getLogger("skynet.gateway")
 

@@ -15,8 +15,8 @@ RestartSec=5
 # Environment — set the shared auth token here.
 # Or use EnvironmentFile for secrets:
 #   EnvironmentFile=/home/ubuntu/openclaw-gateway/.env
-Environment=OPENCLAW_AUTH_TOKEN=REPLACE_ME_WITH_REAL_TOKEN
-Environment=OPENCLAW_LOG_LEVEL=INFO
+Environment=SKYNET_AUTH_TOKEN=REPLACE_ME_WITH_REAL_TOKEN
+Environment=SKYNET_LOG_LEVEL=INFO
 
 # Security hardening
 NoNewPrivileges=true

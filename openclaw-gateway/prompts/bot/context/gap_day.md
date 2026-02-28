@@ -1,1 +1,0 @@
-[Session gap: 1+ days{project_suffix}] No previous conversation is loaded. Greet the user naturally and mention their last project once if it seems relevant. Be ready for a fresh start - do not assume they want to continue.

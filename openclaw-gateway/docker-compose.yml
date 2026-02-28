@@ -4,44 +4,40 @@ services:
     container_name: openclaw-gateway
     restart: unless-stopped
     ports:
-      - "8765:8765"   # WebSocket (agent connection)
-      - "8766:8766"   # HTTP API (for external SKYNET if needed)
+      - "8765:8765"   # WebSocket (worker/CLAW connects here)
+      - "8766:8766"   # HTTP API  (loopback dispatch — expose only if needed externally)
     environment:
-      # Required
-      - OPENCLAW_AUTH_TOKEN
-      - TELEGRAM_BOT_TOKEN
-      # AI providers (optional - set whichever you have)
+      # ── Required ────────────────────────────────────────────────────────────
+      - SKYNET_AUTH_TOKEN          # shared secret — must match CLAW worker
+      - TELEGRAM_BOT_TOKEN         # from BotFather
+      # ── Bot access control ──────────────────────────────────────────────────
+      - TELEGRAM_ALLOWED_USER_ID   # set to your Telegram user ID (0 = allow all)
+      # ── TLS (paths are inside the container) ────────────────────────────────
+      - SKYNET_TLS_CERT=/app/certs/cert.pem
+      - SKYNET_TLS_KEY=/app/certs/key.pem
+      # ── HTTP API ────────────────────────────────────────────────────────────
+      - SKYNET_HTTP_HOST=${SKYNET_HTTP_HOST:-0.0.0.0}
+      - SKYNET_HTTP_PORT=${SKYNET_HTTP_PORT:-8766}
+      # ── Logging ─────────────────────────────────────────────────────────────
+      - SKYNET_LOG_LEVEL=${SKYNET_LOG_LEVEL:-INFO}
+      - SKYNET_LOG_LOCAL_FILES=${SKYNET_LOG_LOCAL_FILES:-0}
+      - SKYNET_LOG_SSH_MIRROR=${SKYNET_LOG_SSH_MIRROR:-0}
+      - SKYNET_LOG_SSH_HOST
+      - SKYNET_LOG_SSH_PORT
+      - SKYNET_LOG_SSH_USER
+      - SKYNET_LOG_SSH_KEY_PATH
+      - SKYNET_LOG_SSH_PASSWORD
+      - SKYNET_TRACE_MIRROR_LOG_DIR
+      # ── AI providers (set whichever you have) ───────────────────────────────
       - GOOGLE_AI_API_KEY
       - GROQ_API_KEY
       - OPENROUTER_API_KEY
       - DEEPSEEK_API_KEY
       - OPENAI_API_KEY
       - ANTHROPIC_API_KEY
-      # Search
+      # ── Web search ──────────────────────────────────────────────────────────
       - BRAVE_SEARCH_API_KEY
-      # GitHub
-      - GITHUB_PAT
-      - GITHUB_USERNAME
-      # AWS S3
-      - AWS_ACCESS_KEY_ID
-      - AWS_SECRET_ACCESS_KEY
-      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
-      - AWS_REGION=${AWS_REGION:-us-east-1}
-      - SKYNET_S3_BUCKET
-      # TLS (paths inside container)
-      - OPENCLAW_TLS_CERT=/app/certs/cert.pem
-      - OPENCLAW_TLS_KEY=/app/certs/key.pem
-      # Gateway HTTP bind (set 0.0.0.0 for container-to-container access)
-      - OPENCLAW_HTTP_HOST=${OPENCLAW_HTTP_HOST:-0.0.0.0}
-      - OPENCLAW_HTTP_PORT=${OPENCLAW_HTTP_PORT:-8766}
-      # Logging
-      - OPENCLAW_LOG_LEVEL=${OPENCLAW_LOG_LEVEL:-INFO}
-      - SKYNET_LOG_ENABLE_LOCAL_FILES=${SKYNET_LOG_ENABLE_LOCAL_FILES:-0}
-      - SKYNET_LOG_ENABLE_SSH_MIRROR=${SKYNET_LOG_ENABLE_SSH_MIRROR:-1}
-      - SKYNET_LOG_S3_ENABLED=${SKYNET_LOG_S3_ENABLED:-1}
-      - SKYNET_LOG_S3_PREFIX=${SKYNET_LOG_S3_PREFIX:-openclaw/logs}
-      - SKYNET_TRACE_MIRROR_LOG_DIR=${SKYNET_TRACE_MIRROR_LOG_DIR:-E:\\SKYNET-SANDBOX\\logs}
-      # Optional SSH tunnel fallback (no local worker install on laptop)
+      # ── SSH tunnel fallback (optional — for worker-less laptop access) ──────
       - OPENCLAW_EXECUTION_MODE
       - OPENCLAW_SSH_FALLBACK_ENABLED
       - OPENCLAW_SSH_HOST
@@ -68,6 +64,7 @@ services:
       - gateway-data:/app/data
       - ${OPENCLAW_TLS_CERT_DIR:-./certs}:/app/certs:ro
       - ${OPENCLAW_SSH_KEY_FILE:-/dev/null}:${OPENCLAW_SSH_KEY_PATH:-/app/keys/laptop_ed25519}:ro
+
 volumes:
   gateway-data:
     driver: local

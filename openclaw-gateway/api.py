@@ -27,8 +27,8 @@ from typing import Any
 import aiosqlite
 from aiohttp import web
 
-import bot_config
-import gateway_config as cfg
+import config as bot_config
+import config as cfg
 from gateway import (
     is_agent_connected,
     send_action,
