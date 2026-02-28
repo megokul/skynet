@@ -93,7 +93,7 @@ ANTHROPIC_API_KEY: str          = _s("ANTHROPIC_API_KEY")
 OLLAMA_DEFAULT_MODEL: str       = _s("OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:7b")
 AI_PROVIDER_PRIORITY: str       = _s(
     "AI_PROVIDER_PRIORITY",
-    "claude,gemini,openai,deepseek,openrouter,groq,ollama",
+    "ollama,gemini,claude,openai,deepseek,openrouter,groq",
 )
 
 # ── Web Search ────────────────────────────────────────────────────────────────
