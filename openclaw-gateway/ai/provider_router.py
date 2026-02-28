@@ -252,7 +252,7 @@ class ProviderRouter:
                 provider.record_usage(response.input_tokens + response.output_tokens)
                 await store.record_provider_usage(
                     self.db,
-                    provider.name,
+                    provider_name=provider.name,
                     requests=1,
                     tokens=response.input_tokens + response.output_tokens,
                 )
@@ -280,7 +280,7 @@ class ProviderRouter:
                         )
 
                 await store.record_provider_usage(
-                    self.db, provider.name, requests=0, tokens=0, error=True,
+                    self.db, provider_name=provider.name, requests=0, tokens=0, error=True,
                 )
                 last_error = exc
                 continue
