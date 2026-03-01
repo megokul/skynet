@@ -302,7 +302,7 @@ async def _coding_loop(
         if do_github:
             await app.bot.send_message(chat_id, "🔧 Setting up GitHub repo and project folder…")
             try:
-                # Step 1: init git so gh_create_repo has a repo to push.
+                # Step 1: git init.
                 init_result = await send_action(
                     "git_init",
                     {"working_dir": working_dir},
@@ -314,7 +314,33 @@ async def _coding_loop(
                 if _init_inner.get("returncode", 0) != 0:
                     raise RuntimeError(_init_inner.get("stderr") or _init_inner.get("stdout") or "git init failed")
 
-                # Step 2: create GitHub repo and push.
+                # Step 2: write a README so the initial push has a commit.
+                readme_content = (
+                    f"# {project['name']}\n\n"
+                    f"{project.get('description') or project.get('project_type', '')}\n\n"
+                    "_Created by SKYNET_\n"
+                )
+                readme_path = f"{working_dir}/README.md"
+                await send_action(
+                    "file_write",
+                    {"path": readme_path, "content": readme_content},
+                    confirmed=True,
+                )
+
+                # Step 3: stage + commit README.
+                await send_action("git_add_all", {"working_dir": working_dir}, confirmed=True)
+                commit_result = await send_action(
+                    "git_commit",
+                    {"working_dir": working_dir, "message": "Initial commit"},
+                    confirmed=True,
+                )
+                _commit_inner = commit_result.get("result", {})
+                if _commit_inner.get("returncode", 0) != 0:
+                    raise RuntimeError(
+                        _commit_inner.get("stderr") or _commit_inner.get("stdout") or "git commit failed"
+                    )
+
+                # Step 4: create GitHub repo and push the initial commit.
                 gh_result = await send_action(
                     "gh_create_repo",
                     {
@@ -331,7 +357,7 @@ async def _coding_loop(
                 _gh_inner = gh_result.get("result", {})
                 if _gh_inner.get("returncode", 0) != 0:
                     raise RuntimeError(_gh_inner.get("stderr") or _gh_inner.get("stdout") or "gh_create_repo failed")
-                await app.bot.send_message(chat_id, "✅ GitHub repo created.")
+                await app.bot.send_message(chat_id, "✅ GitHub repo created and pushed.")
             except Exception as exc:
                 await app.bot.send_message(
                     chat_id, f"⚠️ GitHub setup failed: {exc}\nContinuing anyway…"
