@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS projects (
     id           TEXT    PRIMARY KEY,
     user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name         TEXT    NOT NULL,
+    display_name TEXT    NOT NULL DEFAULT '',
     project_type TEXT    NOT NULL DEFAULT 'Other',
     description  TEXT    NOT NULL DEFAULT '',
     status       TEXT    NOT NULL DEFAULT 'ideation',
@@ -78,6 +79,7 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
     _migrations = [
         # projects table — columns added after the initial rewrite
         "ALTER TABLE projects ADD COLUMN description   TEXT    NOT NULL DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN display_name  TEXT    NOT NULL DEFAULT ''",
         "ALTER TABLE projects ADD COLUMN user_id       INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE projects ADD COLUMN project_type  TEXT    NOT NULL DEFAULT 'Other'",
         "ALTER TABLE projects ADD COLUMN status        TEXT    NOT NULL DEFAULT 'ideation'",
