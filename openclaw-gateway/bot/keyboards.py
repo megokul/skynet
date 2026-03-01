@@ -30,6 +30,13 @@ CB_PLAN_CHANGES  = "plan:changes"
 CB_GITHUB_YES    = "github:yes"
 CB_GITHUB_NO     = "github:no"
 
+CB_REQUIREMENTS_DONE  = "req:done"
+CB_START_CODING       = "project:start_coding"
+CB_CODING_GITHUB_YES  = "coding:github_yes"
+CB_CODING_GITHUB_SKIP = "coding:github_skip"
+CB_MILESTONE_APPROVE  = "milestone:approve"
+CB_MILESTONE_SKIP     = "milestone:skip"
+
 # Human-readable label for each project type callback
 PROJECT_TYPE_LABELS: dict[str, str] = {
     CB_TYPE_WEB:     "Web App",
@@ -109,5 +116,41 @@ def github_choice() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("✅ Yes, create repo", callback_data=CB_GITHUB_YES),
             InlineKeyboardButton("⬛ No thanks",         callback_data=CB_GITHUB_NO),
+        ],
+    ])
+
+
+def requirements_done() -> InlineKeyboardMarkup:
+    """Shown after every Project Specialist reply — lets user skip to plan generation."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Done — Generate Plan", callback_data=CB_REQUIREMENTS_DONE)],
+    ])
+
+
+def start_coding() -> InlineKeyboardMarkup:
+    """Shown after project is saved — entry point to coding loop."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Start Coding", callback_data=CB_START_CODING)],
+        [
+            InlineKeyboardButton("📋 My Projects", callback_data=CB_MY_PROJECTS),
+            InlineKeyboardButton("🏠 Main Menu",   callback_data=CB_MAIN_MENU),
+        ],
+    ])
+
+
+def coding_github_setup() -> InlineKeyboardMarkup:
+    """Ask how to set up the project on the worker laptop."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Create GitHub repo + folder", callback_data=CB_CODING_GITHUB_YES)],
+        [InlineKeyboardButton("⏭ Skip — just start coding",   callback_data=CB_CODING_GITHUB_SKIP)],
+    ])
+
+
+def milestone_review() -> InlineKeyboardMarkup:
+    """Confirm or skip each coding milestone before execution."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Run It", callback_data=CB_MILESTONE_APPROVE),
+            InlineKeyboardButton("⏭ Skip",   callback_data=CB_MILESTONE_SKIP),
         ],
     ])

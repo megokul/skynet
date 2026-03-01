@@ -34,14 +34,17 @@ from bot.keyboards import (
     CB_GITHUB_YES,
     CB_PLAN_APPROVE,
     CB_PLAN_CHANGES,
+    CB_REQUIREMENTS_DONE,
     CB_START_PROJECT,
     PROJECT_TYPE_LABELS,
-    after_project_created,
     github_choice,
     main_menu,
     plan_review,
     project_type,
+    requirements_done,
+    start_coding,
 )
+
 from bot.project_templates import get_template
 from bot.state import KEY_DB, KEY_ROUTER
 from db.store import create_project, ensure_user
@@ -156,7 +159,9 @@ async def receive_project_type(
         {"role": "assistant", "content": opening},
     ]
 
-    await update.callback_query.message.reply_text(opening, parse_mode="HTML")
+    await update.callback_query.message.reply_text(
+        opening, parse_mode="HTML", reply_markup=requirements_done(),
+    )
     return GATHERING_REQUIREMENTS
 
 
@@ -202,8 +207,18 @@ async def handle_requirements_message(
     history.append({"role": "assistant", "content": reply})
     context.user_data[_REQS_HISTORY] = history
 
-    await update.message.reply_text(reply)
+    await update.message.reply_text(reply, reply_markup=requirements_done())
     return GATHERING_REQUIREMENTS
+
+
+async def requirements_done_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    """User tapped 'Done — Generate Plan' button during requirements chat."""
+    await update.callback_query.answer()
+    # Delegate directly to plan generation (same logic as /plan).
+    return await _do_generate_plan(update.callback_query.message, context)
 
 
 async def cmd_generate_plan(
@@ -211,13 +226,21 @@ async def cmd_generate_plan(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     """User sent /plan — generate the full project plan."""
+    return await _do_generate_plan(update.message, context)
+
+
+async def _do_generate_plan(
+    message,  # telegram.Message (from command or callback_query.message)
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    """Shared logic: call the Project Specialist to generate the plan."""
     router = context.bot_data.get(KEY_ROUTER)
     if router is None:
-        await update.message.reply_text("AI router is not available right now.")
+        await message.reply_text("AI router is not available right now.")
         return GATHERING_REQUIREMENTS
 
-    await update.effective_chat.send_action(ChatAction.TYPING)
-    await update.message.reply_text("Generating your project plan…")
+    await message.chat.send_action(ChatAction.TYPING)
+    await message.reply_text("Generating your project plan…")
 
     name       = context.user_data.get(_NAME_KEY, "Untitled")
     type_label = context.user_data.get(_TYPE_KEY, "Other")
@@ -239,16 +262,14 @@ async def cmd_generate_plan(
         plan = (response.text or "").strip() or "Could not generate plan."
     except Exception:
         logger.exception("Plan generation AI call failed")
-        await update.message.reply_text(
-            "Could not generate the plan. Please try /plan again."
-        )
+        await message.reply_text("Could not generate the plan. Please try /plan again.")
         return GATHERING_REQUIREMENTS
 
     context.user_data[_PLAN_KEY] = plan
     history.append({"role": "assistant", "content": plan})
     context.user_data[_REQS_HISTORY] = history
 
-    await update.message.reply_text(plan, reply_markup=plan_review())
+    await message.reply_text(plan, reply_markup=plan_review())
     return REVIEWING_PLAN
 
 
@@ -326,12 +347,16 @@ async def handle_github_choice(
         _clear_user_data(context)
         return ConversationHandler.END
 
+    # Persist project_id for the coding handler before clearing user_data.
+    context.user_data["last_project_id"] = project["id"]
     _clear_user_data(context)
+
     await update.callback_query.message.reply_text(
         f"Project <b>{project['name']}</b> is all set!{repo_line}\n"
-        f"Type: {project['project_type']} | Status: {project['status']}",
+        f"Type: {project['project_type']} | Status: {project['status']}\n\n"
+        "Ready to build it?",
         parse_mode="HTML",
-        reply_markup=after_project_created(),
+        reply_markup=start_coding(),
     )
     return ConversationHandler.END
 
@@ -410,6 +435,7 @@ def build_project_conversation_handler() -> ConversationHandler:
                 CallbackQueryHandler(receive_project_type, pattern=r"^type:"),
             ],
             GATHERING_REQUIREMENTS: [
+                CallbackQueryHandler(requirements_done_handler, pattern=f"^{CB_REQUIREMENTS_DONE}$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_requirements_message),
             ],
             REVIEWING_PLAN: [

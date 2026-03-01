@@ -102,3 +102,6 @@ BRAVE_SEARCH_API_KEY: str = _s("BRAVE_SEARCH_API_KEY")
 # ── GitHub ─────────────────────────────────────────────────────────────────────
 GITHUB_PAT: str      = _s("GITHUB_PAT")       # Personal Access Token (repo scope)
 GITHUB_USERNAME: str = _s("GITHUB_USERNAME")  # Owner username for repo creation
+
+# ── Worker ────────────────────────────────────────────────────────────────────
+WORKER_PROJECTS_DIR: str = _s("WORKER_PROJECTS_DIR", "C:/Projects")

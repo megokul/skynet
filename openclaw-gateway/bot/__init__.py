@@ -24,11 +24,23 @@ from bot.handlers.menu import (
     my_projects_handler,
 )
 from bot.handlers.chat import build_chat_conversation_handler
+from bot.handlers.coding import (
+    approve_milestone_handler,
+    coding_github_choice_handler,
+    dashboard_handler,
+    skip_milestone_handler,
+    start_coding_handler,
+)
 from bot.handlers.project import build_project_conversation_handler
 from bot.keyboards import (
+    CB_CODING_GITHUB_SKIP,
+    CB_CODING_GITHUB_YES,
     CB_MAIN_MENU,
+    CB_MILESTONE_APPROVE,
+    CB_MILESTONE_SKIP,
     CB_MY_PROJECTS,
     CB_REMINDER,
+    CB_START_CODING,
     CB_WEB_SEARCH,
     CB_WEATHER,
 )
@@ -63,9 +75,10 @@ def build_app(db, router) -> Application:
     app.add_handler(build_project_conversation_handler(), group=0)
     app.add_handler(build_chat_conversation_handler(),   group=0)
 
-    # ── Group 1: greetings ────────────────────────────────────────────────────
-    app.add_handler(CommandHandler("start", greeting_handler), group=1)
-    app.add_handler(CommandHandler("help",  greeting_handler), group=1)
+    # ── Group 1: commands ─────────────────────────────────────────────────────
+    app.add_handler(CommandHandler("start",  greeting_handler),  group=1)
+    app.add_handler(CommandHandler("help",   greeting_handler),  group=1)
+    app.add_handler(CommandHandler("status", dashboard_handler), group=1)
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.Regex(GREETING_RE),
@@ -75,10 +88,16 @@ def build_app(db, router) -> Application:
     )
 
     # ── Group 2: button callbacks ──────────────────────────────────────────────
-    app.add_handler(CallbackQueryHandler(coming_soon,         pattern=f"^{CB_WEATHER}$"),    group=2)
-    app.add_handler(CallbackQueryHandler(coming_soon,         pattern=f"^{CB_REMINDER}$"),   group=2)
-    app.add_handler(CallbackQueryHandler(coming_soon,         pattern=f"^{CB_WEB_SEARCH}$"), group=2)
-    app.add_handler(CallbackQueryHandler(my_projects_handler, pattern=f"^{CB_MY_PROJECTS}$"),group=2)
-    app.add_handler(CallbackQueryHandler(main_menu_handler,   pattern=f"^{CB_MAIN_MENU}$"),  group=2)
+    app.add_handler(CallbackQueryHandler(coming_soon,                pattern=f"^{CB_WEATHER}$"),           group=2)
+    app.add_handler(CallbackQueryHandler(coming_soon,                pattern=f"^{CB_REMINDER}$"),          group=2)
+    app.add_handler(CallbackQueryHandler(coming_soon,                pattern=f"^{CB_WEB_SEARCH}$"),        group=2)
+    app.add_handler(CallbackQueryHandler(my_projects_handler,        pattern=f"^{CB_MY_PROJECTS}$"),       group=2)
+    app.add_handler(CallbackQueryHandler(main_menu_handler,          pattern=f"^{CB_MAIN_MENU}$"),         group=2)
+    # Coding loop
+    app.add_handler(CallbackQueryHandler(start_coding_handler,       pattern=f"^{CB_START_CODING}$"),      group=2)
+    app.add_handler(CallbackQueryHandler(coding_github_choice_handler, pattern=f"^{CB_CODING_GITHUB_YES}$"),  group=2)
+    app.add_handler(CallbackQueryHandler(coding_github_choice_handler, pattern=f"^{CB_CODING_GITHUB_SKIP}$"), group=2)
+    app.add_handler(CallbackQueryHandler(approve_milestone_handler,  pattern=f"^{CB_MILESTONE_APPROVE}$"), group=2)
+    app.add_handler(CallbackQueryHandler(skip_milestone_handler,     pattern=f"^{CB_MILESTONE_SKIP}$"),    group=2)
 
     return app
