@@ -310,6 +310,9 @@ async def _coding_loop(
                 )
                 if init_result.get("status") == "error":
                     raise RuntimeError(init_result.get("error", "git init failed"))
+                _init_inner = init_result.get("result", {})
+                if _init_inner.get("returncode", 0) != 0:
+                    raise RuntimeError(_init_inner.get("stderr") or _init_inner.get("stdout") or "git init failed")
 
                 # Step 2: create GitHub repo and push.
                 gh_result = await send_action(
@@ -325,6 +328,9 @@ async def _coding_loop(
                 )
                 if gh_result.get("status") == "error":
                     raise RuntimeError(gh_result.get("error", "Unknown error"))
+                _gh_inner = gh_result.get("result", {})
+                if _gh_inner.get("returncode", 0) != 0:
+                    raise RuntimeError(_gh_inner.get("stderr") or _gh_inner.get("stdout") or "gh_create_repo failed")
                 await app.bot.send_message(chat_id, "✅ GitHub repo created.")
             except Exception as exc:
                 await app.bot.send_message(
