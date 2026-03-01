@@ -28,6 +28,7 @@ from bot.handlers.coding import (
     approve_milestone_handler,
     coding_github_choice_handler,
     dashboard_handler,
+    retry_coding_handler,
     run_project_handler,
     skip_milestone_handler,
     start_coding_handler,
@@ -37,6 +38,7 @@ from bot.handlers.project import build_project_conversation_handler
 from bot.keyboards import (
     CB_CODING_GITHUB_SKIP,
     CB_CODING_GITHUB_YES,
+    CB_CODING_RETRY_PREFIX,
     CB_MAIN_MENU,
     CB_MILESTONE_APPROVE,
     CB_MILESTONE_SKIP,
@@ -101,6 +103,7 @@ def build_app(db, router) -> Application:
     app.add_handler(CallbackQueryHandler(start_coding_handler,       pattern=f"^{CB_START_CODING}$"),      group=2)
     app.add_handler(CallbackQueryHandler(coding_github_choice_handler, pattern=f"^{CB_CODING_GITHUB_YES}$"),  group=2)
     app.add_handler(CallbackQueryHandler(coding_github_choice_handler, pattern=f"^{CB_CODING_GITHUB_SKIP}$"), group=2)
+    app.add_handler(CallbackQueryHandler(retry_coding_handler,       pattern=f"^{CB_CODING_RETRY_PREFIX}"), group=2)
     app.add_handler(CallbackQueryHandler(approve_milestone_handler,  pattern=f"^{CB_MILESTONE_APPROVE}$"), group=2)
     app.add_handler(CallbackQueryHandler(skip_milestone_handler,     pattern=f"^{CB_MILESTONE_SKIP}$"),    group=2)
     app.add_handler(CallbackQueryHandler(stop_milestone_handler,     pattern=f"^{CB_MILESTONE_STOP}$"),    group=2)

@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -30,6 +32,9 @@ jobs:
 
       - name: Check control-plane boundary
         run: python scripts/ci/check_control_plane_boundary.py
+
+      - name: Check engineering policy
+        run: python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
 
   deploy:
     name: Deploy on self-hosted runner

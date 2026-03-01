@@ -35,6 +35,7 @@ CB_REQUIREMENTS_DONE  = "req:done"
 CB_START_CODING       = "project:start_coding"
 CB_CODING_GITHUB_YES  = "coding:github_yes"
 CB_CODING_GITHUB_SKIP = "coding:github_skip"
+CB_CODING_RETRY_PREFIX = "coding:retry:"
 CB_MILESTONE_APPROVE  = "milestone:approve"
 CB_MILESTONE_SKIP     = "milestone:skip"
 CB_MILESTONE_STOP     = "milestone:stop"
@@ -167,4 +168,15 @@ def run_project() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("▶️ Run Project", callback_data=CB_RUN_PROJECT)],
         [InlineKeyboardButton("🏠 Main Menu",   callback_data=CB_MAIN_MENU)],
+    ])
+
+
+def retry_coding(project_id: str) -> InlineKeyboardMarkup:
+    """Shown after all milestones fail — retry coding for the same project."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔁 Retry Coding", callback_data=f"{CB_CODING_RETRY_PREFIX}{project_id}")],
+        [
+            InlineKeyboardButton("📋 My Projects", callback_data=CB_MY_PROJECTS),
+            InlineKeyboardButton("🏠 Main Menu",   callback_data=CB_MAIN_MENU),
+        ],
     ])

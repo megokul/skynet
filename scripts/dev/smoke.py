@@ -62,6 +62,7 @@ def main() -> int:
 
     run([sys.executable, "scripts/ci/check_stale_paths.py"])
     run([sys.executable, "scripts/ci/check_control_plane_boundary.py"])
+    run([sys.executable, "scripts/ci/check_engineering_policy.py"])
     run(
         [
             sys.executable,

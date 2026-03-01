@@ -1,5 +1,7 @@
 # SKYNET Agent Guide
 
+Primary engineering docs index: `docs/INDEX.md`.
+
 ## Contract
 
 Source of truth: `docs/SKYNET_OPENCLAW_CONTRACT.md`.
@@ -34,7 +36,9 @@ Hard rule:
 
 Use:
 - `python scripts/ci/check_control_plane_boundary.py`
+- `python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD`
 - `make test`
+- `make smoke`
 
 ## Handoff Policy
 
@@ -43,5 +47,7 @@ Use:
   - current goal
   - changed files (committed/uncommitted)
   - test results with exact failing tests
+  - trace evidence markers (`request_id`, `task_id`, `claim_token`, `audit.jsonl`, `skynet.trace.log`, or `/v1/events`)
+  - documentation updates made in the change
   - blockers
   - concrete next actions

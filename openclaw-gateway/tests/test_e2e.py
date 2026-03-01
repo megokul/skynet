@@ -531,6 +531,32 @@ class TestRunProject:
         assert "ModuleNotFoundError" in all_replies
         assert "exit 1" in all_replies or "❌" in all_replies
 
+    @pytest.mark.asyncio
+    async def test_run_project_handles_top_level_error_envelope(self):
+        update = make_callback_update(CB_RUN_PROJECT, user_id=self.USER_ID)
+        context = make_context(bot_data={
+            KEY_DB: MagicMock(),
+            f"run_project_{self.USER_ID}": self.PROJECT["id"],
+        })
+
+        mock_result = {"status": "error", "error": "Worker rejected exec_command"}
+
+        with (
+            patch("bot.handlers.coding.get_project",
+                  new=AsyncMock(return_value=self.PROJECT)),
+            patch("bot.handlers.coding.is_worker_available", return_value=True),
+            patch("bot.handlers.coding.send_action",
+                  new=AsyncMock(return_value=mock_result)),
+        ):
+            await run_project_handler(update, context)
+
+        all_replies = " ".join(
+            str(c.args[0] if c.args else c)
+            for c in update.callback_query.message.reply_text.call_args_list
+        )
+        assert "Run failed" in all_replies
+        assert "Worker rejected exec_command" in all_replies
+
     # ── 3c: worker disconnected shows graceful error ──────────────────────────
 
     @pytest.mark.asyncio
@@ -738,6 +764,42 @@ class TestCodingLoopErrorSurfacing:
         )
         assert "✅ Milestone" not in all_text, (
             f"Must not show ✅ Milestone complete on error; sent: {sent}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_milestone_marked_failed_when_inner_returncode_non_zero(self):
+        """
+        The gateway can return {"status":"ok","result":{"returncode":1,...}}.
+        This must be treated as a failed milestone, not a success.
+        """
+        nested_failure = {
+            "status": "ok",
+            "result": {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "OLLAMA_ERROR: HTTP Error 404: Not Found",
+            },
+        }
+
+        app, sent, _, mock_update = await self._run_loop_single_milestone(nested_failure)
+
+        statuses = [c.kwargs.get("status") for c in mock_update.call_args_list]
+        assert "failed" in statuses, (
+            f"Task must be marked failed when inner returncode != 0; update kwargs: {statuses}"
+        )
+        assert "done" not in statuses, (
+            f"Task must not be marked done when inner returncode != 0; update kwargs: {statuses}"
+        )
+
+        all_text = " ".join(sent)
+        assert "OLLAMA_ERROR" in all_text, (
+            f"Nested failure reason must be surfaced to user; sent: {sent}"
+        )
+        assert "Milestone 1 complete" not in all_text, (
+            f"Must not show milestone complete when inner returncode != 0; sent: {sent}"
+        )
+        assert f"run_project_{self.USER_ID}" not in app.bot_data, (
+            "Run-project shortcut must not be set when there are no successful milestones."
         )
 
     # ── 4b: real success envelope → summary from result["result"]["stdout"] ──

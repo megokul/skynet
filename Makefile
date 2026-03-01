@@ -1,4 +1,4 @@
-.PHONY: help install test test-all test-unit clean clean-data run-api run-bot dev-setup manual-check-api manual-check-e2e manual-check-delegate check-stale-paths check-control-boundary smoke format lint check
+.PHONY: help install test test-all test-unit test-gateway-e2e test-live-conversation clean clean-data run-api run-bot dev-setup manual-check-api manual-check-e2e manual-check-delegate check-stale-paths check-control-boundary check-policy smoke format lint check
 
 # Default target
 help:
@@ -13,6 +13,8 @@ help:
 	@echo "  make test         - Run control-plane tests (fast)"
 	@echo "  make test-all     - Run all remaining tests"
 	@echo "  make test-unit    - Alias of control-plane tests"
+	@echo "  make test-gateway-e2e - Run deterministic gateway conversation E2E tests"
+	@echo "  make test-live-conversation - Run manual live conversation E2E test"
 	@echo ""
 	@echo "Running:"
 	@echo "  make run-api      - Start FastAPI service (dev)"
@@ -32,6 +34,7 @@ help:
 	@echo "  make lint         - Run linters"
 	@echo "  make check-stale-paths - Fail on stale root path references"
 	@echo "  make check-control-boundary - Enforce SKYNET control-plane boundaries"
+	@echo "  make check-policy - Enforce engineering policy docs/evidence rules"
 	@echo "  make smoke        - Quick repo health checks"
 	@echo "  make check        - Run all checks"
 
@@ -54,6 +57,14 @@ test-all:
 test-unit:
 	@echo "Running control-plane unit tests..."
 	python -m pytest tests/test_api_lifespan.py tests/test_api_provider_config.py tests/test_api_control_plane.py -q
+
+test-gateway-e2e:
+	@echo "Running deterministic gateway conversation E2E tests..."
+	python -m pytest openclaw-gateway/tests/test_conversation_e2e_repo_push.py -q
+
+test-live-conversation:
+	@echo "Running manual live conversation E2E test..."
+	python -m pytest openclaw-gateway/tests/test_e2e_conversation_live.py -m live -q
 
 run-api:
 	@echo "Starting SKYNET FastAPI service..."
@@ -83,7 +94,11 @@ check-control-boundary:
 	@echo "Checking SKYNET control-plane boundaries..."
 	python scripts/ci/check_control_plane_boundary.py
 
-smoke: check-stale-paths check-control-boundary
+check-policy:
+	@echo "Checking engineering policy compliance..."
+	python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
+
+smoke: check-stale-paths check-control-boundary check-policy
 	@echo "Running smoke checks..."
 	python scripts/dev/smoke.py
 

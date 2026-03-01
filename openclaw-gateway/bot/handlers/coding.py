@@ -24,11 +24,13 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from bot.keyboards import (
+    CB_CODING_RETRY_PREFIX,
     CB_CODING_GITHUB_SKIP,
     CB_CODING_GITHUB_YES,
     coding_github_setup,
     main_menu,
     milestone_review,
+    retry_coding,
     run_project,
 )
 from bot.state import KEY_DB, KEY_ROUTER
@@ -48,6 +50,7 @@ logger = logging.getLogger("skynet.bot.coding")
 _MS_EVENT_KEY    = "ms_event_{uid}"
 _MS_DECISION_KEY = "ms_decision_{uid}"
 _ACTIVE_LOOP_KEY = "coding_loop_{uid}"   # stores the asyncio.Task
+_GITHUB_PREF_KEY = "coding_github_pref_{uid}_{pid}"
 
 # User_data key set by project handler after save
 _PROJECT_ID_KEY = "last_project_id"
@@ -79,6 +82,41 @@ async def start_coding_handler(
     )
 
 
+async def _start_coding_loop(
+    *,
+    context: ContextTypes.DEFAULT_TYPE,
+    message,
+    user_id: int,
+    chat_id: int,
+    project: dict,
+    do_github: bool,
+) -> bool:
+    """Start a coding session task, guarding against duplicate active loops."""
+    loop_key = _ACTIVE_LOOP_KEY.format(uid=user_id)
+    existing = context.bot_data.get(loop_key)
+    if existing and not existing.done():
+        await message.reply_text("A coding session is already running for you!")
+        return False
+
+    context.bot_data.pop(f"run_project_{user_id}", None)
+    slug = _slugify(project["name"])
+    working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
+
+    await message.reply_text(
+        "Starting coding session…\n"
+        f"📁 Project folder: <code>{working_dir}</code>\n\n"
+        "I'll send you each milestone for approval before executing. "
+        "Use /status anytime to check progress.",
+        parse_mode="HTML",
+    )
+
+    task = asyncio.create_task(
+        _coding_loop(context.application, chat_id, user_id, project, do_github)
+    )
+    context.bot_data[loop_key] = task
+    return True
+
+
 async def coding_github_choice_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -101,35 +139,79 @@ async def coding_github_choice_handler(
         await update.callback_query.message.reply_text("Project not found in database.")
         return
 
-    # If already running, don't double-start.
-    loop_key = _ACTIVE_LOOP_KEY.format(uid=user_id)
-    existing = context.bot_data.get(loop_key)
-    if existing and not existing.done():
-        await update.callback_query.message.reply_text(
-            "A coding session is already running for you!"
-        )
-        return
-
     do_github = (cb_data == CB_CODING_GITHUB_YES)
 
-    slug = _slugify(project["name"])
-    working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
+    context.bot_data[_GITHUB_PREF_KEY.format(uid=user_id, pid=project_id)] = do_github
 
-    await update.callback_query.message.reply_text(
-        "Starting coding session…\n"
-        f"📁 Project folder: <code>{working_dir}</code>\n\n"
-        "I'll send you each milestone for approval before executing. "
-        "Use /status anytime to check progress.",
-        parse_mode="HTML",
+    await _start_coding_loop(
+        context=context,
+        message=update.callback_query.message,
+        user_id=user_id,
+        chat_id=chat_id,
+        project=project,
+        do_github=do_github,
     )
-
-    task = asyncio.create_task(
-        _coding_loop(context.application, chat_id, user_id, project, do_github)
-    )
-    context.bot_data[loop_key] = task
 
 
 # ── Milestone approval callbacks ─────────────────────────────────────────────
+
+async def retry_coding_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Retry coding for a saved project, reusing the previous GitHub preference when known."""
+    await update.callback_query.answer()
+
+    cb_data = update.callback_query.data or ""
+    project_id = cb_data.removeprefix(CB_CODING_RETRY_PREFIX).strip()
+    if not project_id:
+        await update.callback_query.message.reply_text(
+            "Invalid retry request.",
+            reply_markup=main_menu(),
+        )
+        return
+
+    db = context.bot_data.get(KEY_DB)
+    tg_user = update.effective_user
+    user = await ensure_user(
+        db,
+        telegram_user_id=tg_user.id,
+        username=tg_user.username or "",
+        first_name=tg_user.first_name or "",
+        last_name=tg_user.last_name or "",
+    )
+
+    project = await get_project(db, project_id)
+    if not project or int(project.get("user_id", -1)) != int(user["id"]):
+        await update.callback_query.message.reply_text(
+            "This retry link is invalid or you no longer have access to this project.",
+            reply_markup=main_menu(),
+        )
+        return
+
+    context.user_data[_PROJECT_ID_KEY] = project_id
+    pref_key = _GITHUB_PREF_KEY.format(uid=tg_user.id, pid=project_id)
+    remembered_pref = context.bot_data.get(pref_key)
+    if isinstance(remembered_pref, bool):
+        mode_label = "GitHub repo + folder setup" if remembered_pref else "folder-only setup"
+        await update.callback_query.message.reply_text(
+            f"Retrying with your previous preference: {mode_label}."
+        )
+        await _start_coding_loop(
+            context=context,
+            message=update.callback_query.message,
+            user_id=tg_user.id,
+            chat_id=update.effective_chat.id,
+            project=project,
+            do_github=remembered_pref,
+        )
+        return
+
+    context.user_data[_CODING_PID_KEY] = project_id
+    await update.callback_query.message.reply_text(
+        "Should I set up a GitHub repo and project folder on your laptop?",
+        reply_markup=coding_github_setup(),
+    )
 
 async def approve_milestone_handler(
     update: Update,
@@ -386,6 +468,10 @@ async def _coding_loop(
             chat_id, f"Found <b>{total} milestone(s)</b>. Let's go!", parse_mode="HTML"
         )
 
+        successful_milestones = 0
+        failed_milestones = 0
+        skipped_milestones = 0
+
         # ── Milestone loop ────────────────────────────────────────────────────
         for i, milestone_text in enumerate(milestones, 1):
             # Show milestone to user.
@@ -410,6 +496,7 @@ async def _coding_loop(
                     chat_id, f"⏰ Milestone {i} timed out — skipping."
                 )
                 app.bot_data.pop(event_key, None)
+                skipped_milestones += 1
                 continue
 
             app.bot_data.pop(event_key, None)
@@ -425,6 +512,7 @@ async def _coding_loop(
 
             if decision == "skip":
                 await app.bot.send_message(chat_id, f"⏭ Milestone {i} skipped.")
+                skipped_milestones += 1
                 continue
 
             # Create DB task record.
@@ -447,6 +535,7 @@ async def _coding_loop(
                     db, task_rec["id"],
                     status="failed", error_message="Agent not connected",
                 )
+                failed_milestones += 1
                 continue
 
             prompt = (
@@ -469,11 +558,22 @@ async def _coding_loop(
                 # Worker wraps result: {"status": "success"/"error", "result": {...}}
                 if result.get("status") == "error":
                     raise RuntimeError(result.get("error", "run_coding_agent failed"))
-                inner   = result.get("result", result)
+
+                inner = result.get("result", result)
+                return_code = inner.get("returncode", inner.get("exit_code", 0))
+                if return_code != 0:
+                    detail = (
+                        inner.get("stderr")
+                        or inner.get("stdout")
+                        or f"run_coding_agent exited with code {return_code}"
+                    )
+                    raise RuntimeError(str(detail))
+
                 summary = (inner.get("stdout") or inner.get("stderr") or "")[:500].strip()
                 await update_task_status(
                     db, task_rec["id"], status="done", result_summary=summary
                 )
+                successful_milestones += 1
                 notice = f"✅ Milestone {i} complete!"
                 if summary:
                     notice += f"\n\n{summary}"
@@ -484,21 +584,40 @@ async def _coding_loop(
                 await update_task_status(
                     db, task_rec["id"], status="failed", error_message=err
                 )
+                failed_milestones += 1
                 await app.bot.send_message(
                     chat_id, f"❌ Milestone {i} failed:\n<code>{err}</code>",
                     parse_mode="HTML",
                 )
 
         # ── Done ──────────────────────────────────────────────────────────────
-        app.bot_data[f"run_project_{user_id}"] = project["id"]
-        await app.bot.send_message(
-            chat_id,
-            f"🎉 <b>{project['name']}</b> coding session complete!\n"
-            f"📁 <code>{working_dir}</code>\n\n"
-            "Use /status to review milestones or run the project now.",
-            parse_mode="HTML",
-            reply_markup=run_project(),
+        milestone_summary = (
+            f"complete={successful_milestones}, "
+            f"failed={failed_milestones}, "
+            f"skipped={skipped_milestones}"
         )
+        if successful_milestones > 0:
+            app.bot_data[f"run_project_{user_id}"] = project["id"]
+            await app.bot.send_message(
+                chat_id,
+                f"\U0001F389 <b>{project['name']}</b> coding session complete!\n"
+                f"\U0001F4C1 <code>{working_dir}</code>\n"
+                f"{milestone_summary}\n\n"
+                "Use /status to review milestones or run the project now.",
+                parse_mode="HTML",
+                reply_markup=run_project(),
+            )
+        else:
+            await app.bot.send_message(
+                chat_id,
+                f"\u26A0\uFE0F <b>{project['name']}</b> session finished with no successful milestones.\n"
+                f"\U0001F4C1 <code>{working_dir}</code>\n"
+                f"{milestone_summary}\n\n"
+                "Tap Retry Coding to run again with your previous GitHub setup mode, "
+                "or use /status to inspect failures first.",
+                parse_mode="HTML",
+                reply_markup=retry_coding(project["id"]),
+            )
 
     except Exception:
         logger.exception("Coding loop crashed for project %s user %s", project["id"], user_id)
@@ -570,6 +689,9 @@ async def run_project_handler(
             timeout=60,
             confirmed=True,
         )
+        if result.get("status") == "error":
+            raise RuntimeError(result.get("error", "exec_command failed"))
+
         # The gateway wraps the worker's response: {"status": "success", "result": {...}}
         inner     = result.get("result", result)
         stdout    = (inner.get("stdout") or "").strip()

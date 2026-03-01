@@ -1,6 +1,7 @@
 # SKYNET Control Plane
 
 Authoritative contract: `docs/SKYNET_OPENCLAW_CONTRACT.md`.
+Implementation/debug/policy docs: `docs/INDEX.md`.
 
 - OpenClaw executes tasks.
 - SKYNET orchestrates OpenClaw gateways.
@@ -104,6 +105,7 @@ SKYNET_SKIP_ENV_SYNC=1 git push
 ```bash
 make test
 make smoke
+python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
 ```
 
 Primary API tests:
