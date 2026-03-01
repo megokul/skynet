@@ -1073,6 +1073,25 @@ class SSHTunnelExecutor:
                 return self._run_command(client, ["taskkill", "/F", "/IM", exe], cwd=None)
             return {"returncode": 1, "stdout": "", "stderr": "close_app currently supports Windows remote hosts only."}
 
+        if action == "exec_command":
+            cwd     = self._require_str(params, "working_dir")
+            command = self._require_str(params, "command")
+            parts   = command.strip().split()
+            if not parts:
+                return {"returncode": 1, "stdout": "", "stderr": "Empty command."}
+            interpreter = parts[0].lower().rstrip(".exe")
+            if interpreter not in ("python", "python3", "node"):
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": (
+                        f"Interpreter {parts[0]!r} is not allowed. "
+                        "Use python, python3, or node."
+                    ),
+                }
+            remote_cwd = _norm_remote_path(cwd, self.remote_os)
+            return self._run_command(client, parts, cwd=remote_cwd)
+
         return {"returncode": 1, "stdout": "", "stderr": f"Action '{action}' is not supported in SSH tunnel mode."}
 
     def _ensure_git_safe_directory(self, client: paramiko.SSHClient, cwd: str) -> None:

@@ -61,11 +61,26 @@ async def send_action(
     If *confirmed* is True, the agent skips its local terminal prompt
     (approval was already collected remotely, e.g. via Telegram).
 
-    Raises ``RuntimeError`` if no agent is connected.
+    If ``OPENCLAW_EXECUTION_MODE=ssh`` is set, or no WebSocket agent is
+    connected but SSH is configured, the action is routed via the SSH
+    tunnel executor to the worker laptop instead.
+
+    Raises ``RuntimeError`` if no agent is connected and SSH is not configured.
     Raises ``asyncio.TimeoutError`` if the agent doesn't reply in time.
     """
-    if _agent_ws is None:
-        raise RuntimeError("No agent connected.")
+    from ssh_tunnel_executor import get_ssh_executor  # lazy — avoids circular import at module load
+
+    _ssh_exec = get_ssh_executor()
+    _force_ssh = os.environ.get("OPENCLAW_EXECUTION_MODE", "").lower() in (
+        "ssh", "ssh_tunnel", "tunnel", "ssh-only",
+    )
+
+    if _force_ssh or _agent_ws is None:
+        if _ssh_exec.is_configured():
+            logger.info("Routing action '%s' via SSH tunnel executor.", action)
+            return await _ssh_exec.execute_action(action, params or {}, confirmed=confirmed)
+        if _agent_ws is None:
+            raise RuntimeError("No agent connected.")
 
     request_id = str(uuid.uuid4())
     message = {
