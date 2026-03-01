@@ -847,7 +847,7 @@ class SSHTunnelExecutor:
             f"prompt = base64.b64decode('{b64_prompt}').decode('utf-8')\n"
             f"url    = base64.b64decode('{b64_url}').decode('utf-8') + '/api/generate'\n"
             f"model  = base64.b64decode('{b64_model}').decode('utf-8')\n"
-            "options = {'num_gpu': 99, 'num_ctx': 4096, 'temperature': 0.2}\n"
+            "options = {'num_ctx': 4096, 'temperature': 0.2}\n"
             "payload = json.dumps({'model': model, 'prompt': prompt, 'stream': False, 'options': options}).encode()\n"
             "req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})\n"
             "try:\n"
