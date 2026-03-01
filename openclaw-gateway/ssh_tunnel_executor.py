@@ -1179,7 +1179,7 @@ class SSHTunnelExecutor:
                 )
                 ollama_model = str(
                     params.get("model")
-                    or os.environ.get("OPENCLAW_OLLAMA_MODEL", "qwen2.5-coder:32b-instruct-q4_K_M")
+                    or os.environ.get("OPENCLAW_OLLAMA_MODEL", "qwen2.5-coder:7b")
                 )
                 return self._run_ollama_coding_agent(
                     client, prompt, cwd, ollama_model, ollama_url, int(timeout)
