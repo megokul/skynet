@@ -202,39 +202,61 @@ class TestProjectCreationFlow:
             "project_type": "Python App",
             "status":       "approved",
         }
+        plan_text = "## Plan\n1. Setup\n2. Core logic"
 
         update  = make_callback_update(CB_PLAN_APPROVE, user_id=42)
         context = make_context(
             user_data={
                 _NAME_KEY: "SkyApp",
                 _TYPE_KEY: "Python App",
-                _PLAN_KEY: "## Plan\n1. Setup\n2. Core logic",
+                _PLAN_KEY: plan_text,
             },
             bot_data={KEY_DB: MagicMock()},
         )
 
+        mock_ensure  = AsyncMock(return_value=fake_user)
+        mock_create  = AsyncMock(return_value=fake_project)
+
         with (
-            patch("bot.handlers.project.ensure_user",    new=AsyncMock(return_value=fake_user)),
-            patch("bot.handlers.project.create_project", new=AsyncMock(return_value=fake_project)),
+            patch("bot.handlers.project.ensure_user",    new=mock_ensure),
+            patch("bot.handlers.project.create_project", new=mock_create),
         ):
             result = await approve_plan(update, context)
 
-        # Must end the conversation immediately — no AWAITING_GITHUB redirect
+        # ── DB calls actually happened ─────────────────────────────────────────
+
+        mock_ensure.assert_awaited_once()
+        ensure_kwargs = mock_ensure.call_args.kwargs
+        assert ensure_kwargs["telegram_user_id"] == 42, (
+            f"ensure_user called with wrong telegram_user_id: {ensure_kwargs}"
+        )
+
+        mock_create.assert_awaited_once()
+        create_kwargs = mock_create.call_args.kwargs
+        assert create_kwargs["name"]         == "SkyApp",      f"Wrong name: {create_kwargs}"
+        assert create_kwargs["project_type"] == "Python App",  f"Wrong type: {create_kwargs}"
+        assert create_kwargs["description"]  == plan_text,     f"Wrong description: {create_kwargs}"
+        assert create_kwargs["user_id"]      == fake_user["id"], (
+            f"user_id must come from ensure_user return value; got: {create_kwargs}"
+        )
+
+        # ── Conversation ends immediately — no AWAITING_GITHUB redirect ────────
+
         assert result == ConversationHandler.END, (
             "approve_plan must return END, not redirect to a GitHub state"
         )
 
-        # Reply must contain project name and "saved" indicator
+        # ── Reply contains project name and no GitHub question ─────────────────
+
         reply_text = update.callback_query.message.reply_text.call_args.args[0]
         assert "SkyApp" in reply_text
         assert "✅" in reply_text or "saved" in reply_text.lower()
-
-        # No GitHub question in the reply
         assert "github" not in reply_text.lower(), (
             "Project approval must NOT ask about GitHub"
         )
 
-        # Start Coding button must be present
+        # ── Start Coding button present ────────────────────────────────────────
+
         markup = update.callback_query.message.reply_text.call_args.kwargs.get("reply_markup")
         all_data = [btn.callback_data
                     for row in markup.inline_keyboard for btn in row]
@@ -242,14 +264,56 @@ class TestProjectCreationFlow:
             "'Start Coding' button must appear after plan approval"
         )
 
-        # project_id preserved for the coding handler
-        assert context.user_data.get("last_project_id") == "abc123"
+        # ── project_id forwarded to coding handler, temp keys cleared ──────────
 
-        # Temp user_data keys cleared
+        assert context.user_data.get("last_project_id") == "abc123"
         assert _NAME_KEY     not in context.user_data
         assert _TYPE_KEY     not in context.user_data
         assert _PLAN_KEY     not in context.user_data
         assert _REQS_HISTORY not in context.user_data
+
+    @pytest.mark.asyncio
+    async def test_approve_plan_project_written_to_real_db(self):
+        """
+        Integration check: approve_plan with a real in-memory SQLite DB.
+        Verifies the project row actually exists after the handler runs.
+        """
+        from db.schema import init_db
+        from db.store import get_project, list_projects
+
+        db = await init_db(":memory:")
+        plan_text = "## Plan\n1. Setup\n2. Build it"
+
+        update  = make_callback_update(CB_PLAN_APPROVE, user_id=77)
+        context = make_context(
+            user_data={
+                _NAME_KEY: "RealDBProject",
+                _TYPE_KEY: "CLI",
+                _PLAN_KEY: plan_text,
+            },
+            bot_data={KEY_DB: db},
+        )
+
+        await approve_plan(update, context)
+
+        # project_id must have been stored in user_data by the handler
+        project_id = context.user_data.get("last_project_id")
+        assert project_id, "Handler must set last_project_id in user_data"
+
+        # Row must exist in the DB
+        row = await get_project(db, project_id)
+        assert row is not None,                    "Project row missing from DB"
+        assert row["name"]         == "RealDBProject", f"Wrong name: {row}"
+        assert row["project_type"] == "CLI",           f"Wrong type: {row}"
+        assert row["description"]  == plan_text,       f"Wrong description: {row}"
+        assert row["status"]       == "approved",      f"Wrong status: {row}"
+
+        # Must be findable via list_projects too
+        all_projects = await list_projects(db, user_id=row["user_id"])
+        ids = [p["id"] for p in all_projects]
+        assert project_id in ids, "Project not returned by list_projects"
+
+        await db.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
