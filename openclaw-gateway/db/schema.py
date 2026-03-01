@@ -63,8 +63,22 @@ CREATE TABLE IF NOT EXISTS provider_usage (
 
 -- ── Indexes (only those safe to create before migrations) ─────────────────────
 CREATE INDEX IF NOT EXISTS idx_users_telegram_id  ON users(telegram_user_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_project      ON tasks(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_provider_usage_day ON provider_usage(provider_name, date);
+"""
+
+# Clean tasks DDL used when recreating the table from a legacy schema.
+_TASKS_CLEAN_DDL = """
+    CREATE TABLE tasks_clean (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id     TEXT    NOT NULL,
+        title          TEXT    NOT NULL,
+        description    TEXT    NOT NULL DEFAULT '',
+        status         TEXT    NOT NULL DEFAULT 'pending',
+        result_summary TEXT    NOT NULL DEFAULT '',
+        error_message  TEXT    NOT NULL DEFAULT '',
+        created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+    )
 """
 
 
@@ -75,37 +89,59 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
     await db.executescript(SCHEMA_SQL)
     await db.commit()
 
-    # ── Column migrations (safe to run on every startup) ──────────────────────
-    _migrations = [
-        # projects table — columns added after the initial rewrite
+    # ── Column migrations for projects (safe to run on every startup) ─────────
+    for sql in [
         "ALTER TABLE projects ADD COLUMN description   TEXT    NOT NULL DEFAULT ''",
         "ALTER TABLE projects ADD COLUMN display_name  TEXT    NOT NULL DEFAULT ''",
         "ALTER TABLE projects ADD COLUMN user_id       INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE projects ADD COLUMN project_type  TEXT    NOT NULL DEFAULT 'Other'",
         "ALTER TABLE projects ADD COLUMN status        TEXT    NOT NULL DEFAULT 'ideation'",
-        # tasks table — columns added after initial rewrite
-        "ALTER TABLE tasks ADD COLUMN description    TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE tasks ADD COLUMN status         TEXT NOT NULL DEFAULT 'pending'",
-        "ALTER TABLE tasks ADD COLUMN result_summary TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE tasks ADD COLUMN error_message  TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE tasks ADD COLUMN created_at     TEXT NOT NULL DEFAULT (datetime('now'))",
-        "ALTER TABLE tasks ADD COLUMN updated_at     TEXT NOT NULL DEFAULT (datetime('now'))",
-    ]
-    for sql in _migrations:
+    ]:
         try:
             await db.execute(sql)
             await db.commit()
         except Exception:
-            pass  # column already exists or table not yet created — fine
+            pass  # column already exists — fine
 
-    # ── Indexes that reference potentially-migrated columns ───────────────────
-    try:
+    # ── Rebuild tasks table if it has legacy NOT-NULL columns with no default ──
+    # The old schema had plan_id, order_index, etc. that break our INSERTs.
+    # We migrate valid data (project_id, title, description, status, …) and drop
+    # the incompatible columns by recreating the table under a new name then
+    # renaming it back.
+    async with db.execute("PRAGMA table_info(tasks)") as cur:
+        task_cols = {row[1] for row in await cur.fetchall()}
+
+    if "plan_id" in task_cols:
+        await db.execute(_TASKS_CLEAN_DDL)
         await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_projects_user "
-            "ON projects(user_id, created_at DESC)"
+            """
+            INSERT OR IGNORE INTO tasks_clean
+                (id, project_id, title, description, status,
+                 result_summary, error_message, created_at, updated_at)
+            SELECT
+                id, project_id, title,
+                COALESCE(description,    ''),
+                COALESCE(status,         'pending'),
+                COALESCE(result_summary, ''),
+                COALESCE(error_message,  ''),
+                COALESCE(created_at,     datetime('now')),
+                COALESCE(updated_at,     datetime('now'))
+            FROM tasks
+            """
         )
+        await db.execute("DROP TABLE tasks")
+        await db.execute("ALTER TABLE tasks_clean RENAME TO tasks")
         await db.commit()
-    except Exception:
-        pass
+
+    # ── Indexes that may reference migrated columns ────────────────────────────
+    for idx_sql in [
+        "CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_project  ON tasks(project_id, status)",
+    ]:
+        try:
+            await db.execute(idx_sql)
+            await db.commit()
+        except Exception:
+            pass
 
     return db
