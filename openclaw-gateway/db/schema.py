@@ -84,8 +84,12 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
         "ALTER TABLE projects ADD COLUMN project_type  TEXT    NOT NULL DEFAULT 'Other'",
         "ALTER TABLE projects ADD COLUMN status        TEXT    NOT NULL DEFAULT 'ideation'",
         # tasks table — columns added after initial rewrite
+        "ALTER TABLE tasks ADD COLUMN description    TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE tasks ADD COLUMN status         TEXT NOT NULL DEFAULT 'pending'",
         "ALTER TABLE tasks ADD COLUMN result_summary TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE tasks ADD COLUMN error_message  TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE tasks ADD COLUMN created_at     TEXT NOT NULL DEFAULT (datetime('now'))",
+        "ALTER TABLE tasks ADD COLUMN updated_at     TEXT NOT NULL DEFAULT (datetime('now'))",
     ]
     for sql in _migrations:
         try:
