@@ -857,13 +857,20 @@ class SSHTunnelExecutor:
             "    sys.exit(1)\n"
         )
 
-        # Write the script to a temp file on the laptop.
-        tmp_script = "/tmp/_skynet_ollama_coder.py"
+        # Write the script to a temp file inside the sandbox temp folder.
         if self.remote_os == "windows":
-            tmp_script = "C:\\Windows\\Temp\\_skynet_ollama_coder.py"
+            tmp_script = "E:\\SKYNET-SANDBOX\\temp\\_skynet_ollama_coder.py"
+        else:
+            tmp_script = "/tmp/_skynet_ollama_coder.py"
 
         sftp = client.open_sftp()
         try:
+            # Ensure the parent directory exists (e.g. E:\SKYNET-SANDBOX\temp\)
+            if self.remote_os == "windows":
+                tmp_parent = str(PureWindowsPath(tmp_script).parent)
+            else:
+                tmp_parent = str(PurePosixPath(tmp_script).parent)
+            self._sftp_makedirs(sftp, tmp_parent)
             with sftp.open(tmp_script, "w") as fh:
                 fh.write(script_body)
         except Exception as exc:
