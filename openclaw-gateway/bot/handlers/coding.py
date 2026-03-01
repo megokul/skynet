@@ -460,7 +460,7 @@ async def _coding_loop(
                 result = await send_action(
                     "run_coding_agent",
                     {
-                        "agent":       "claude",  # Claude Code CLI — works headlessly via SSH
+                        "agent":       "cline",
                         "prompt":      prompt,
                         "working_dir": working_dir,
                     },
