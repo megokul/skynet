@@ -28,8 +28,10 @@ from bot.handlers.coding import (
     approve_milestone_handler,
     coding_github_choice_handler,
     dashboard_handler,
+    run_project_handler,
     skip_milestone_handler,
     start_coding_handler,
+    stop_milestone_handler,
 )
 from bot.handlers.project import build_project_conversation_handler
 from bot.keyboards import (
@@ -38,8 +40,10 @@ from bot.keyboards import (
     CB_MAIN_MENU,
     CB_MILESTONE_APPROVE,
     CB_MILESTONE_SKIP,
+    CB_MILESTONE_STOP,
     CB_MY_PROJECTS,
     CB_REMINDER,
+    CB_RUN_PROJECT,
     CB_START_CODING,
     CB_WEB_SEARCH,
     CB_WEATHER,
@@ -99,5 +103,7 @@ def build_app(db, router) -> Application:
     app.add_handler(CallbackQueryHandler(coding_github_choice_handler, pattern=f"^{CB_CODING_GITHUB_SKIP}$"), group=2)
     app.add_handler(CallbackQueryHandler(approve_milestone_handler,  pattern=f"^{CB_MILESTONE_APPROVE}$"), group=2)
     app.add_handler(CallbackQueryHandler(skip_milestone_handler,     pattern=f"^{CB_MILESTONE_SKIP}$"),    group=2)
+    app.add_handler(CallbackQueryHandler(stop_milestone_handler,     pattern=f"^{CB_MILESTONE_STOP}$"),    group=2)
+    app.add_handler(CallbackQueryHandler(run_project_handler,        pattern=f"^{CB_RUN_PROJECT}$"),       group=2)
 
     return app

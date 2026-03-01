@@ -6,7 +6,6 @@ ConversationHandler states:
     AWAITING_PROJECT_TYPE  (2) — waiting for the user to tap a project type button
     GATHERING_REQUIREMENTS (3) — Project Specialist AI gathers requirements
     REVIEWING_PLAN         (4) — user reviewing the generated plan
-    AWAITING_GITHUB        (5) — user deciding whether to create a GitHub repo
 
 Entry point: user taps "🚀 Start a Project" from the main menu.
 Exit:        project saved to DB with approved plan; confirmation sent.
@@ -15,9 +14,7 @@ Cancel:      /cancel or /start at any point.
 from __future__ import annotations
 
 import logging
-import re
 
-import httpx
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -30,14 +27,11 @@ from telegram.ext import (
 )
 
 from bot.keyboards import (
-    CB_GITHUB_NO,
-    CB_GITHUB_YES,
     CB_PLAN_APPROVE,
     CB_PLAN_CHANGES,
     CB_REQUIREMENTS_DONE,
     CB_START_PROJECT,
     PROJECT_TYPE_LABELS,
-    github_choice,
     main_menu,
     plan_review,
     project_type,
@@ -56,7 +50,6 @@ AWAITING_PROJECT_NAME  = 1
 AWAITING_PROJECT_TYPE  = 2
 GATHERING_REQUIREMENTS = 3
 REVIEWING_PLAN         = 4
-AWAITING_GITHUB        = 5
 
 # Keys inside context.user_data
 _NAME_KEY     = "project_name"
@@ -277,52 +270,15 @@ async def approve_plan(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
-    """User approved the plan — ask about GitHub."""
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text(
-        "Plan approved! Should I create a GitHub repository for this project?",
-        reply_markup=github_choice(),
-    )
-    return AWAITING_GITHUB
-
-
-async def request_changes(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
-    """User wants changes — return to requirements chat."""
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text(
-        "Sure — what would you like to change or add?\n"
-        "Send /plan again when you're ready for a new version."
-    )
-    return GATHERING_REQUIREMENTS
-
-
-async def handle_github_choice(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
-    """Create GitHub repo if requested, then save project to DB."""
+    """User approved the plan — save project to DB and offer to start coding."""
     await update.callback_query.answer()
 
-    cb_data    = update.callback_query.data or ""
+    db      = context.bot_data.get(KEY_DB)
+    tg_user = update.effective_user
     name       = context.user_data.get(_NAME_KEY, "Untitled")
     type_label = context.user_data.get(_TYPE_KEY, "Other")
     plan       = context.user_data.get(_PLAN_KEY, "")
 
-    repo_line = ""
-    if cb_data == CB_GITHUB_YES:
-        await update.callback_query.message.reply_text("Creating GitHub repo…")
-        repo_url = await _create_github_repo(name)
-        if repo_url:
-            repo_line = f"\nRepo: {repo_url}"
-        else:
-            repo_line = "\n(GitHub repo creation failed — check GITHUB_PAT)"
-
-    # Save project to DB
-    db      = context.bot_data.get(KEY_DB)
-    tg_user = update.effective_user
     try:
         user = await ensure_user(
             db,
@@ -347,18 +303,32 @@ async def handle_github_choice(
         _clear_user_data(context)
         return ConversationHandler.END
 
-    # Persist project_id for the coding handler before clearing user_data.
     context.user_data["last_project_id"] = project["id"]
     _clear_user_data(context)
 
     await update.callback_query.message.reply_text(
-        f"Project <b>{project['name']}</b> is all set!{repo_line}\n"
-        f"Type: {project['project_type']} | Status: {project['status']}\n\n"
+        f"✅ <b>{project['name']}</b> saved!\n"
+        f"Type: {project['project_type']}\n\n"
         "Ready to build it?",
         parse_mode="HTML",
         reply_markup=start_coding(),
     )
     return ConversationHandler.END
+
+
+async def request_changes(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    """User wants changes — return to requirements chat."""
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text(
+        "Sure — what would you like to change or add?\n"
+        "Send /plan again when you're ready for a new version."
+    )
+    return GATHERING_REQUIREMENTS
+
+
 
 
 async def cancel_project(
@@ -380,40 +350,6 @@ def _clear_user_data(context: ContextTypes.DEFAULT_TYPE) -> None:
     for key in (_NAME_KEY, _TYPE_KEY, _REQS_HISTORY, _PLAN_KEY):
         context.user_data.pop(key, None)
 
-
-async def _create_github_repo(name: str) -> str | None:
-    """Create a private GitHub repo via the REST API. Returns the HTML URL or None."""
-    import config as cfg  # avoid circular import at module level
-    token = getattr(cfg, "GITHUB_PAT", "")
-    if not token:
-        logger.warning("GITHUB_PAT not set — skipping repo creation")
-        return None
-
-    slug = re.sub(r"[^a-z0-9-]", "", name.lower().replace(" ", "-"))
-    slug = slug.strip("-") or "new-project"
-
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                "https://api.github.com/user/repos",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-                json={
-                    "name": slug,
-                    "private": True,
-                    "auto_init": True,
-                    "description": "Created by SKYNET Project Specialist",
-                },
-            )
-        if resp.status_code in (200, 201):
-            return resp.json().get("html_url")
-        logger.warning("GitHub API %s: %s", resp.status_code, resp.text[:200])
-    except Exception:
-        logger.exception("GitHub repo creation failed for %r", name)
-    return None
 
 
 # ── Builder ───────────────────────────────────────────────────────────────────
@@ -441,10 +377,6 @@ def build_project_conversation_handler() -> ConversationHandler:
             REVIEWING_PLAN: [
                 CallbackQueryHandler(approve_plan,    pattern=f"^{CB_PLAN_APPROVE}$"),
                 CallbackQueryHandler(request_changes, pattern=f"^{CB_PLAN_CHANGES}$"),
-            ],
-            AWAITING_GITHUB: [
-                CallbackQueryHandler(handle_github_choice, pattern=f"^{CB_GITHUB_YES}$"),
-                CallbackQueryHandler(handle_github_choice, pattern=f"^{CB_GITHUB_NO}$"),
             ],
         },
         fallbacks=[

@@ -31,15 +31,14 @@ CB_TYPE_OTHER    = "type:other"
 CB_PLAN_APPROVE  = "plan:approve"
 CB_PLAN_CHANGES  = "plan:changes"
 
-CB_GITHUB_YES    = "github:yes"
-CB_GITHUB_NO     = "github:no"
-
 CB_REQUIREMENTS_DONE  = "req:done"
 CB_START_CODING       = "project:start_coding"
 CB_CODING_GITHUB_YES  = "coding:github_yes"
 CB_CODING_GITHUB_SKIP = "coding:github_skip"
 CB_MILESTONE_APPROVE  = "milestone:approve"
 CB_MILESTONE_SKIP     = "milestone:skip"
+CB_MILESTONE_STOP     = "milestone:stop"
+CB_RUN_PROJECT        = "project:run"
 
 # Human-readable label for each project type callback
 PROJECT_TYPE_LABELS: dict[str, str] = {
@@ -126,16 +125,6 @@ def plan_review() -> InlineKeyboardMarkup:
     ])
 
 
-def github_choice() -> InlineKeyboardMarkup:
-    """Ask the user whether to create a GitHub repo."""
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Yes, create repo", callback_data=CB_GITHUB_YES),
-            InlineKeyboardButton("⬛ No thanks",         callback_data=CB_GITHUB_NO),
-        ],
-    ])
-
-
 def requirements_done() -> InlineKeyboardMarkup:
     """Shown after every Project Specialist reply — lets user skip to plan generation."""
     return InlineKeyboardMarkup([
@@ -169,4 +158,13 @@ def milestone_review() -> InlineKeyboardMarkup:
             InlineKeyboardButton("✅ Run It", callback_data=CB_MILESTONE_APPROVE),
             InlineKeyboardButton("⏭ Skip",   callback_data=CB_MILESTONE_SKIP),
         ],
+        [InlineKeyboardButton("🛑 Stop Session", callback_data=CB_MILESTONE_STOP)],
+    ])
+
+
+def run_project() -> InlineKeyboardMarkup:
+    """Shown after coding completes — lets user run the project on the worker laptop."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("▶️ Run Project", callback_data=CB_RUN_PROJECT)],
+        [InlineKeyboardButton("🏠 Main Menu",   callback_data=CB_MAIN_MENU)],
     ])

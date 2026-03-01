@@ -29,6 +29,7 @@ from bot.keyboards import (
     coding_github_setup,
     main_menu,
     milestone_review,
+    run_project,
 )
 from bot.state import KEY_DB, KEY_ROUTER
 from db.store import (
@@ -111,10 +112,15 @@ async def coding_github_choice_handler(
 
     do_github = (cb_data == CB_CODING_GITHUB_YES)
 
+    slug = _slugify(project["name"])
+    working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
+
     await update.callback_query.message.reply_text(
         "Starting coding session…\n"
+        f"📁 Project folder: <code>{working_dir}</code>\n\n"
         "I'll send you each milestone for approval before executing. "
-        "Use /status anytime to check progress."
+        "Use /status anytime to check progress.",
+        parse_mode="HTML",
     )
 
     task = asyncio.create_task(
@@ -155,6 +161,24 @@ async def skip_milestone_handler(
     if event:
         context.bot_data[_MS_DECISION_KEY.format(uid=user_id)] = "skip"
         event.set()
+
+
+async def stop_milestone_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """User tapped 🛑 Stop Session — signal the coding loop to abort."""
+    await update.callback_query.answer("Stopping…")
+    user_id   = update.effective_user.id
+    event_key = _MS_EVENT_KEY.format(uid=user_id)
+    event: asyncio.Event | None = context.bot_data.get(event_key)
+    if event:
+        context.bot_data[_MS_DECISION_KEY.format(uid=user_id)] = "stop"
+        event.set()
+    else:
+        await update.callback_query.message.reply_text(
+            "No active coding session to stop."
+        )
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -210,14 +234,24 @@ async def dashboard_handler(
     )
     status_note = " | 🔄 Coding in progress" if is_running else ""
 
+    slug        = _slugify(project["name"])
+    working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
+
     text = (
         f"<b>📊 {project['name']}</b> — {project['project_type']}\n"
+        f"📁 <code>{working_dir}</code>\n"
         f"Status: {project['status']}{status_note}\n\n"
         f"{task_lines}"
     )
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="nav:main_menu")],
-    ])
+
+    # Show Run Project button if coding is done and a project_id is stored.
+    run_pid = context.bot_data.get(f"run_project_{tg_user.id}")
+    if run_pid and not is_running:
+        keyboard = run_project()
+    else:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Main Menu", callback_data="nav:main_menu")],
+        ])
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
@@ -321,6 +355,14 @@ async def _coding_loop(
             app.bot_data.pop(event_key, None)
             decision = app.bot_data.pop(decision_key, "skip")
 
+            if decision == "stop":
+                await app.bot.send_message(
+                    chat_id,
+                    f"🛑 Session stopped at milestone {i}/{total}.\n"
+                    "Use /status to review completed milestones.",
+                )
+                return
+
             if decision == "skip":
                 await app.bot.send_message(chat_id, f"⏭ Milestone {i} skipped.")
                 continue
@@ -385,12 +427,14 @@ async def _coding_loop(
                 )
 
         # ── Done ──────────────────────────────────────────────────────────────
+        app.bot_data[f"run_project_{user_id}"] = project["id"]
         await app.bot.send_message(
             chat_id,
             f"🎉 <b>{project['name']}</b> coding session complete!\n"
-            "Use /status to review all milestones.",
+            f"📁 <code>{working_dir}</code>\n\n"
+            "Use /status to review milestones or run the project now.",
             parse_mode="HTML",
-            reply_markup=main_menu(),
+            reply_markup=run_project(),
         )
 
     except Exception:
@@ -400,6 +444,88 @@ async def _coding_loop(
             "An unexpected error occurred in the coding loop. "
             "Use /status to see what was completed.",
             reply_markup=main_menu(),
+        )
+
+
+# ── Run Project ───────────────────────────────────────────────────────────────
+
+async def run_project_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """User tapped ▶️ Run Project — execute the project script on the CLAW worker."""
+    await update.callback_query.answer()
+
+    user_id = update.effective_user.id
+    db      = context.bot_data.get(KEY_DB)
+
+    # Prefer the project from the last coding session; fallback to most recent.
+    pid_key    = f"run_project_{user_id}"
+    project_id = context.bot_data.get(pid_key)
+    project    = None
+    if project_id:
+        project = await get_project(db, project_id)
+
+    if not project:
+        tg_user  = update.effective_user
+        user     = await ensure_user(
+            db,
+            telegram_user_id=tg_user.id,
+            username=tg_user.username    or "",
+            first_name=tg_user.first_name or "",
+            last_name=tg_user.last_name   or "",
+        )
+        projects = await list_projects(db, user_id=user["id"])
+        project  = projects[0] if projects else None
+
+    if not project:
+        await update.callback_query.message.reply_text(
+            "No project found to run.", reply_markup=main_menu()
+        )
+        return
+
+    if not is_agent_connected():
+        await update.callback_query.message.reply_text(
+            "⚠️ Worker not connected — can't run the project right now.",
+            reply_markup=run_project(),
+        )
+        return
+
+    slug        = _slugify(project["name"])
+    working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
+    script      = f"{slug}.py"
+
+    await update.callback_query.message.reply_text(
+        f"▶️ Running <code>{script}</code> on your laptop…",
+        parse_mode="HTML",
+    )
+
+    try:
+        result = await send_action(
+            "exec_command",
+            {"command": f"python {script}", "working_dir": working_dir},
+            timeout=60,
+            confirmed=True,
+        )
+        stdout    = (result.get("stdout") or "").strip()
+        stderr    = (result.get("stderr") or "").strip()
+        exit_code = result.get("exit_code", 0)
+
+        output = (stdout or stderr or "(no output)")[:1000]
+        status_line = (
+            f"✅ Finished (exit {exit_code})"
+            if exit_code == 0
+            else f"❌ Exited with code {exit_code}"
+        )
+        await update.callback_query.message.reply_text(
+            f"<pre>{output}</pre>\n\n{status_line}",
+            parse_mode="HTML",
+            reply_markup=run_project(),
+        )
+    except Exception as exc:
+        await update.callback_query.message.reply_text(
+            f"❌ Run failed: {str(exc)[:300]}",
+            reply_markup=run_project(),
         )
 
 
