@@ -104,4 +104,9 @@ GITHUB_PAT: str      = _s("GITHUB_PAT")       # Personal Access Token (repo scop
 GITHUB_USERNAME: str = _s("GITHUB_USERNAME")  # Owner username for repo creation
 
 # ── Worker ────────────────────────────────────────────────────────────────────
-WORKER_PROJECTS_DIR: str = _s("WORKER_PROJECTS_DIR", "C:/Projects")
+# Read OPENCLAW_PROJECT_BASE_DIR first (set by CI/CD), fall back to
+# WORKER_PROJECTS_DIR for manual overrides, then a safe default.
+WORKER_PROJECTS_DIR: str = _s(
+    "OPENCLAW_PROJECT_BASE_DIR",
+    _s("WORKER_PROJECTS_DIR", "C:/Projects"),
+)
