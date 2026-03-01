@@ -81,6 +81,70 @@ TEMPLATES: dict[str, dict] = {
         "scaffold": [],
     },
 
+    "Python App": {
+        "stack": "Python 3.11+ + FastAPI or Flask + SQLAlchemy + PostgreSQL",
+        "questions": [
+            "What does this app do? (web service, automation, utility, other)",
+            "Which framework? (FastAPI, Flask, plain Python script)",
+            "Does it need a database? If so, what data does it store?",
+            "Will it run as a background service, scheduled job, or on-demand?",
+            "Any external APIs or services to integrate with?",
+        ],
+        "structure": "app/ models/ routes/ services/ tests/ config/",
+        "scaffold": [
+            "pip install fastapi uvicorn sqlalchemy psycopg2-binary pytest",
+            "mkdir -p app/models app/routes app/services tests",
+        ],
+    },
+
+    "API / Backend": {
+        "stack": "Python FastAPI + PostgreSQL + Docker, or Node.js + Express + MongoDB",
+        "questions": [
+            "What language/framework? (FastAPI, Express, Django REST, other)",
+            "What are the main API endpoints / resources?",
+            "What data needs to be stored? Describe the main entities.",
+            "Do you need authentication? (JWT, OAuth, API key)",
+            "Will it be deployed as a standalone service or part of a larger system?",
+        ],
+        "structure": "api/ models/ routes/ middleware/ db/ tests/ docs/",
+        "scaffold": [
+            "pip install fastapi uvicorn sqlalchemy alembic pytest httpx",
+            "mkdir -p api/routes api/models api/middleware db tests docs",
+        ],
+    },
+
+    "Data / ML": {
+        "stack": "Python 3.11+ + pandas + scikit-learn / PyTorch + Jupyter",
+        "questions": [
+            "What is the goal? (classification, regression, NLP, computer vision, analytics)",
+            "What data sources will you use? (CSV, API, database, scraping)",
+            "Do you need a model training pipeline or just analysis/visualisation?",
+            "Should the results be served via an API, dashboard, or report?",
+            "Any specific libraries? (PyTorch, TensorFlow, HuggingFace, statsmodels)",
+        ],
+        "structure": "data/ notebooks/ src/ models/ outputs/ tests/",
+        "scaffold": [
+            "pip install pandas numpy scikit-learn matplotlib seaborn jupyter pytest",
+            "mkdir -p data/raw data/processed notebooks src models outputs tests",
+        ],
+    },
+
+    "Desktop": {
+        "stack": "Python + Tkinter / PyQt6, or Electron + React + TypeScript",
+        "questions": [
+            "Which platform? (Windows, macOS, Linux, cross-platform)",
+            "Preferred UI toolkit? (Tkinter, PyQt6, Electron, other)",
+            "What does the app do? Describe the main screens and features.",
+            "Does it need local data storage? (SQLite, JSON files)",
+            "Should it be distributable as a standalone installer?",
+        ],
+        "structure": "src/ ui/ assets/ tests/ dist/",
+        "scaffold": [
+            "pip install PyQt6 pytest",
+            "mkdir -p src/ui src/assets tests dist",
+        ],
+    },
+
     "Other": {
         "stack": "To be determined based on requirements",
         "questions": [

@@ -18,9 +18,13 @@ CB_MY_PROJECTS   = "nav:my_projects"
 CB_MAIN_MENU     = "nav:main_menu"
 
 CB_TYPE_WEB      = "type:web_app"
+CB_TYPE_PYTHON   = "type:python_app"
 CB_TYPE_MOBILE   = "type:mobile"
+CB_TYPE_DESKTOP  = "type:desktop"
 CB_TYPE_CLI      = "type:cli"
+CB_TYPE_API      = "type:api_backend"
 CB_TYPE_LIBRARY  = "type:library"
+CB_TYPE_DATA     = "type:data_ml"
 CB_TYPE_BOT      = "type:bot"
 CB_TYPE_OTHER    = "type:other"
 
@@ -40,9 +44,13 @@ CB_MILESTONE_SKIP     = "milestone:skip"
 # Human-readable label for each project type callback
 PROJECT_TYPE_LABELS: dict[str, str] = {
     CB_TYPE_WEB:     "Web App",
+    CB_TYPE_PYTHON:  "Python App",
     CB_TYPE_MOBILE:  "Mobile",
+    CB_TYPE_DESKTOP: "Desktop",
     CB_TYPE_CLI:     "CLI",
+    CB_TYPE_API:     "API / Backend",
     CB_TYPE_LIBRARY: "Library",
+    CB_TYPE_DATA:    "Data / ML",
     CB_TYPE_BOT:     "Bot",
     CB_TYPE_OTHER:   "Other",
 }
@@ -69,16 +77,24 @@ def project_type() -> InlineKeyboardMarkup:
     """Project type selection — shown during project creation."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🌐 Web App",  callback_data=CB_TYPE_WEB),
-            InlineKeyboardButton("📱 Mobile",   callback_data=CB_TYPE_MOBILE),
+            InlineKeyboardButton("🌐 Web App",      callback_data=CB_TYPE_WEB),
+            InlineKeyboardButton("🐍 Python App",   callback_data=CB_TYPE_PYTHON),
         ],
         [
-            InlineKeyboardButton("🖥 CLI",      callback_data=CB_TYPE_CLI),
-            InlineKeyboardButton("📦 Library",  callback_data=CB_TYPE_LIBRARY),
+            InlineKeyboardButton("📱 Mobile",       callback_data=CB_TYPE_MOBILE),
+            InlineKeyboardButton("🖥️ Desktop",      callback_data=CB_TYPE_DESKTOP),
         ],
         [
-            InlineKeyboardButton("🤖 Bot",      callback_data=CB_TYPE_BOT),
-            InlineKeyboardButton("❓ Other",    callback_data=CB_TYPE_OTHER),
+            InlineKeyboardButton("⌨️ CLI",          callback_data=CB_TYPE_CLI),
+            InlineKeyboardButton("🔌 API/Backend",  callback_data=CB_TYPE_API),
+        ],
+        [
+            InlineKeyboardButton("📦 Library",      callback_data=CB_TYPE_LIBRARY),
+            InlineKeyboardButton("📊 Data/ML",      callback_data=CB_TYPE_DATA),
+        ],
+        [
+            InlineKeyboardButton("🤖 Bot",          callback_data=CB_TYPE_BOT),
+            InlineKeyboardButton("❓ Other",        callback_data=CB_TYPE_OTHER),
         ],
     ])
 
