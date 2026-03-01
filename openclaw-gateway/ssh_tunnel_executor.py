@@ -799,6 +799,150 @@ class SSHTunnelExecutor:
         rc = stdout.channel.recv_exit_status()
         return {"returncode": int(rc), "stdout": out, "stderr": err}
 
+    # ------------------------------------------------------------------
+    # Ollama coding agent — EC2 calls Ollama on laptop via SSH, all
+    # intelligence (prompt building, code parsing, file writing) stays on EC2.
+    # ------------------------------------------------------------------
+
+    _OLLAMA_SYSTEM_PROMPT = (
+        "You are an expert coding agent. Implement the task completely.\n"
+        "For EVERY file you create or modify, output it using this exact format:\n\n"
+        "```relative/path/to/file.ext\n"
+        "<full file content>\n"
+        "```\n\n"
+        "Rules:\n"
+        "- Write complete, working code — no placeholders, no '...'.\n"
+        "- Include every file needed (source, config, requirements, etc.).\n"
+        "- Do NOT add explanations outside code blocks.\n"
+        "- Use the working directory as the project root.\n"
+    )
+
+    def _run_ollama_coding_agent(
+        self,
+        client: paramiko.SSHClient,
+        prompt: str,
+        working_dir: str | None,
+        model: str,
+        ollama_url: str,
+        timeout: int,
+    ) -> dict[str, Any]:
+        """
+        1. Write a one-shot Python script to the laptop via SFTP.
+        2. Run it via SSH exec — it calls the local Ollama API and prints the response.
+        3. Parse the response on EC2 for fenced code blocks with file paths.
+        4. Write each file to the laptop via SFTP.
+        5. Return a summary.
+
+        Laptop is a dumb executor: it runs Python standard library + Ollama.
+        All logic lives here on EC2.
+        """
+        full_prompt = f"{self._OLLAMA_SYSTEM_PROMPT}\nTask: {prompt}"
+        b64_prompt  = base64.b64encode(full_prompt.encode("utf-8")).decode("ascii")
+        b64_url     = base64.b64encode(ollama_url.encode("utf-8")).decode("ascii")
+        b64_model   = base64.b64encode(model.encode("utf-8")).decode("ascii")
+
+        # One-shot Python script — uses only stdlib (no pip installs needed).
+        script_body = (
+            "import base64, json, urllib.request, sys\n"
+            f"prompt = base64.b64decode('{b64_prompt}').decode('utf-8')\n"
+            f"url    = base64.b64decode('{b64_url}').decode('utf-8') + '/api/generate'\n"
+            f"model  = base64.b64decode('{b64_model}').decode('utf-8')\n"
+            "payload = json.dumps({'model': model, 'prompt': prompt, 'stream': False}).encode()\n"
+            "req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})\n"
+            "try:\n"
+            "    resp = urllib.request.urlopen(req, timeout=600).read().decode()\n"
+            "    print(json.loads(resp).get('response', ''))\n"
+            "except Exception as e:\n"
+            "    print(f'OLLAMA_ERROR: {e}', file=__import__('sys').stderr)\n"
+            "    sys.exit(1)\n"
+        )
+
+        # Write the script to a temp file on the laptop.
+        tmp_script = "/tmp/_skynet_ollama_coder.py"
+        if self.remote_os == "windows":
+            tmp_script = "C:\\Windows\\Temp\\_skynet_ollama_coder.py"
+
+        sftp = client.open_sftp()
+        try:
+            with sftp.open(tmp_script, "w") as fh:
+                fh.write(script_body)
+        except Exception as exc:
+            sftp.close()
+            return {"returncode": 1, "stdout": "", "stderr": f"Cannot write temp script: {exc}"}
+
+        # Run it — stdout is the Ollama-generated text.
+        result = self._run_command(client, ["python", tmp_script], cwd=None, timeout=timeout)
+
+        # Clean up temp script (best effort).
+        try:
+            sftp.remove(tmp_script)
+        except Exception:
+            pass
+
+        if result["returncode"] != 0:
+            sftp.close()
+            return result
+
+        generated = result["stdout"]
+
+        # Parse fenced code blocks: ```path/to/file.ext\n<content>\n```
+        pattern = re.compile(r"```([^\n`]+)\n(.*?)```", re.DOTALL)
+        files_written: list[str] = []
+        errors: list[str] = []
+
+        cwd_norm = _norm_remote_path(working_dir, self.remote_os) if working_dir else ""
+
+        for match in pattern.finditer(generated):
+            filename = match.group(1).strip()
+            content  = match.group(2)
+
+            # Skip bare language hints like ```python or ```bash with no path separator.
+            if "." not in filename and "/" not in filename and "\\" not in filename:
+                continue
+
+            # Resolve to absolute path inside working_dir.
+            if cwd_norm and not os.path.isabs(filename):
+                if self.remote_os == "windows":
+                    remote_path = cwd_norm.rstrip("\\") + "\\" + filename.replace("/", "\\")
+                else:
+                    remote_path = cwd_norm.rstrip("/") + "/" + filename.lstrip("/")
+            else:
+                remote_path = _norm_remote_path(filename, self.remote_os)
+
+            # Ensure parent directory exists.
+            try:
+                if self.remote_os == "windows":
+                    parent = str(PureWindowsPath(remote_path).parent)
+                else:
+                    parent = str(PurePosixPath(remote_path).parent)
+                self._sftp_makedirs(sftp, parent)
+                with sftp.open(remote_path, "w") as fh:
+                    fh.write(content)
+                files_written.append(filename)
+            except Exception as exc:
+                errors.append(f"{filename}: {exc}")
+
+        sftp.close()
+
+        if not files_written and not errors:
+            return {
+                "returncode": 1,
+                "stdout": generated[:1000],
+                "stderr": "Ollama responded but no code blocks with file paths were found.",
+            }
+
+        summary_parts = []
+        if files_written:
+            summary_parts.append(f"Wrote {len(files_written)} file(s): {', '.join(files_written)}")
+        if errors:
+            summary_parts.append(f"Errors: {'; '.join(errors)}")
+
+        return {
+            "returncode": 0 if files_written else 1,
+            "stdout": "\n".join(summary_parts),
+            "stderr": "",
+        }
+
     def _run_command_action(self, client: paramiko.SSHClient, action: str, params: dict[str, Any]) -> dict[str, Any]:
         """
         Run command action.
@@ -1014,6 +1158,24 @@ class SSHTunnelExecutor:
             prompt = self._require_str(params, "prompt")
             cwd = params.get("working_dir")
             timeout = params.get("timeout_seconds", 1800)
+
+            # ── Ollama coding agent (built-in — no binary on PATH needed) ────────
+            if agent == "ollama":
+                if not isinstance(timeout, int) or timeout < 30 or timeout > 3600:
+                    timeout = 1800
+                ollama_url = str(
+                    params.get("ollama_url")
+                    or os.environ.get("OPENCLAW_OLLAMA_URL", "http://localhost:11434")
+                )
+                ollama_model = str(
+                    params.get("model")
+                    or os.environ.get("OPENCLAW_OLLAMA_MODEL", "qwen2.5-coder")
+                )
+                return self._run_ollama_coding_agent(
+                    client, prompt, cwd, ollama_model, ollama_url, int(timeout)
+                )
+            # ─────────────────────────────────────────────────────────────────────
+
             if agent not in self._coding_bins:
                 allowed = ", ".join(sorted(self._coding_bins.keys()))
                 return {"returncode": 1, "stdout": "", "stderr": f"Unknown coding agent '{agent}'. Allowed: {allowed}"}
