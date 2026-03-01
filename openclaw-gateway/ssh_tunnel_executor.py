@@ -1154,7 +1154,9 @@ class SSHTunnelExecutor:
             return configured
 
         if action == "run_coding_agent":
-            agent = self._require_str(params, "agent").strip().lower()
+            # "agent" defaults to "ollama" — the SSH executor is the coding agent;
+            # it calls Ollama on the laptop via SSH and writes the generated files back.
+            agent = str(params.get("agent") or "ollama").strip().lower()
             prompt = self._require_str(params, "prompt")
             cwd = params.get("working_dir")
             timeout = params.get("timeout_seconds", 1800)

@@ -460,7 +460,6 @@ async def _coding_loop(
                 result = await send_action(
                     "run_coding_agent",
                     {
-                        "agent":       "ollama",
                         "prompt":      prompt,
                         "working_dir": working_dir,
                     },
