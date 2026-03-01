@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 from telegram.ext import ConversationHandler
 
 # ── Helpers from conftest ─────────────────────────────────────────────────────
-from conftest import make_callback_update, make_message_update, make_context
+from helpers import make_callback_update, make_message_update, make_context
 
 # ── Modules under test ────────────────────────────────────────────────────────
 from bot.handlers.greeting import greeting_handler
@@ -628,4 +628,276 @@ class TestRunProject:
                     for row in comp_markup.inline_keyboard for btn in row]
         assert CB_RUN_PROJECT in all_data, (
             f"Run Project button missing from completion keyboard; got: {all_data}"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST CASE 4  —  Worker error surfacing in coding loop
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestCodingLoopErrorSurfacing:
+    """
+    TC-4: verify that errors returned by the real CLAW worker are surfaced
+    to the user and recorded in the DB — not silently swallowed.
+
+    The real gateway wraps worker responses:
+      success → {"status": "success", "result": {"returncode": 0, "stdout": "...", ...}}
+      error   → {"status": "error",   "error":  "<reason>"}
+
+    Before this fix the loop always showed ✅ and marked tasks done regardless.
+    """
+
+    PROJECT = {
+        "id":           "proj99",
+        "name":         "ErrorApp",
+        "project_type": "Python App",
+        "status":       "approved",
+    }
+    USER_ID  = 77
+    CHAT_ID  = 300
+
+    # ── shared loop runner ────────────────────────────────────────────────────
+
+    async def _run_loop_single_milestone(
+        self,
+        send_action_return,
+        *,
+        do_github=False,
+    ):
+        """Run the coding loop for one milestone and return (app, sent_messages)."""
+        app          = MagicMock()
+        app.bot_data = {}
+        sent: list[str] = []
+
+        async def _send(cid, text, **kw):
+            sent.append(text)
+
+        app.bot.send_message = AsyncMock(side_effect=_send)
+
+        task_rec = {"id": 55}
+        mock_create_task   = AsyncMock(return_value=task_rec)
+        mock_update_status = AsyncMock()
+
+        async def _approve():
+            event_key = _MS_EVENT_KEY.format(uid=self.USER_ID)
+            dec_key   = _MS_DECISION_KEY.format(uid=self.USER_ID)
+            for _ in range(300):
+                if event_key in app.bot_data:
+                    app.bot_data[dec_key] = "approve"
+                    app.bot_data[event_key].set()
+                    return
+                await asyncio.sleep(0.01)
+
+        approve_task = asyncio.create_task(_approve())
+
+        with (
+            patch("bot.handlers.coding._extract_milestones",
+                  new=AsyncMock(return_value=["Do the thing"])),
+            patch("bot.handlers.coding.is_agent_connected", return_value=True),
+            patch("bot.handlers.coding.send_action",
+                  new=AsyncMock(return_value=send_action_return)),
+            patch("bot.handlers.coding.create_task",      new=mock_create_task),
+            patch("bot.handlers.coding.update_task_status", new=mock_update_status),
+        ):
+            await _coding_loop(
+                app, self.CHAT_ID, self.USER_ID, self.PROJECT, do_github=do_github,
+            )
+
+        await approve_task
+        return app, sent, mock_create_task, mock_update_status
+
+    # ── 4a: worker error envelope → task marked failed ───────────────────────
+
+    @pytest.mark.asyncio
+    async def test_milestone_marked_failed_when_worker_returns_error(self):
+        """
+        When send_action returns {"status": "error", "error": "cline not found"},
+        the task must be marked 'failed' in the DB and the user sees ❌.
+        """
+        error_envelope = {"status": "error", "error": "cline not found on PATH"}
+
+        app, sent, mock_create, mock_update = await self._run_loop_single_milestone(
+            error_envelope
+        )
+
+        # DB: task created then marked failed (not done)
+        # status is always passed as a kwarg: update_task_status(db, id, status=...)
+        mock_create.assert_awaited_once()
+        statuses = [c.kwargs.get("status") for c in mock_update.call_args_list]
+        assert "failed" in statuses, (
+            f"Task must be marked 'failed'; update kwargs: {statuses}"
+        )
+        assert "done" not in statuses, (
+            f"Task must NOT be marked 'done' on error; update kwargs: {statuses}"
+        )
+
+        # User sees an error message, not a success message
+        all_text = " ".join(sent)
+        assert "❌" in all_text or "failed" in all_text.lower(), (
+            f"User must see ❌/failed message; sent: {sent}"
+        )
+        assert "✅ Milestone" not in all_text, (
+            f"Must not show ✅ Milestone complete on error; sent: {sent}"
+        )
+
+    # ── 4b: real success envelope → summary from result["result"]["stdout"] ──
+
+    @pytest.mark.asyncio
+    async def test_milestone_summary_read_from_real_worker_envelope(self):
+        """
+        When send_action returns the real worker format
+          {"status": "success", "result": {"returncode": 0, "stdout": "agent output", ...}}
+        the milestone completion message must contain the stdout summary.
+        """
+        real_envelope = {
+            "status": "success",
+            "result": {
+                "returncode": 0,
+                "stdout":     "Created vodoo.py — 5 lines, 0 errors.",
+                "stderr":     "",
+            },
+        }
+
+        app, sent, mock_create, mock_update = await self._run_loop_single_milestone(
+            real_envelope
+        )
+
+        # Task must be marked done
+        statuses = [c.kwargs.get("status") for c in mock_update.call_args_list]
+        assert "done" in statuses, (
+            f"Task must be marked 'done' on success; update kwargs: {statuses}"
+        )
+
+        # stdout from the INNER result dict must appear in the chat message
+        all_text = " ".join(sent)
+        assert "Created vodoo.py" in all_text, (
+            f"stdout from result['result']['stdout'] must appear in chat; sent: {sent}"
+        )
+
+    # ── 4c: GitHub error → warning shown, not fake ✅ ─────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_github_setup_shows_warning_on_worker_error(self):
+        """
+        When gh_create_repo returns {"status": "error", "error": "gh: not authenticated"},
+        the bot must show ⚠️ GitHub setup failed — NOT ✅ GitHub repo created.
+        """
+        error_envelope = {
+            "status": "error",
+            "error":  "gh: not authenticated. Run 'gh auth login'.",
+        }
+
+        # For this test, the gh_create_repo call returns error; milestone
+        # send_action after that returns success so the loop completes.
+        success_envelope = {
+            "status": "success",
+            "result": {"returncode": 0, "stdout": "done", "stderr": ""},
+        }
+        call_count = 0
+
+        async def _side_effect(action, params, **kw):
+            nonlocal call_count
+            call_count += 1
+            if action == "gh_create_repo":
+                return error_envelope
+            return success_envelope
+
+        app          = MagicMock()
+        app.bot_data = {}
+        sent: list[str] = []
+
+        async def _send(cid, text, **kw):
+            sent.append(text)
+
+        app.bot.send_message = AsyncMock(side_effect=_send)
+
+        async def _approve():
+            event_key = _MS_EVENT_KEY.format(uid=self.USER_ID)
+            dec_key   = _MS_DECISION_KEY.format(uid=self.USER_ID)
+            for _ in range(300):
+                if event_key in app.bot_data:
+                    app.bot_data[dec_key] = "approve"
+                    app.bot_data[event_key].set()
+                    return
+                await asyncio.sleep(0.01)
+
+        approve_task = asyncio.create_task(_approve())
+
+        with (
+            patch("bot.handlers.coding._extract_milestones",
+                  new=AsyncMock(return_value=["Do the thing"])),
+            patch("bot.handlers.coding.is_agent_connected", return_value=True),
+            patch("bot.handlers.coding.send_action",
+                  new=AsyncMock(side_effect=_side_effect)),
+            patch("bot.handlers.coding.create_task",
+                  new=AsyncMock(return_value={"id": 1})),
+            patch("bot.handlers.coding.update_task_status", new=AsyncMock()),
+        ):
+            await _coding_loop(
+                app, self.CHAT_ID, self.USER_ID, self.PROJECT, do_github=True,
+            )
+
+        await approve_task
+
+        all_text = " ".join(sent)
+        assert "⚠️" in all_text or "failed" in all_text.lower(), (
+            f"Must show GitHub setup warning; sent: {sent}"
+        )
+        assert "✅ GitHub repo created" not in all_text, (
+            f"Must NOT show fake ✅ on GitHub error; sent: {sent}"
+        )
+        assert "gh: not authenticated" in all_text, (
+            f"Error reason must appear in the warning; sent: {sent}"
+        )
+
+    # ── 4d: run_project handler reads real worker envelope ────────────────────
+
+    @pytest.mark.asyncio
+    async def test_run_project_reads_real_worker_envelope(self):
+        """
+        run_project_handler must unwrap result["result"]["stdout"] (real worker format)
+        and display it, not look at the top-level result["stdout"].
+        """
+        real_envelope = {
+            "status": "success",
+            "result": {
+                "returncode": 0,
+                "stdout":     "Hello from errorapp!\n",
+                "stderr":     "",
+            },
+        }
+        # Deliberately put WRONG data at top level to prove we read the inner dict.
+        real_envelope["stdout"] = "SHOULD_NOT_APPEAR"
+        real_envelope["exit_code"] = 99
+
+        update  = make_callback_update(CB_RUN_PROJECT, user_id=self.USER_ID)
+        context = make_context(bot_data={
+            KEY_DB: MagicMock(),
+            f"run_project_{self.USER_ID}": self.PROJECT["id"],
+        })
+
+        with (
+            patch("bot.handlers.coding.get_project",
+                  new=AsyncMock(return_value=self.PROJECT)),
+            patch("bot.handlers.coding.is_agent_connected", return_value=True),
+            patch("bot.handlers.coding.send_action",
+                  new=AsyncMock(return_value=real_envelope)),
+        ):
+            await run_project_handler(update, context)
+
+        all_replies = " ".join(
+            str(c.args[0] if c.args else c)
+            for c in update.callback_query.message.reply_text.call_args_list
+        )
+        # Inner stdout must appear
+        assert "Hello from errorapp" in all_replies, (
+            f"Inner stdout must appear in reply; got: {all_replies!r}"
+        )
+        # Top-level wrong value must NOT appear
+        assert "SHOULD_NOT_APPEAR" not in all_replies, (
+            f"Top-level stdout must be ignored; got: {all_replies!r}"
+        )
+        # exit code from inner result["result"]["returncode"] = 0 → ✅
+        assert "✅" in all_replies or "exit 0" in all_replies, (
+            f"exit 0 from inner returncode must show ✅; got: {all_replies!r}"
         )

@@ -287,7 +287,7 @@ async def _coding_loop(
             await app.bot.send_message(chat_id, "🔧 Creating GitHub repo and project folder…")
             if is_agent_connected():
                 try:
-                    await send_action(
+                    gh_result = await send_action(
                         "gh_create_repo",
                         {
                             "working_dir": working_dir,
@@ -298,6 +298,8 @@ async def _coding_loop(
                         timeout=120,
                         confirmed=True,
                     )
+                    if gh_result.get("status") == "error":
+                        raise RuntimeError(gh_result.get("error", "Unknown error"))
                     await app.bot.send_message(chat_id, "✅ GitHub repo created.")
                 except Exception as exc:
                     await app.bot.send_message(
@@ -400,14 +402,18 @@ async def _coding_loop(
                 result = await send_action(
                     "run_coding_agent",
                     {
-                        "agent":       "claude",
+                        "agent":       "cline",
                         "prompt":      prompt,
                         "working_dir": working_dir,
                     },
                     timeout=1800,
                     confirmed=True,
                 )
-                summary = (result.get("stdout") or "")[:500].strip()
+                # Worker wraps result: {"status": "success"/"error", "result": {...}}
+                if result.get("status") == "error":
+                    raise RuntimeError(result.get("error", "run_coding_agent failed"))
+                inner   = result.get("result", result)
+                summary = (inner.get("stdout") or inner.get("stderr") or "")[:500].strip()
                 await update_task_status(
                     db, task_rec["id"], status="done", result_summary=summary
                 )
@@ -507,9 +513,11 @@ async def run_project_handler(
             timeout=60,
             confirmed=True,
         )
-        stdout    = (result.get("stdout") or "").strip()
-        stderr    = (result.get("stderr") or "").strip()
-        exit_code = result.get("exit_code", 0)
+        # The gateway wraps the worker's response: {"status": "success", "result": {...}}
+        inner     = result.get("result", result)
+        stdout    = (inner.get("stdout") or "").strip()
+        stderr    = (inner.get("stderr") or "").strip()
+        exit_code = inner.get("returncode", inner.get("exit_code", 0))
 
         output = (stdout or stderr or "(no output)")[:1000]
         status_line = (

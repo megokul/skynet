@@ -38,7 +38,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from telegram.ext import ConversationHandler
 
-from conftest import make_callback_update, make_message_update, make_context
+from helpers import make_callback_update, make_message_update, make_context
 
 from bot.handlers.greeting import greeting_handler
 from bot.handlers.project import (

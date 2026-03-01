@@ -88,6 +88,7 @@ CONFIRM_ACTIONS: set[str] = {
     "gh_create_repo",
     "open_in_vscode",
     "run_coding_agent",
+    "exec_command",
     "docker_build",
     "docker_compose_up",
     "close_app",

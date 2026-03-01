@@ -31,7 +31,7 @@ class OllamaProxyProvider(BaseProvider):
     daily_limit = None         # Unlimited.
     rpm_limit = None           # Limited only by GPU speed.
 
-    def __init__(self, model: str = "qwen2.5-coder:7b"):
+    def __init__(self, model: str = "qwen2.5-coder:32b-instruct-q4_K_M"):
         # Still initialize BaseProvider internals (cooldown/error tracking).
         """
         Initialize runtime dependencies and object state.
@@ -81,7 +81,7 @@ class OllamaProxyProvider(BaseProvider):
         - Return value typed as `str` when available; otherwise side effects only.
         """
 
-        return "qwen2.5-coder:7b"
+        return "qwen2.5-coder:32b-instruct-q4_K_M"
 
     async def chat(
         self,

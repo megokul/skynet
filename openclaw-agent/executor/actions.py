@@ -189,6 +189,42 @@ async def build_project(params: dict[str, Any]) -> dict[str, Any]:
         return {"returncode": 1, "stdout": "", "stderr": f"Unknown build tool: {tool}"}
 
 
+async def exec_command(params: dict[str, Any]) -> dict[str, Any]:
+    """
+    Run a project script in a working directory.
+
+    Accepted forms:
+      command = "python script.py"   → runs the named Python script
+      command = "node script.js"     → runs the named Node script
+
+    Only ``python``, ``python3``, and ``node`` are permitted as the
+    interpreter; arbitrary shell commands are rejected.
+    """
+    cwd = _require_param(params, "working_dir")
+    command = _require_param(params, "command")
+
+    parts = command.strip().split()
+    if not parts:
+        return {"returncode": 1, "stdout": "", "stderr": "Empty command."}
+
+    interpreter = parts[0].lower().rstrip(".exe")
+    if interpreter not in ("python", "python3", "node"):
+        return {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": (
+                f"Interpreter {parts[0]!r} is not allowed. "
+                "Use python, python3, or node."
+            ),
+        }
+
+    # Normalise to the current interpreter so the script runs in the
+    # same venv as the agent itself when python/python3 is requested.
+    import sys
+    actual = sys.executable if interpreter in ("python", "python3") else "node"
+    return await _run([actual] + parts[1:], cwd=cwd)
+
+
 async def file_read(params: dict[str, Any]) -> dict[str, Any]:
     """Read the contents of a file (path-jailed, 64 KB cap)."""
     filepath = _require_param(params, "file")
@@ -820,6 +856,7 @@ ACTION_REGISTRY: dict[str, Any] = {
     "gh_create_repo": gh_create_repo,
     "open_in_vscode": open_in_vscode,
     "run_coding_agent": run_coding_agent,
+    "exec_command": exec_command,
     "docker_build": docker_build,
     "docker_compose_up": docker_compose_up,
     "close_app": close_app,

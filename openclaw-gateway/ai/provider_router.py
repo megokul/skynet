@@ -400,7 +400,7 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
         return providers
 
     # 0. Ollama — primary (zero cost, runs on laptop)
-    ollama_model = config.get("OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:7b")
+    ollama_model = config.get("OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:32b-instruct-q4_K_M")
     providers.append(OllamaProxyProvider(model=ollama_model))
     logger.info("Registered provider: Ollama (model=%s)", ollama_model)
 
