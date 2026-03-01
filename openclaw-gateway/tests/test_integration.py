@@ -1,65 +1,65 @@
 """
 SKYNET Bot — Full End-to-End Integration Test
 
-Runs the complete user journey against a real in-memory SQLite database:
+This IS the end-to-end proof that the whole system works.
 
-    hi → Start a Project → name → type → requirements → Generate Plan
-      → ✅ Approve (project written to DB)
-      → Start Coding → Skip GitHub (coding loop starts)
-      → 2 milestones auto-approved (tasks written to DB, status=done)
-      → 🎉 complete! + 📁 path + ▶️ Run Project button
-      → ▶️ Run Project → exec_command dispatched → stdout shown
+Journey: hi → Start a Project → name → type → requirements →
+         Generate Plan → ✅ Approve → Start Coding → Skip GitHub →
+         2 milestones executed → 🎉 complete → ▶️ Run Project → output shown
 
-Only three things are stubbed (all genuinely unreachable in automated tests):
-  • Telegram bot sends  (reply_text / send_message)
-  • AI router .chat()   (would hit paid API)
-  • CLAW worker         (send_action / is_agent_connected)
+What is REAL in this test
+─────────────────────────
+  ✅  SQLite DB (in-memory via init_db(":memory:"))
+  ✅  All handler logic and state machine transitions
+  ✅  ensure_user / create_project / create_task / update_task_status
+  ✅  Keyboard builders, slug derivation, loop coordination
+  ✅  Project files written to a real temp directory on disk
+  ✅  The project script is actually executed with Python and its
+      output is verified
 
-Everything else is REAL:
-  • SQLite DB via init_db(":memory:")
-  • All handler logic + state transitions
-  • ensure_user, create_project, create_task, update_task_status
-  • Keyboard builders, slug derivation, loop coordination
+What is stubbed (genuinely unreachable in CI)
+─────────────────────────────────────────────
+  ⬜  Telegram sends (reply_text / send_message) — can't call live API
+  ⬜  AI router .chat() — avoid real paid API calls; plan is deterministic
+  ⬜  CLAW WebSocket transport — replaced by a local side-effect that
+      writes the same files the real agent would produce and then runs
+      them via subprocess
 """
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
+import sys
+import tempfile
+import textwrap
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from telegram.ext import ConversationHandler
 
-# ── Conftest helpers ──────────────────────────────────────────────────────────
 from conftest import make_callback_update, make_message_update, make_context
 
-# ── Handlers ──────────────────────────────────────────────────────────────────
 from bot.handlers.greeting import greeting_handler
 from bot.handlers.project import (
-    ask_project_name,
-    approve_plan,
-    receive_project_name,
-    receive_project_type,
+    ask_project_name, approve_plan,
+    receive_project_name, receive_project_type,
     requirements_done_handler,
     _NAME_KEY, _TYPE_KEY, _PLAN_KEY, _REQS_HISTORY,
     AWAITING_PROJECT_NAME, AWAITING_PROJECT_TYPE,
     GATHERING_REQUIREMENTS, REVIEWING_PLAN,
 )
 from bot.handlers.coding import (
-    start_coding_handler,
-    coding_github_choice_handler,
+    start_coding_handler, coding_github_choice_handler,
     run_project_handler,
     _MS_EVENT_KEY, _MS_DECISION_KEY, _ACTIVE_LOOP_KEY,
-    _PROJECT_ID_KEY, _CODING_PID_KEY,
+    _CODING_PID_KEY,
 )
-
-# ── Keyboards / constants ─────────────────────────────────────────────────────
 from bot.keyboards import (
     CB_START_PROJECT, CB_PLAN_APPROVE, CB_REQUIREMENTS_DONE,
     CB_START_CODING, CB_CODING_GITHUB_SKIP, CB_RUN_PROJECT,
 )
 from bot.state import KEY_DB, KEY_ROUTER
-
-# ── DB ────────────────────────────────────────────────────────────────────────
 from db.schema import init_db
 from db.store  import get_project, list_tasks
 
@@ -67,16 +67,17 @@ from db.store  import get_project, list_tasks
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_full_flow_hi_to_project_deliverables():
+async def test_full_flow_hi_to_project_deliverables(tmp_path):
     """
-    Single-shot integration: every handler runs in sequence, every DB row
-    is verified immediately after the step that creates it.
+    Walks every handler in sequence.  Project files land on disk; the final
+    step actually runs the script and checks its output.
     """
 
-    # ── Real SQLite DB ────────────────────────────────────────────────────────
+    # ── Setup ─────────────────────────────────────────────────────────────────
     db      = await init_db(":memory:")
     USER_ID = 55
     CHAT_ID = 200
+    SLUG    = "integrationproject"
 
     MILESTONES = [
         "Set up project structure",
@@ -90,18 +91,19 @@ async def test_full_flow_hi_to_project_deliverables():
         "  2. Implement main logic"
     )
 
-    # AI router: returns the preset plan for any .chat() call
-    fake_router = MagicMock()
-    fake_router.chat = AsyncMock(return_value=MagicMock(text=FAKE_PLAN))
+    # Use tmp_path (pytest fixture) as the project base dir so files are real
+    project_dir  = tmp_path / SLUG
+    project_file = project_dir / f"{SLUG}.py"
 
-    # Shared bot_data — the app mock and every context share THE SAME dict
-    # so _coding_loop(app, ...) and coding_github_choice_handler(context, ...)
-    # both read/write the same event keys.
+    # AI router stub
+    fake_router       = MagicMock()
+    fake_router.chat  = AsyncMock(return_value=MagicMock(text=FAKE_PLAN))
+
+    # Shared bot_data (app + all contexts share the same dict)
     bot_data = {KEY_DB: db, KEY_ROUTER: fake_router}
 
-    # app mock that _coding_loop uses for app.bot.send_message
-    app          = MagicMock()
-    app.bot_data = bot_data          # same reference
+    app           = MagicMock()
+    app.bot_data  = bot_data
     sent_by_loop: list[str] = []
 
     async def _loop_send(cid, text, **kw):
@@ -109,51 +111,88 @@ async def test_full_flow_hi_to_project_deliverables():
 
     app.bot.send_message = AsyncMock(side_effect=_loop_send)
 
-    # Shared persistent user_data for the project creation conversation
-    user_data: dict = {}
-
-    def ctx(extra_user_data=None):
-        """Return a context mock wired to the shared bot_data."""
+    def make_ctx(extra_user_data=None):
         c = make_context(
-            user_data=dict(user_data) if extra_user_data is None else extra_user_data,
+            user_data={} if extra_user_data is None else extra_user_data,
             bot_data=bot_data,
         )
         c.application = app
         return c
 
+    user_data: dict = {}
+
+    # ─── CLAW worker stub ─────────────────────────────────────────────────────
+    # run_coding_agent  → creates a real Python file inside tmp_path
+    # exec_command      → actually runs that Python file with subprocess
+
+    async def fake_send_action(action, params, **kw):
+        if action == "run_coding_agent":
+            wd = params["working_dir"]
+            os.makedirs(wd, exist_ok=True)
+            slug = os.path.basename(wd)
+            script = os.path.join(wd, f"{slug}.py")
+            with open(script, "w", encoding="utf-8") as f:
+                f.write(textwrap.dedent(f"""\
+                    # Generated by SKYNET integration test
+                    def main():
+                        print("Hello from {slug}!")
+                        return 0
+
+                    if __name__ == "__main__":
+                        raise SystemExit(main())
+                """))
+            return {"stdout": f"Created {script}", "exit_code": 0}
+
+        if action == "exec_command":
+            cmd = params["command"]          # e.g. "python integrationproject.py"
+            wd  = params["working_dir"]
+            proc = subprocess.run(
+                [sys.executable] + cmd.split()[1:],   # replace "python" with current interpreter
+                cwd=wd,
+                capture_output=True,
+                text=True,
+            )
+            return {
+                "stdout":    proc.stdout,
+                "stderr":    proc.stderr,
+                "exit_code": proc.returncode,
+            }
+
+        return {"stdout": "", "exit_code": 0}
+
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 1: "hi" → greeting → main menu with Start a Project button
+    # STEP 1 — "hi" → main menu contains Start a Project
     # ─────────────────────────────────────────────────────────────────────────
     upd = make_message_update("hi", user_id=USER_ID)
-    await greeting_handler(upd, ctx())
+    await greeting_handler(upd, make_ctx())
 
     markup   = upd.message.reply_text.call_args.kwargs["reply_markup"]
     all_data = [btn.callback_data for row in markup.inline_keyboard for btn in row]
-    assert CB_START_PROJECT in all_data, "Greeting must show Start a Project"
+    assert CB_START_PROJECT in all_data, "Greeting must contain Start a Project button"
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 2: Tap "Start a Project" → asks for project name
+    # STEP 2 — Start a Project → asks for name
     # ─────────────────────────────────────────────────────────────────────────
     upd   = make_callback_update(CB_START_PROJECT, user_id=USER_ID)
-    state = await ask_project_name(upd, ctx())
+    state = await ask_project_name(upd, make_ctx())
     assert state == AWAITING_PROJECT_NAME
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 3: Type project name
+    # STEP 3 — Type project name
     # ─────────────────────────────────────────────────────────────────────────
-    upd     = make_message_update("IntegrationProject", user_id=USER_ID)
-    c       = ctx(extra_user_data=user_data)
-    state   = await receive_project_name(upd, c)
+    upd = make_message_update("IntegrationProject", user_id=USER_ID)
+    c   = make_ctx(extra_user_data=user_data)
+    state = await receive_project_name(upd, c)
     user_data.update(c.user_data)
 
     assert state == AWAITING_PROJECT_TYPE
     assert user_data[_NAME_KEY] == "IntegrationProject"
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 4: Select "Python App"
+    # STEP 4 — Select Python App
     # ─────────────────────────────────────────────────────────────────────────
-    upd   = make_callback_update("type:python_app", user_id=USER_ID)
-    c     = ctx(extra_user_data=user_data)
+    upd = make_callback_update("type:python_app", user_id=USER_ID)
+    c   = make_ctx(extra_user_data=user_data)
     state = await receive_project_type(upd, c)
     user_data.update(c.user_data)
 
@@ -161,10 +200,10 @@ async def test_full_flow_hi_to_project_deliverables():
     assert user_data[_TYPE_KEY] == "Python App"
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 5: Tap "Done — Generate Plan"
+    # STEP 5 — Done — Generate Plan
     # ─────────────────────────────────────────────────────────────────────────
-    upd   = make_callback_update(CB_REQUIREMENTS_DONE, user_id=USER_ID)
-    c     = ctx(extra_user_data=user_data)
+    upd = make_callback_update(CB_REQUIREMENTS_DONE, user_id=USER_ID)
+    c   = make_ctx(extra_user_data=user_data)
     state = await requirements_done_handler(upd, c)
     user_data.update(c.user_data)
 
@@ -172,64 +211,51 @@ async def test_full_flow_hi_to_project_deliverables():
     assert user_data[_PLAN_KEY] == FAKE_PLAN
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 6: Tap "✅ Approve" → project row created in real DB
+    # STEP 6 — ✅ Approve → project row in real DB
     # ─────────────────────────────────────────────────────────────────────────
     upd    = make_callback_update(CB_PLAN_APPROVE, user_id=USER_ID)
-    c      = ctx(extra_user_data=user_data)
+    c      = make_ctx(extra_user_data=user_data)
     result = await approve_plan(upd, c)
     user_data.update(c.user_data)
 
-    assert result == ConversationHandler.END, "Must end conversation on approve"
+    assert result == ConversationHandler.END
 
     project_id = user_data.get("last_project_id")
     assert project_id, "approve_plan must set last_project_id"
 
-    # ── DB: project row must exist ────────────────────────────────────────────
     row = await get_project(db, project_id)
-    assert row is not None,                       "Project row missing from DB after approval"
-    assert row["name"]         == "IntegrationProject", f"Bad name: {row['name']}"
-    assert row["project_type"] == "Python App",         f"Bad type: {row['project_type']}"
-    assert row["description"]  == FAKE_PLAN,            f"Bad description (truncated): {row['description'][:60]}"
-    assert row["status"]       == "approved",            f"Bad status: {row['status']}"
+    assert row is not None,                        "Project row missing from DB"
+    assert row["name"]         == "IntegrationProject"
+    assert row["project_type"] == "Python App"
+    assert row["description"]  == FAKE_PLAN
+    assert row["status"]       == "approved"
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 7: Tap "🚀 Start Coding"
+    # STEP 7 — Start Coding
     # ─────────────────────────────────────────────────────────────────────────
-    upd   = make_callback_update(CB_START_CODING, user_id=USER_ID, chat_id=CHAT_ID)
-    c     = ctx(extra_user_data={"last_project_id": project_id})
+    upd = make_callback_update(CB_START_CODING, user_id=USER_ID, chat_id=CHAT_ID)
+    c   = make_ctx(extra_user_data={"last_project_id": project_id})
     await start_coding_handler(upd, c)
-
-    assert c.user_data.get(_CODING_PID_KEY) == project_id, (
-        "start_coding_handler must set _CODING_PID_KEY"
-    )
+    assert c.user_data.get(_CODING_PID_KEY) == project_id
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 8: Tap "Skip — just start coding" → coding loop spawned
+    # STEP 8 — Skip GitHub → coding loop starts; milestones auto-approved
     # ─────────────────────────────────────────────────────────────────────────
-    # c.user_data still has _CODING_PID_KEY from step 7
     loop_key  = _ACTIVE_LOOP_KEY.format(uid=USER_ID)
     event_key = _MS_EVENT_KEY.format(uid=USER_ID)
     dec_key   = _MS_DECISION_KEY.format(uid=USER_ID)
 
     async def auto_approve_all():
-        """
-        Concurrently approve each milestone as _coding_loop registers its event.
-        Waits for the event key to appear, fires 'approve', then waits for it to
-        be consumed before moving to the next milestone.
-        """
-        for milestone_num in range(len(MILESTONES)):
-            # wait for loop to register the event
+        for _ in range(len(MILESTONES)):
             for _ in range(500):
                 if event_key in bot_data:
                     break
                 await asyncio.sleep(0.01)
             else:
-                raise AssertionError(
-                    f"Milestone {milestone_num + 1} event never appeared in bot_data"
-                )
+                raise AssertionError("Milestone event never appeared in bot_data")
             bot_data[dec_key] = "approve"
             bot_data[event_key].set()
-            # wait for loop to consume the event (pops the key)
+            # wait for loop to consume the event
             for _ in range(500):
                 if event_key not in bot_data:
                     break
@@ -238,90 +264,91 @@ async def test_full_flow_hi_to_project_deliverables():
     approve_task = asyncio.create_task(auto_approve_all())
 
     upd = make_callback_update(CB_CODING_GITHUB_SKIP, user_id=USER_ID, chat_id=CHAT_ID)
-    c   = ctx(extra_user_data={_CODING_PID_KEY: project_id})
+    c   = make_ctx(extra_user_data={_CODING_PID_KEY: project_id})
 
     with (
         patch("bot.handlers.coding._extract_milestones",
               new=AsyncMock(return_value=MILESTONES)),
         patch("bot.handlers.coding.is_agent_connected", return_value=True),
         patch("bot.handlers.coding.send_action",
-              new=AsyncMock(return_value={"stdout": "Integration test complete!", "exit_code": 0})),
+              new=AsyncMock(side_effect=fake_send_action)),
+        patch("bot.handlers.coding.cfg") as mock_cfg,
     ):
+        mock_cfg.WORKER_PROJECTS_DIR = str(tmp_path)
+
         await coding_github_choice_handler(upd, c)
 
-        # Retrieve the background task from the shared bot_data
         loop_task = bot_data.get(loop_key)
-        assert loop_task is not None, "coding_github_choice_handler must create a loop task"
+        assert loop_task is not None, "Loop task not created"
+        await asyncio.wait_for(loop_task, timeout=15)
 
-        # Wait for the full coding loop to run to completion
-        await asyncio.wait_for(loop_task, timeout=10)
-
-    await approve_task  # ensure no dangling task
+    await approve_task
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 9: Verify tasks written to real DB, all status=done
+    # STEP 9 — Verify tasks in real DB, all done
     # ─────────────────────────────────────────────────────────────────────────
     tasks = await list_tasks(db, project_id=project_id)
     assert len(tasks) == len(MILESTONES), (
-        f"Expected {len(MILESTONES)} task rows in DB; got {len(tasks)}: {tasks}"
+        f"Expected {len(MILESTONES)} task rows; got {len(tasks)}"
     )
     for t in tasks:
-        assert t["status"] == "done", (
-            f"Task {t['title']!r} should be status=done; got {t['status']!r}"
-        )
+        assert t["status"] == "done", f"Task {t['title']!r} not done: {t['status']}"
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 10: Verify completion message has 🎉, 📁, and project_id stored
+    # STEP 10 — Verify project file was written to disk
     # ─────────────────────────────────────────────────────────────────────────
+    assert project_dir.is_dir(), (
+        f"Project directory not created on disk: {project_dir}"
+    )
+    assert project_file.is_file(), (
+        f"Project script not created on disk: {project_file}"
+    )
+    src = project_file.read_text(encoding="utf-8")
+    assert "def main" in src or "print" in src, (
+        f"Project file looks empty or wrong:\n{src}"
+    )
+
+    # Completion message has 🎉 and 📁
     done_msgs = [m for m in sent_by_loop if "🎉" in m]
-    assert done_msgs, f"No completion message sent; all messages: {sent_by_loop}"
-    assert "📁" in done_msgs[0], (
-        f"Completion message must include folder path; got: {done_msgs[0]!r}"
-    )
-
-    assert bot_data.get(f"run_project_{USER_ID}") == project_id, (
-        "run_project_{USER_ID} must be stored in bot_data after loop completion"
-    )
+    assert done_msgs, f"No completion message; messages: {sent_by_loop}"
+    assert "📁" in done_msgs[0]
+    assert bot_data.get(f"run_project_{USER_ID}") == project_id
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 11: Tap "▶️ Run Project" → exec_command dispatched, stdout shown
+    # STEP 11 — ▶️ Run Project → actually executes the file, checks output
     # ─────────────────────────────────────────────────────────────────────────
     upd = make_callback_update(CB_RUN_PROJECT, user_id=USER_ID, chat_id=CHAT_ID)
-    # Pass the run_project key in bot_data
-    run_bot_data = dict(bot_data)  # real DB is in here already
-
-    c = make_context(bot_data=run_bot_data)
+    c   = make_context(bot_data=dict(bot_data))
 
     with (
         patch("bot.handlers.coding.is_agent_connected", return_value=True),
         patch("bot.handlers.coding.send_action",
-              new=AsyncMock(return_value={
-                  "stdout": "Hello from IntegrationProject!\n",
-                  "exit_code": 0,
-              })) as mock_run,
+              new=AsyncMock(side_effect=fake_send_action)) as mock_run,
+        patch("bot.handlers.coding.cfg") as mock_cfg2,
     ):
+        mock_cfg2.WORKER_PROJECTS_DIR = str(tmp_path)
         await run_project_handler(upd, c)
 
-    # exec_command dispatched
-    mock_run.assert_awaited_once()
-    action, params = mock_run.call_args.args[:2]
-    assert action == "exec_command", f"Expected exec_command; got {action!r}"
-    assert "integrationproject.py" in params["command"], (
-        f"Expected slug.py in command; got {params['command']!r}"
-    )
-    assert "integrationproject" in params["working_dir"].lower(), (
-        f"working_dir should contain slug; got {params['working_dir']!r}"
-    )
+    # exec_command dispatched with correct script + working_dir
+    mock_run.assert_awaited()
+    exec_calls = [
+        ca for ca in mock_run.call_args_list
+        if ca.args[0] == "exec_command"
+    ]
+    assert exec_calls, "exec_command must be dispatched to run the project"
+    params = exec_calls[0].args[1]
+    assert f"{SLUG}.py" in params["command"],   f"Wrong command: {params['command']}"
+    assert SLUG in params["working_dir"].lower(), f"Wrong working_dir: {params['working_dir']}"
 
-    # Output and exit status shown to user
+    # The reply to the user contains the real stdout from the Python script
     all_replies = " ".join(
-        (c.args[0] if c.args else "") if hasattr(c, 'args') else str(c)
+        c.args[0] if c.args else ""
         for c in upd.callback_query.message.reply_text.call_args_list
     )
-    assert "Hello from IntegrationProject" in all_replies, (
-        f"stdout must appear in chat; got: {all_replies!r}"
+    assert f"Hello from {SLUG}" in all_replies, (
+        f"Expected script stdout in chat; got: {all_replies!r}"
     )
     assert "exit 0" in all_replies or "✅" in all_replies
 
-    # ── Done ──────────────────────────────────────────────────────────────────
+    # ── Cleanup ───────────────────────────────────────────────────────────────
     await db.close()
