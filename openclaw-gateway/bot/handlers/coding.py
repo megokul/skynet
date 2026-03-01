@@ -321,11 +321,16 @@ async def _coding_loop(
                     "_Created by SKYNET_\n"
                 )
                 readme_path = f"{working_dir}/README.md"
-                await send_action(
+                fw_result = await send_action(
                     "file_write",
-                    {"path": readme_path, "content": readme_content},
+                    {"file": readme_path, "content": readme_content},  # key is "file" not "path"
                     confirmed=True,
                 )
+                _fw_inner = fw_result.get("result", fw_result)
+                if _fw_inner.get("returncode", 0) != 0:
+                    raise RuntimeError(
+                        _fw_inner.get("stderr") or _fw_inner.get("stdout") or "file_write failed"
+                    )
 
                 # Step 3: stage + commit README.
                 await send_action("git_add_all", {"working_dir": working_dir}, confirmed=True)
