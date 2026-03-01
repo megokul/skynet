@@ -282,32 +282,53 @@ async def _coding_loop(
     working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
 
     try:
-        # ── Optional GitHub + folder setup ────────────────────────────────────
+        # ── Always create the project folder on the worker ────────────────────
+        if is_agent_connected():
+            try:
+                await send_action(
+                    "create_directory",
+                    {"directory": working_dir},
+                    confirmed=True,
+                )
+            except Exception:
+                pass  # Directory may already exist — not fatal.
+        else:
+            await app.bot.send_message(
+                chat_id, "⚠️ Worker not connected — cannot create project folder."
+            )
+            return
+
+        # ── Optional GitHub setup ──────────────────────────────────────────────
         if do_github:
-            await app.bot.send_message(chat_id, "🔧 Creating GitHub repo and project folder…")
-            if is_agent_connected():
-                try:
-                    gh_result = await send_action(
-                        "gh_create_repo",
-                        {
-                            "working_dir": working_dir,
-                            "repo_name":   slug,
-                            "description": f"Created by SKYNET — {project['project_type']}",
-                            "private":     True,
-                        },
-                        timeout=120,
-                        confirmed=True,
-                    )
-                    if gh_result.get("status") == "error":
-                        raise RuntimeError(gh_result.get("error", "Unknown error"))
-                    await app.bot.send_message(chat_id, "✅ GitHub repo created.")
-                except Exception as exc:
-                    await app.bot.send_message(
-                        chat_id, f"⚠️ GitHub setup failed: {exc}\nContinuing anyway…"
-                    )
-            else:
+            await app.bot.send_message(chat_id, "🔧 Setting up GitHub repo and project folder…")
+            try:
+                # Step 1: init git so gh_create_repo has a repo to push.
+                init_result = await send_action(
+                    "git_init",
+                    {"working_dir": working_dir},
+                    confirmed=True,
+                )
+                if init_result.get("status") == "error":
+                    raise RuntimeError(init_result.get("error", "git init failed"))
+
+                # Step 2: create GitHub repo and push.
+                gh_result = await send_action(
+                    "gh_create_repo",
+                    {
+                        "working_dir": working_dir,
+                        "repo_name":   slug,
+                        "description": f"Created by SKYNET — {project['project_type']}",
+                        "private":     True,
+                    },
+                    timeout=120,
+                    confirmed=True,
+                )
+                if gh_result.get("status") == "error":
+                    raise RuntimeError(gh_result.get("error", "Unknown error"))
+                await app.bot.send_message(chat_id, "✅ GitHub repo created.")
+            except Exception as exc:
                 await app.bot.send_message(
-                    chat_id, "⚠️ Worker not connected — skipping GitHub setup."
+                    chat_id, f"⚠️ GitHub setup failed: {exc}\nContinuing anyway…"
                 )
 
         # ── Extract milestones from plan ──────────────────────────────────────
