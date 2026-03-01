@@ -269,7 +269,7 @@ async def test_full_flow_hi_to_project_deliverables(tmp_path):
     with (
         patch("bot.handlers.coding._extract_milestones",
               new=AsyncMock(return_value=MILESTONES)),
-        patch("bot.handlers.coding.is_agent_connected", return_value=True),
+        patch("bot.handlers.coding.is_worker_available", return_value=True),
         patch("bot.handlers.coding.send_action",
               new=AsyncMock(side_effect=fake_send_action)),
         patch("bot.handlers.coding.cfg") as mock_cfg,
@@ -321,7 +321,7 @@ async def test_full_flow_hi_to_project_deliverables(tmp_path):
     c   = make_context(bot_data=dict(bot_data))
 
     with (
-        patch("bot.handlers.coding.is_agent_connected", return_value=True),
+        patch("bot.handlers.coding.is_worker_available", return_value=True),
         patch("bot.handlers.coding.send_action",
               new=AsyncMock(side_effect=fake_send_action)) as mock_run,
         patch("bot.handlers.coding.cfg") as mock_cfg2,

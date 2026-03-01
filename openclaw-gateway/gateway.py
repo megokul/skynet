@@ -160,6 +160,12 @@ def is_agent_connected() -> bool:
     return _agent_ws is not None
 
 
+def is_worker_available() -> bool:
+    """Return True if work can be dispatched — via WebSocket agent OR SSH tunnel."""
+    from ssh_tunnel_executor import get_ssh_executor  # lazy import
+    return _agent_ws is not None or get_ssh_executor().is_configured()
+
+
 # ---------------------------------------------------------------------------
 # WebSocket handler
 # ---------------------------------------------------------------------------

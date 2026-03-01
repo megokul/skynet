@@ -40,7 +40,7 @@ from db.store import (
     list_tasks,
     update_task_status,
 )
-from gateway import is_agent_connected, send_action
+from gateway import is_worker_available, send_action
 
 logger = logging.getLogger("skynet.bot.coding")
 
@@ -283,7 +283,7 @@ async def _coding_loop(
 
     try:
         # ── Always create the project folder on the worker ────────────────────
-        if is_agent_connected():
+        if is_worker_available():
             try:
                 await send_action(
                     "create_directory",
@@ -434,7 +434,7 @@ async def _coding_loop(
             await app.bot.send_message(chat_id, f"⚙️ Executing milestone {i}…")
 
             # Dispatch to CLAW worker.
-            if not is_agent_connected():
+            if not is_worker_available():
                 await app.bot.send_message(
                     chat_id, "⚠️ Worker disconnected — cannot execute. Skipping."
                 )
@@ -543,7 +543,7 @@ async def run_project_handler(
         )
         return
 
-    if not is_agent_connected():
+    if not is_worker_available():
         await update.callback_query.message.reply_text(
             "⚠️ Worker not connected — can't run the project right now.",
             reply_markup=run_project(),

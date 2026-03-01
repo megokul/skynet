@@ -403,7 +403,7 @@ class TestStopSession:
         with (
             patch("bot.handlers.coding._extract_milestones",
                   new=AsyncMock(return_value=milestones)),
-            patch("bot.handlers.coding.is_agent_connected", return_value=True),
+            patch("bot.handlers.coding.is_worker_available", return_value=True),
         ):
             await _coding_loop(app, chat_id, user_id, self.PROJECT, do_github=False)
 
@@ -468,7 +468,7 @@ class TestRunProject:
         with (
             patch("bot.handlers.coding.get_project",
                   new=AsyncMock(return_value=self.PROJECT)),
-            patch("bot.handlers.coding.is_agent_connected", return_value=True),
+            patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
                   new=AsyncMock(return_value=mock_result)) as mock_send,
         ):
@@ -518,7 +518,7 @@ class TestRunProject:
         with (
             patch("bot.handlers.coding.get_project",
                   new=AsyncMock(return_value=self.PROJECT)),
-            patch("bot.handlers.coding.is_agent_connected", return_value=True),
+            patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
                   new=AsyncMock(return_value=mock_result)),
         ):
@@ -544,7 +544,7 @@ class TestRunProject:
         with (
             patch("bot.handlers.coding.get_project",
                   new=AsyncMock(return_value=self.PROJECT)),
-            patch("bot.handlers.coding.is_agent_connected", return_value=False),
+            patch("bot.handlers.coding.is_worker_available", return_value=False),
             patch("bot.handlers.coding.send_action",
                   new=AsyncMock()) as mock_send,
         ):
@@ -601,7 +601,7 @@ class TestRunProject:
         with (
             patch("bot.handlers.coding._extract_milestones",
                   new=AsyncMock(return_value=milestones)),
-            patch("bot.handlers.coding.is_agent_connected", return_value=True),
+            patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
                   new=AsyncMock(return_value={"stdout": "done", "exit_code": 0})),
             patch("bot.handlers.coding.create_task",
@@ -693,7 +693,7 @@ class TestCodingLoopErrorSurfacing:
         with (
             patch("bot.handlers.coding._extract_milestones",
                   new=AsyncMock(return_value=["Do the thing"])),
-            patch("bot.handlers.coding.is_agent_connected", return_value=True),
+            patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
                   new=AsyncMock(return_value=send_action_return)),
             patch("bot.handlers.coding.create_task",      new=mock_create_task),
@@ -826,7 +826,7 @@ class TestCodingLoopErrorSurfacing:
         with (
             patch("bot.handlers.coding._extract_milestones",
                   new=AsyncMock(return_value=["Do the thing"])),
-            patch("bot.handlers.coding.is_agent_connected", return_value=True),
+            patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
                   new=AsyncMock(side_effect=_side_effect)),
             patch("bot.handlers.coding.create_task",
@@ -879,7 +879,7 @@ class TestCodingLoopErrorSurfacing:
         with (
             patch("bot.handlers.coding.get_project",
                   new=AsyncMock(return_value=self.PROJECT)),
-            patch("bot.handlers.coding.is_agent_connected", return_value=True),
+            patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
                   new=AsyncMock(return_value=real_envelope)),
         ):
