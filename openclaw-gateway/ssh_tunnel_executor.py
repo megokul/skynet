@@ -656,6 +656,17 @@ class SSHTunnelExecutor:
         if self.password:
             kwargs["password"] = self.password
         client.connect(**kwargs)
+
+        # Warm up the transport by opening (then closing) an SFTP session.
+        # Some SSH servers/tunnels close the transport after the first exec
+        # channel exits, causing "No existing session" on subsequent calls.
+        # Opening SFTP first stabilises the transport for the session lifetime.
+        try:
+            sftp = client.open_sftp()
+            sftp.close()
+        except Exception:
+            pass  # best effort — if SFTP probe fails, proceed anyway
+
         return client
 
     def _execute_sync(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -888,7 +899,12 @@ class SSHTunnelExecutor:
             return {"returncode": 1, "stdout": "", "stderr": f"Cannot write temp script: {exc}"}
 
         # Run it — stdout is the Ollama-generated text.
+        # Close SFTP first — long-running exec can invalidate the session.
+        sftp.close()
         result = self._run_command(client, ["python", tmp_script], cwd=None, timeout=timeout)
+
+        # Re-open SFTP for file operations after exec.
+        sftp = client.open_sftp()
 
         # Clean up temp script (best effort).
         try:

@@ -26,6 +26,7 @@ Harden CI/CD pipeline so pushing to main is the only deploy step needed — no m
 - Added plan validation: retries if AI outputs meta-response instead of real plan
 - Added milestone generation fallback: generates milestones from project info when plan text has none
 - Fixed Python module shadowing bug: `blakely.py` + `blakely/utils.py` conflict. Added system prompt rule + post-generation rename (`foo/` → `lib/`) with import rewriting
+- Fixed "No existing session" SSH error: added SFTP warmup after connect() and close/reopen SFTP around long-running exec_command
 
 ## Test Results
 
