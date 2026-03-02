@@ -23,6 +23,8 @@ Harden CI/CD pipeline so pushing to main is the only deploy step needed — no m
 - Added `.dockerignore` to prevent stale `data/skynet.db` from being baked into images
 - Fixed HTML escaping in Telegram bot output (prevents `<module>` parse errors)
 - Improved Ollama system prompt and code block parser for 7b model compatibility
+- Added plan validation: retries if AI outputs meta-response instead of real plan
+- Added milestone generation fallback: generates milestones from project info when plan text has none
 
 ## Test Results
 
