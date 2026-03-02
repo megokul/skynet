@@ -4,31 +4,35 @@ Last updated (UTC): 2026-03-02
 
 ## Current Goal
 
-Harden CI/CD pipeline so pushing to main is the only deploy step needed — no manual SCP, SSH, or docker commands.
+Supercharge the CLAW coding agent — smarter model routing, better prompts, auto-retry, and code context between milestones.
 
 ## Current Repo State
 
 - Branch: `main`
-- Ollama coding agent operational via SSH tunnel (EC2 → laptop) with `qwen2.5-coder:7b`
+- Multi-provider coding: router tries Gemini/Groq/Claude first, falls back to Ollama SSH
+- Ollama `num_ctx` configurable via `OLLAMA_NUM_CTX` env var (default 8192, was 4096)
 - GitHub Actions self-hosted runner on EC2 handles build + deploy via `docker compose`
 
 ## What Was Completed
 
-- Added missing env vars to CI workflow: `GH_TOKEN`, `OPENCLAW_OLLAMA_URL`, `OPENCLAW_OLLAMA_MODEL`, logging vars
-- Added env vars to `.env.ci` build step with correct defaults
-- Added `GH_TOKEN` to `docker-compose.yml` for GitHub repo creation on laptop
-- Added SSH key file guard: removes stale directory before decoding, verifies result is a file
-- Added gateway health check: polls `http://localhost:8766/status` after deploy
-- Fixed stale defaults: `AI_PROVIDER_PRIORITY` removed `ollama`, `OPENCLAW_SSH_ALLOWED_ROOTS` → `E:\SKYNET-SANDBOX`
-- Added `.dockerignore` to prevent stale `data/skynet.db` from being baked into images
-- Fixed HTML escaping in Telegram bot output (prevents `<module>` parse errors)
-- Improved Ollama system prompt and code block parser for 7b model compatibility
-- Added plan validation: retries if AI outputs meta-response instead of real plan
-- Added milestone generation fallback: generates milestones from project info when plan text has none
-- Fixed Python module shadowing bug: `blakely.py` + `blakely/utils.py` conflict. Added system prompt rule + post-generation rename (`foo/` → `lib/`) with import rewriting
-- Fixed "No existing session" SSH error: added SFTP warmup after connect() and close/reopen SFTP around long-running exec_command
-- Fixed "Connection reset by peer" SSH banner error: added retry loop (3 attempts, exponential backoff) in `_connect()` for transient connection failures
-- Fixed "Run Project" file-not-found error: root cause was coding loop discarding written file names. SSH executor now returns `files_written` list; coding loop stores it in `bot_data[run_files_{uid}]`; run handler uses stored files directly (no disk listing needed). Falls back to `list_directory` on bot restart.
+### Coding Agent Improvements (Layer 1–4)
+
+- **Router-based coding**: coding loop tries `router.chat(task_type="coding")` first (Gemini → Groq → Claude), parses fenced code blocks, writes files via SSH. Falls back to Ollama SSH if no cloud provider available.
+- **Code context between milestones**: milestone N>1 reads previously written files via `file_read` and includes them in the prompt ("build on these, do NOT rewrite unchanged code").
+- **Auto-retry**: Ollama SSH path retries up to 3 times if no files generated or non-zero exit code.
+- **Better prompts**: removed dead `skynet_run.json` manifest prompt; added project-name file naming rule; shared `_CODING_SYSTEM_PROMPT` constant.
+- **Configurable `num_ctx`**: `OLLAMA_NUM_CTX` env var (default 8192, up from hardcoded 4096).
+- **Code block parser**: extracted `_parse_code_blocks()` — handles both filename-tagged and language-tagged fenced blocks with fallback naming.
+- **Dead code cleanup**: removed `_RUN_MANIFEST_FILENAME`, `_ALLOWED_RUN_INTERPRETERS`, `_find_run_manifest()`, `_resolve_run_manifest()`, `_normalize_interpreter_name()`, `_build_run_command()`, `_is_safe_relative_path()`, `_is_safe_cli_token()`.
+
+### Previous Fixes
+
+- Fixed "Run Project" file-not-found error: SSH executor returns `files_written`; coding loop stores in `bot_data[run_files_{uid}]`
+- Fixed "No existing session" SSH error: SFTP warmup after connect
+- Fixed "Connection reset by peer" SSH banner error: retry loop with exponential backoff
+- Fixed Python module shadowing bug: system prompt rule + post-generation rename
+- Added plan validation and milestone generation fallback
+- Hardened CI/CD: env vars, SSH key guard, gateway health check, `.dockerignore`
 
 ## Test Results
 
@@ -56,8 +60,10 @@ Harden CI/CD pipeline so pushing to main is the only deploy step needed — no m
 
 ## Required Next Steps
 
-1. Monitor 7b code quality on real Telegram projects; consider 14b if quality drops.
-2. Add deploy success notification to Telegram (optional).
+1. Test end-to-end: create a 2+ milestone project via Telegram, verify milestone 2 prompt includes milestone 1 code.
+2. Verify router-based coding activates when Gemini/Groq keys are set.
+3. Monitor code quality across providers; tune `TASK_PROVIDER_PREFERENCES["coding"]` ordering.
+4. Consider bumping Ollama model to 14b/32b if local quality is insufficient.
 
 ## Policy Checklist
 

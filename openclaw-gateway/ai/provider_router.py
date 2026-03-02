@@ -104,6 +104,7 @@ class ProviderRouter:
         "boilerplate": ["ollama"],
         "fast_patch": ["groq", "ollama"],
         "unit_test": ["groq", "ollama"],
+        "coding": ["gemini", "groq", "claude"],
         "planning": ["ollama", "gemini"],
         "readme_polish": ["ollama", "gemini"],
         "hard_debug": ["deepseek", "claude"],
