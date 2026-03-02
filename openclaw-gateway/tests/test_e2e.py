@@ -463,6 +463,7 @@ class TestRunProject:
             f"run_project_{self.USER_ID}": self.PROJECT["id"],
         })
 
+        ls_result   = {"stdout": "skyapp.py\n", "stderr": "", "returncode": 0}
         mock_result = {"stdout": "Hello from SkyApp!\n", "stderr": "", "exit_code": 0}
 
         with (
@@ -470,13 +471,13 @@ class TestRunProject:
                   new=AsyncMock(return_value=self.PROJECT)),
             patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
-                  new=AsyncMock(return_value=mock_result)) as mock_send,
+                  new=AsyncMock(side_effect=[ls_result, mock_result])) as mock_send,
         ):
             await run_project_handler(update, context)
 
-        # exec_command dispatched with correct action
-        mock_send.assert_awaited_once()
-        action, params = mock_send.call_args.args[:2]
+        # Two calls: dir listing + exec_command
+        assert mock_send.await_count == 2
+        action, params = mock_send.call_args_list[1].args[:2]
         assert action == "exec_command", f"Expected 'exec_command', got {action!r}"
 
         # Script file is the slugified name
@@ -509,6 +510,7 @@ class TestRunProject:
             f"run_project_{self.USER_ID}": self.PROJECT["id"],
         })
 
+        ls_result = {"stdout": "skyapp.py\n", "stderr": "", "returncode": 0}
         mock_result = {
             "stdout": "",
             "stderr": "ModuleNotFoundError: No module named 'requests'",
@@ -520,7 +522,7 @@ class TestRunProject:
                   new=AsyncMock(return_value=self.PROJECT)),
             patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
-                  new=AsyncMock(return_value=mock_result)),
+                  new=AsyncMock(side_effect=[ls_result, mock_result])),
         ):
             await run_project_handler(update, context)
 
@@ -539,6 +541,7 @@ class TestRunProject:
             f"run_project_{self.USER_ID}": self.PROJECT["id"],
         })
 
+        ls_result = {"stdout": "skyapp.py\n", "stderr": "", "returncode": 0}
         mock_result = {"status": "error", "error": "Worker rejected exec_command"}
 
         with (
@@ -546,7 +549,7 @@ class TestRunProject:
                   new=AsyncMock(return_value=self.PROJECT)),
             patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
-                  new=AsyncMock(return_value=mock_result)),
+                  new=AsyncMock(side_effect=[ls_result, mock_result])),
         ):
             await run_project_handler(update, context)
 
@@ -920,6 +923,7 @@ class TestCodingLoopErrorSurfacing:
         run_project_handler must unwrap result["result"]["stdout"] (real worker format)
         and display it, not look at the top-level result["stdout"].
         """
+        ls_result = {"stdout": "skyapp.py\n", "stderr": "", "returncode": 0}
         real_envelope = {
             "status": "success",
             "result": {
@@ -943,7 +947,7 @@ class TestCodingLoopErrorSurfacing:
                   new=AsyncMock(return_value=self.PROJECT)),
             patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
-                  new=AsyncMock(return_value=real_envelope)),
+                  new=AsyncMock(side_effect=[ls_result, real_envelope])),
         ):
             await run_project_handler(update, context)
 

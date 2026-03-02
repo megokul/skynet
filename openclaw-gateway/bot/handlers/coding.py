@@ -676,10 +676,49 @@ async def run_project_handler(
 
     slug        = _slugify(project["name"])
     working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
-    script      = f"{slug}.py"
+
+    # --- Detect the actual entry-point script --------------------------------
+    script = f"{slug}.py"  # default guess
+    try:
+        ls_result = await send_action(
+            "exec_command",
+            {"command": "dir /b *.py", "working_dir": working_dir},
+            timeout=15,
+            confirmed=True,
+        )
+        ls_inner  = ls_result.get("result", ls_result)
+        ls_stdout = (ls_inner.get("stdout") or "").strip()
+        ls_code   = ls_inner.get("returncode", ls_inner.get("exit_code", 1))
+
+        if ls_code != 0 or not ls_stdout:
+            # Directory doesn't exist or has no .py files
+            await update.callback_query.message.reply_text(
+                f"⚠️ No Python files found in <code>{html_mod.escape(working_dir)}</code>.\n"
+                "The coding agent may not have finished writing files. "
+                "Try running the coding loop again.",
+                parse_mode="HTML",
+                reply_markup=main_menu(),
+            )
+            return
+
+        py_files = [f.strip() for f in ls_stdout.splitlines() if f.strip().endswith(".py")]
+
+        if script in py_files:
+            pass  # preferred name exists
+        elif "main.py" in py_files:
+            script = "main.py"
+        elif "app.py" in py_files:
+            script = "app.py"
+        elif len(py_files) == 1:
+            script = py_files[0]
+        else:
+            # Multiple .py files, none matching expected names — pick the first
+            script = py_files[0]
+    except Exception:
+        logger.warning("Could not list project dir %s; proceeding with %s", working_dir, script)
 
     await update.callback_query.message.reply_text(
-        f"▶️ Running <code>{script}</code> on your laptop…",
+        f"▶️ Running <code>{html_mod.escape(script)}</code> on your laptop…",
         parse_mode="HTML",
     )
 

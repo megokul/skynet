@@ -185,8 +185,17 @@ async def test_conversation_e2e_generates_code_and_pushes_local_remote(tmp_path:
             return _worker_ok(0, f"Created {script}", "")
 
         if action == "exec_command":
-            parts = str(params["command"]).split()
-            rc, out, err = _run([sys.executable, *parts[1:]], cwd=params["working_dir"])
+            cmd = str(params["command"])
+            wd  = params["working_dir"]
+
+            # Handle dir listing used by run_project_handler to detect entry point
+            if cmd.startswith("dir "):
+                wd_path = Path(wd)
+                py_files = [f.name for f in wd_path.glob("*.py")] if wd_path.is_dir() else []
+                return _worker_ok(0 if py_files else 1, "\n".join(py_files), "")
+
+            parts = cmd.split()
+            rc, out, err = _run([sys.executable, *parts[1:]], cwd=wd)
             return _worker_ok(rc, out, err)
 
         return _worker_ok(0, "", "")

@@ -146,6 +146,16 @@ async def test_full_flow_hi_to_project_deliverables(tmp_path):
         if action == "exec_command":
             cmd = params["command"]          # e.g. "python integrationproject.py"
             wd  = params["working_dir"]
+
+            # Handle dir listing used by run_project_handler to detect entry point
+            if cmd.startswith("dir "):
+                py_files = [f for f in os.listdir(wd) if f.endswith(".py")] if os.path.isdir(wd) else []
+                return {
+                    "stdout":    "\n".join(py_files),
+                    "stderr":    "",
+                    "returncode": 0 if py_files else 1,
+                }
+
             proc = subprocess.run(
                 [sys.executable] + cmd.split()[1:],   # replace "python" with current interpreter
                 cwd=wd,
@@ -333,7 +343,7 @@ async def test_full_flow_hi_to_project_deliverables(tmp_path):
     mock_run.assert_awaited()
     exec_calls = [
         ca for ca in mock_run.call_args_list
-        if ca.args[0] == "exec_command"
+        if ca.args[0] == "exec_command" and "python" in ca.args[1].get("command", "")
     ]
     assert exec_calls, "exec_command must be dispatched to run the project"
     params = exec_calls[0].args[1]
