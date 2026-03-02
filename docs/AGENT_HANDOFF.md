@@ -1,10 +1,19 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-02
+Last updated (UTC): 2026-03-02 16:08
 
 ## Current Goal
 
 Supercharge the CLAW coding agent — smarter model routing, better prompts, auto-retry, and code context between milestones.
+
+### 2026-03-02 Deploy-Unblock Update
+
+- Added coding profile defaults for new projects: `claude_ollama` + strict quality gates.
+- Standardized `run_coding_agent` contract across gateway/worker to include `agent`, `backend`, `model`, and `auto_pull_model`.
+- Added SSH-first routing for coding actions and explicit Claude-over-Ollama backend mode.
+- Implemented Ollama model preflight + one-time auto-pull and explicit setup errors for missing/unreachable models.
+- Preserved strict run-contract behavior and project-scoped run cache keys in coding/run handlers.
+- Added fallback behavior: only after non-infra gate failure, use `claude` native backend when `ANTHROPIC_API_KEY` is present; otherwise fail with `FALLBACK_UNAVAILABLE`.
 
 ## Current Repo State
 
@@ -41,6 +50,8 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 - `docker exec openclaw-gateway python tests/e2e_live.py`
   - `ALL STEPS PASSED` (9.7s with 7b model)
 - Ollama benchmark: 59.3 tok/s, 100% GPU (4.9GB/8GB VRAM)
+- `pytest -q openclaw-agent/tests/test_executor.py openclaw-gateway/tests/test_bot_ui_contract.py openclaw-gateway/tests/test_coding_retry.py openclaw-gateway/tests/test_e2e.py openclaw-gateway/tests/test_integration.py`
+  - `54 passed, 1 skipped`
 
 ## Trace Evidence
 
@@ -49,6 +60,8 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 - task_id=ci-cd-env-vars-and-guards
 - skynet.trace.log
 - audit.jsonl
+- request_id=claude-ollama-revamp-20260302
+- task_id=strict-gates-ssh-first-rollout
 
 ## Documentation Updates
 
