@@ -8,6 +8,7 @@ Runs allowlisted actions directly on a remote laptop over SSH.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import stat
@@ -17,6 +18,8 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
 import paramiko
+
+_log = logging.getLogger(__name__)
 
 import config as bot_cfg
 from search.web_search import WebSearcher
@@ -635,39 +638,59 @@ class SSHTunnelExecutor:
         - Return value typed as `paramiko.SSHClient` when available; otherwise side effects only.
         """
 
-        client = paramiko.SSHClient()
-        if self.strict_host_key:
-            client.load_system_host_keys()
-        else:
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        max_retries = 3
+        last_exc: Exception | None = None
 
-        kwargs: dict[str, Any] = {
-            "hostname": self.host,
-            "port": self.port,
-            "username": self.username,
-            "timeout": self.connect_timeout,
-            "auth_timeout": self.connect_timeout,
-            "banner_timeout": self.connect_timeout,
-            "look_for_keys": True,
-            "allow_agent": True,
-        }
-        if self.key_path:
-            kwargs["key_filename"] = self.key_path
-        if self.password:
-            kwargs["password"] = self.password
-        client.connect(**kwargs)
+        for attempt in range(1, max_retries + 1):
+            client = paramiko.SSHClient()
+            if self.strict_host_key:
+                client.load_system_host_keys()
+            else:
+                client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-        # Warm up the transport by opening (then closing) an SFTP session.
-        # Some SSH servers/tunnels close the transport after the first exec
-        # channel exits, causing "No existing session" on subsequent calls.
-        # Opening SFTP first stabilises the transport for the session lifetime.
-        try:
-            sftp = client.open_sftp()
-            sftp.close()
-        except Exception:
-            pass  # best effort — if SFTP probe fails, proceed anyway
+            kwargs: dict[str, Any] = {
+                "hostname": self.host,
+                "port": self.port,
+                "username": self.username,
+                "timeout": self.connect_timeout,
+                "auth_timeout": self.connect_timeout,
+                "banner_timeout": self.connect_timeout,
+                "look_for_keys": True,
+                "allow_agent": True,
+            }
+            if self.key_path:
+                kwargs["key_filename"] = self.key_path
+            if self.password:
+                kwargs["password"] = self.password
 
-        return client
+            try:
+                client.connect(**kwargs)
+            except (OSError, paramiko.SSHException) as exc:
+                last_exc = exc
+                client.close()
+                if attempt < max_retries:
+                    delay = attempt * 2  # 2s, 4s
+                    _log.warning(
+                        "SSH connect attempt %d/%d failed (%s), retrying in %ds…",
+                        attempt, max_retries, exc, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise last_exc  # all retries exhausted
+
+            # Warm up the transport by opening (then closing) an SFTP session.
+            # Some SSH servers/tunnels close the transport after the first exec
+            # channel exits, causing "No existing session" on subsequent calls.
+            # Opening SFTP first stabilises the transport for the session lifetime.
+            try:
+                sftp = client.open_sftp()
+                sftp.close()
+            except Exception:
+                pass  # best effort — if SFTP probe fails, proceed anyway
+
+            return client
+
+        raise last_exc  # unreachable, but keeps mypy happy
 
     def _execute_sync(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         """
