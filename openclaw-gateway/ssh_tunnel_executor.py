@@ -806,11 +806,17 @@ class SSHTunnelExecutor:
 
     _OLLAMA_SYSTEM_PROMPT = (
         "You are an expert coding agent. Implement the task completely.\n"
-        "For EVERY file you create or modify, output it using this exact format:\n\n"
-        "```relative/path/to/file.ext\n"
-        "<full file content>\n"
+        "For EVERY file you create or modify, output it in a fenced code block.\n"
+        "The opening fence MUST be the filename (not a language name).\n\n"
+        "Example:\n"
+        "```main.py\n"
+        "print('hello')\n"
+        "```\n\n"
+        "```utils/helper.py\n"
+        "def add(a, b): return a + b\n"
         "```\n\n"
         "Rules:\n"
+        "- The opening ``` MUST be followed by the actual filename, NEVER a language like python or js.\n"
         "- Write complete, working code — no placeholders, no '...'.\n"
         "- Include every file needed (source, config, requirements, etc.).\n"
         "- Do NOT add explanations outside code blocks.\n"
@@ -898,15 +904,38 @@ class SSHTunnelExecutor:
         files_written: list[str] = []
         errors: list[str] = []
 
+        # Language tag → file extension mapping for fallback naming.
+        _LANG_EXT = {
+            "python": ".py", "py": ".py", "javascript": ".js", "js": ".js",
+            "typescript": ".ts", "ts": ".ts", "java": ".java", "c": ".c",
+            "cpp": ".cpp", "c++": ".cpp", "go": ".go", "rust": ".rs",
+            "ruby": ".rb", "bash": ".sh", "sh": ".sh", "html": ".html",
+            "css": ".css", "json": ".json", "yaml": ".yaml", "yml": ".yaml",
+            "toml": ".toml", "sql": ".sql", "r": ".r", "swift": ".swift",
+            "kotlin": ".kt", "dart": ".dart", "lua": ".lua", "perl": ".pl",
+        }
+
         cwd_norm = _norm_remote_path(working_dir, self.remote_os) if working_dir else ""
 
+        # Collect all matches, separating file-path blocks from language-tag blocks.
+        file_blocks: list[tuple[str, str]] = []
+        lang_blocks: list[tuple[str, str]] = []
         for match in pattern.finditer(generated):
-            filename = match.group(1).strip()
-            content  = match.group(2)
+            tag = match.group(1).strip()
+            content = match.group(2)
+            if "." in tag or "/" in tag or "\\" in tag:
+                file_blocks.append((tag, content))
+            else:
+                lang_blocks.append((tag, content))
 
-            # Skip bare language hints like ```python or ```bash with no path separator.
-            if "." not in filename and "/" not in filename and "\\" not in filename:
-                continue
+        # If no file-path blocks found, convert language-tag blocks using fallback names.
+        if not file_blocks and lang_blocks:
+            for idx, (tag, content) in enumerate(lang_blocks):
+                ext = _LANG_EXT.get(tag.lower(), f".{tag.lower()}")
+                fallback = f"main{ext}" if idx == 0 else f"file{idx}{ext}"
+                file_blocks.append((fallback, content))
+
+        for filename, content in file_blocks:
 
             # Resolve to absolute path inside working_dir.
             if cwd_norm and not os.path.isabs(filename):
