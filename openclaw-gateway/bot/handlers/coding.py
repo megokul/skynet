@@ -1,11 +1,11 @@
 """
-SKYNET Bot — Coding Orchestration
+SKYNET Bot â€” Coding Orchestration
 
 Handles the full coding loop after a project is saved:
   1. User taps "Start Coding"
   2. Bot asks about GitHub repo / project folder setup (buttons)
-  3. User confirms → background asyncio.Task starts
-  4. Loop: LLM breaks plan into milestones → user approves each → CLAW worker executes
+  3. User confirms â†’ background asyncio.Task starts
+  4. Loop: LLM breaks plan into milestones â†’ user approves each â†’ CLAW worker executes
   5. Progress notifications after each milestone
   6. /status command shows live dashboard
 
@@ -19,6 +19,7 @@ import html as html_mod
 import json
 import logging
 import re
+from typing import Any
 
 import config as cfg
 from telegram import Update
@@ -37,6 +38,8 @@ from bot.keyboards import (
 from bot.state import KEY_DB, KEY_ROUTER
 from db.store import (
     create_task,
+    create_task_gate_result,
+    delete_task_gate_results,
     ensure_user,
     get_project,
     list_projects,
@@ -48,7 +51,7 @@ from gateway import is_worker_available, send_action
 logger = logging.getLogger("skynet.bot.coding")
 
 # ---------------------------------------------------------------------------
-# Coding system prompt — shared between router-based and Ollama SSH paths.
+# Coding system prompt â€” shared between router-based and Ollama SSH paths.
 # ---------------------------------------------------------------------------
 _CODING_SYSTEM_PROMPT = (
     "You are an expert coding agent. Implement the task completely.\n"
@@ -60,13 +63,13 @@ _CODING_SYSTEM_PROMPT = (
     "```\n\n"
     "Rules:\n"
     "- The opening ``` MUST be followed by the actual filename, NEVER a language like python or js.\n"
-    "- Write complete, working code — no placeholders, no '...'.\n"
+    "- Write complete, working code â€” no placeholders, no '...'.\n"
     "- Include every file needed (source, config, requirements, etc.).\n"
     "- Do NOT add explanations outside code blocks.\n"
     "- Name the main entry-point file after the project name given in the task.\n"
 )
 
-# Language tag → file extension for fallback naming.
+# Language tag â†’ file extension for fallback naming.
 _LANG_EXT: dict[str, str] = {
     "python": ".py", "py": ".py", "javascript": ".js", "js": ".js",
     "typescript": ".ts", "ts": ".ts", "java": ".java", "c": ".c",
@@ -75,6 +78,13 @@ _LANG_EXT: dict[str, str] = {
     "css": ".css", "json": ".json", "yaml": ".yaml", "yml": ".yaml",
     "toml": ".toml", "sql": ".sql",
 }
+
+_QUALITY_PROFILE_LEGACY = "legacy"
+_QUALITY_PROFILE_STRICT = "strict"
+_CODING_PROFILE_LEGACY = "legacy"
+_CODING_PROFILE_CLAUDE_OLLAMA = "claude_ollama"
+_RUN_CONTRACT_FILE = "skynet_run.json"
+_ALLOWED_INTERPRETERS = {"python", "python3", "node"}
 
 
 def _parse_code_blocks(text: str) -> list[tuple[str, str]]:
@@ -111,13 +121,842 @@ _PROJECT_ID_KEY = "last_project_id"
 _CODING_PID_KEY = "coding_project_id"
 
 
-# ── Entry: Start Coding ───────────────────────────────────────────────────────
+def _run_files_key(user_id: int, project_id: str) -> str:
+    return f"run_files_{user_id}_{project_id}"
+
+
+def _run_contract_key(user_id: int, project_id: str) -> str:
+    return f"run_contract_{user_id}_{project_id}"
+
+
+def _quality_profile(project: dict[str, Any] | None) -> str:
+    raw = str((project or {}).get("quality_profile") or _QUALITY_PROFILE_LEGACY).strip().lower()
+    if raw not in {_QUALITY_PROFILE_LEGACY, _QUALITY_PROFILE_STRICT}:
+        return _QUALITY_PROFILE_LEGACY
+    return raw
+
+
+def _coding_profile(project: dict[str, Any] | None) -> str:
+    raw = str(
+        (project or {}).get("coding_profile")
+        or cfg.CODING_DEFAULT_PROFILE
+        or _CODING_PROFILE_LEGACY
+    ).strip().lower()
+    if raw not in {_CODING_PROFILE_LEGACY, _CODING_PROFILE_CLAUDE_OLLAMA}:
+        return _CODING_PROFILE_LEGACY
+    return raw
+
+
+def _uses_claude_ollama(project: dict[str, Any] | None) -> bool:
+    return _coding_profile(project) == _CODING_PROFILE_CLAUDE_OLLAMA
+
+
+def _is_strict_project(project: dict[str, Any] | None) -> bool:
+    if not cfg.STRICT_QUALITY_GATES_ENABLED:
+        return False
+    return _quality_profile(project) == _QUALITY_PROFILE_STRICT
+
+
+def _action_error_text(result: dict[str, Any], action: str) -> str:
+    if result.get("status") == "error":
+        return str(result.get("error") or f"{action} failed").strip()
+    inner = result.get("result", result)
+    return str(
+        inner.get("stderr")
+        or inner.get("stdout")
+        or f"{action} failed"
+    ).strip()
+
+
+def _action_inner_result(result: dict[str, Any]) -> dict[str, Any]:
+    return result.get("result", result)
+
+
+def _action_exit_code(result: dict[str, Any]) -> int:
+    inner = _action_inner_result(result)
+    return int(inner.get("returncode", inner.get("exit_code", 0)))
+
+
+def _action_excerpt(result: dict[str, Any], *, limit: int = 240) -> str:
+    inner = _action_inner_result(result)
+    text = str(inner.get("stderr") or inner.get("stdout") or "").strip()
+    if not text:
+        text = "(no output)"
+    return text[:limit]
+
+
+def _is_infra_error(message: str) -> bool:
+    lower = (message or "").lower()
+    infra_markers = (
+        "ssh action failed",
+        "no agent connected",
+        "agent disconnected",
+        "worker not connected",
+        "connection refused",
+        "timed out",
+        "timeout",
+        "network is unreachable",
+        "transport",
+        "socket",
+        "authentication failed",
+        "could not resolve",
+    )
+    return any(marker in lower for marker in infra_markers)
+
+
+def _is_manifest_missing_error(message: str) -> bool:
+    lower = (message or "").lower()
+    markers = (
+        "no such file",
+        "cannot find path",
+        "does not exist",
+        "not found",
+    )
+    return any(marker in lower for marker in markers)
+
+
+def _is_safe_relative_path(path: str) -> bool:
+    raw = (path or "").strip()
+    if not raw:
+        return False
+    if any(ord(ch) < 32 for ch in raw):
+        return False
+    norm = raw.replace("\\", "/")
+    if norm.startswith("/") or norm.startswith("\\"):
+        return False
+    if re.match(r"^[A-Za-z]:", norm):
+        return False
+    parts = [part for part in norm.split("/") if part not in ("", ".")]
+    if not parts:
+        return False
+    if any(part == ".." for part in parts):
+        return False
+    return True
+
+
+def _normalize_manifest_path(path: str) -> str:
+    return path.replace("\\", "/").strip().lstrip("./")
+
+
+def _build_manifest_command(
+    *,
+    interpreter: str,
+    entrypoint: str,
+    args: list[str],
+) -> str:
+    parts = [interpreter, entrypoint, *args]
+    return " ".join(parts)
+
+
+def _validate_cached_run_contract(contract: Any) -> dict[str, Any] | None:
+    if not isinstance(contract, dict):
+        return None
+    interpreter = str(contract.get("interpreter") or "").strip().lower()
+    entrypoint = str(contract.get("entrypoint") or "").strip()
+    command = str(contract.get("command") or "").strip()
+    args = contract.get("args")
+    if interpreter not in _ALLOWED_INTERPRETERS:
+        return None
+    if not _is_safe_relative_path(entrypoint):
+        return None
+    if not isinstance(args, list) or any(
+        (not isinstance(token, str) or not token or any(ch.isspace() for ch in token))
+        for token in args
+    ):
+        return None
+    if not command.startswith(f"{interpreter} "):
+        return None
+    return {
+        "interpreter": interpreter,
+        "entrypoint": _normalize_manifest_path(entrypoint),
+        "args": args,
+        "command": command,
+    }
+
+
+def _has_cached_run_contract(
+    *,
+    bot_data: dict[str, Any],
+    user_id: int,
+    project_id: str,
+) -> bool:
+    key = _run_contract_key(user_id, project_id)
+    return _validate_cached_run_contract(bot_data.get(key)) is not None
+
+
+async def _record_gate_result(
+    *,
+    db,
+    task_id: int,
+    attempt: int,
+    gate_name: str,
+    status: str,
+    command: str = "",
+    summary: str = "",
+) -> None:
+    await create_task_gate_result(
+        db,
+        task_id=task_id,
+        attempt=attempt,
+        gate_name=gate_name,
+        status=status,
+        command=command,
+        summary=summary[:500],
+    )
+
+
+def _runtime_from_contract(contract: dict[str, Any]) -> str:
+    interpreter = str(contract.get("interpreter") or "").strip().lower()
+    if interpreter in {"python", "python3"}:
+        return "python"
+    return "node"
+
+
+def _has_detected_tests(*, runtime: str, files: list[str]) -> bool:
+    for path in files:
+        lower = _normalize_slashes(path).lower()
+        base = lower.rsplit("/", 1)[-1]
+        if runtime == "python":
+            if ("/tests/" in f"/{lower}") and lower.endswith(".py"):
+                return True
+            if base.startswith("test_") and base.endswith(".py"):
+                return True
+            if base.endswith("_test.py"):
+                return True
+        else:
+            if "/tests/" in f"/{lower}" and lower.endswith((".js", ".ts", ".mjs", ".cjs")):
+                return True
+            if base.endswith((".test.js", ".spec.js", ".test.ts", ".spec.ts")):
+                return True
+    return False
+
+
+async def _list_project_files(
+    *,
+    working_dir: str,
+) -> tuple[list[str], str, str, bool]:
+    command = f"list_directory --recursive {working_dir}"
+    try:
+        list_result = await send_action(
+            "list_directory",
+            {"directory": working_dir, "recursive": True},
+            timeout=20,
+            confirmed=True,
+        )
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        return [], command, message, True
+
+    if list_result.get("status") == "error":
+        message = _action_error_text(list_result, "list_directory")
+        return [], command, message, _is_infra_error(message)
+
+    if _action_exit_code(list_result) != 0:
+        message = _action_excerpt(list_result)
+        return [], command, message, _is_infra_error(message)
+
+    listing = str(_action_inner_result(list_result).get("stdout") or "")
+    files = _extract_file_paths_from_listing(listing, working_dir=working_dir)
+    return files, command, "", False
+
+
+async def _load_and_validate_run_contract(
+    *,
+    working_dir: str,
+) -> tuple[dict[str, Any] | None, str, bool]:
+    manifest_path = f"{working_dir}/{_RUN_CONTRACT_FILE}"
+    try:
+        manifest_result = await send_action(
+            "file_read",
+            {"file": manifest_path},
+            timeout=20,
+            confirmed=True,
+        )
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        return None, message, True
+
+    if manifest_result.get("status") == "error":
+        message = _action_error_text(manifest_result, "file_read")
+        return None, message, _is_infra_error(message)
+
+    if _action_exit_code(manifest_result) != 0:
+        message = _action_excerpt(manifest_result)
+        infra = _is_infra_error(message) and not _is_manifest_missing_error(message)
+        return None, message, infra
+
+    manifest_raw = str(_action_inner_result(manifest_result).get("stdout") or "")
+    try:
+        payload = json.loads(manifest_raw)
+    except Exception as exc:
+        return None, f"Invalid {_RUN_CONTRACT_FILE}: {exc}", False
+
+    if not isinstance(payload, dict):
+        return None, f"Invalid {_RUN_CONTRACT_FILE}: expected a JSON object", False
+
+    interpreter = str(payload.get("interpreter") or "").strip().lower()
+    if interpreter not in _ALLOWED_INTERPRETERS:
+        return None, "run_contract.interpreter must be python, python3, or node", False
+
+    entrypoint_raw = str(payload.get("entrypoint") or "").strip()
+    if not _is_safe_relative_path(entrypoint_raw):
+        return None, "run_contract.entrypoint must be a safe relative path", False
+    entrypoint = _normalize_manifest_path(entrypoint_raw)
+
+    args = payload.get("args", [])
+    if args is None:
+        args = []
+    if not isinstance(args, list):
+        return None, "run_contract.args must be an array when provided", False
+    clean_args: list[str] = []
+    for token in args:
+        if not isinstance(token, str):
+            return None, "run_contract.args must contain only strings", False
+        token = token.strip()
+        if not token:
+            return None, "run_contract.args cannot contain empty tokens", False
+        if any(ch.isspace() for ch in token):
+            return None, "run_contract.args tokens cannot include whitespace", False
+        clean_args.append(token)
+
+    entrypoint_path = f"{working_dir}/{entrypoint}"
+    try:
+        entry_result = await send_action(
+            "file_read",
+            {"file": entrypoint_path},
+            timeout=20,
+            confirmed=True,
+        )
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        return None, message, True
+
+    if entry_result.get("status") == "error":
+        message = _action_error_text(entry_result, "file_read")
+        return None, message, _is_infra_error(message)
+
+    if _action_exit_code(entry_result) != 0:
+        return None, f"Entrypoint file not found: {entrypoint}", False
+
+    contract = {
+        "interpreter": interpreter,
+        "entrypoint": entrypoint,
+        "args": clean_args,
+        "command": _build_manifest_command(
+            interpreter=interpreter,
+            entrypoint=entrypoint,
+            args=clean_args,
+        ),
+    }
+    return contract, "run contract validated", False
+
+
+async def _run_quality_fix_pass(
+    *,
+    project: dict[str, Any],
+    milestone_text: str,
+    working_dir: str,
+    failing_gates: list[dict[str, str]],
+) -> list[str]:
+    failure_lines = []
+    for gate in failing_gates:
+        gate_name = gate.get("gate_name", "unknown")
+        command = gate.get("command", "")
+        summary = gate.get("summary", "")
+        line = f"- {gate_name}"
+        if command:
+            line += f" | cmd: {command}"
+        if summary:
+            line += f" | error: {summary}"
+        failure_lines.append(line)
+
+    fix_prompt = (
+        f"Project: {project['name']} ({project['project_type']})\n"
+        f"Working directory: {working_dir}\n\n"
+        f"Milestone task:\n{milestone_text}\n\n"
+        "The previous implementation failed strict quality gates. "
+        "Fix the code and update any needed files so all gates pass:\n"
+        + "\n".join(failure_lines)
+        + "\n\nRequirements:\n"
+          f"- Include a valid {_RUN_CONTRACT_FILE}.\n"
+          "- Add runnable tests if missing.\n"
+          "- Ensure lint and tests pass.\n"
+          "- Return complete files only."
+    )
+
+    payload: dict[str, Any] = {
+        "agent": "claude",
+        "prompt": fix_prompt,
+        "working_dir": working_dir,
+        "timeout_seconds": 1800,
+    }
+
+    if _uses_claude_ollama(project):
+        if not cfg.ANTHROPIC_API_KEY:
+            raise RuntimeError("FALLBACK_UNAVAILABLE: ANTHROPIC_API_KEY is not configured")
+        payload["backend"] = "native"
+        if cfg.CLAUDE_OLLAMA_DEFAULT_MODEL:
+            payload["model"] = cfg.CLAUDE_OLLAMA_DEFAULT_MODEL
+    else:
+        payload["backend"] = "auto"
+
+    result = await send_action(
+        "run_coding_agent",
+        payload,
+        timeout=1800,
+        confirmed=True,
+    )
+    if result.get("status") == "error":
+        message = _action_error_text(result, "run_coding_agent")
+        raise RuntimeError(message)
+
+    inner = _action_inner_result(result)
+    return_code = int(inner.get("returncode", inner.get("exit_code", 0)))
+    if return_code != 0:
+        raise RuntimeError(_action_excerpt(result))
+
+    files_written = inner.get("files_written") or []
+    if isinstance(files_written, list):
+        return [str(path).strip() for path in files_written if str(path).strip()]
+    return []
+
+
+async def _run_strict_quality_gates(
+    *,
+    db,
+    task_id: int,
+    project: dict[str, Any],
+    milestone_text: str,
+    working_dir: str,
+) -> dict[str, Any]:
+    await delete_task_gate_results(db, task_id=task_id)
+
+    max_retries = max(0, int(cfg.STRICT_QUALITY_GATES_FIX_RETRIES))
+    max_attempts = 1 + max_retries
+    last_contract: dict[str, Any] | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        failed_gates: list[dict[str, str]] = []
+        infra_failure = False
+
+        preflight_cmd = f"list_directory {working_dir}"
+        try:
+            preflight = await send_action(
+                "list_directory",
+                {"directory": working_dir},
+                timeout=15,
+                confirmed=True,
+            )
+        except Exception as exc:
+            summary = f"{type(exc).__name__}: {exc}"
+            await _record_gate_result(
+                db=db,
+                task_id=task_id,
+                attempt=attempt,
+                gate_name="infra_preflight",
+                status="failed",
+                command=preflight_cmd,
+                summary=summary,
+            )
+            return {
+                "passed": False,
+                "infra_failure": True,
+                "error_message": f"INFRA_FAILURE: {summary[:220]}",
+                "failed_gate_names": ["infra_preflight"],
+                "run_contract": None,
+                "fix_written_files": [],
+            }
+
+        if preflight.get("status") == "error" or _action_exit_code(preflight) != 0:
+            summary = _action_error_text(preflight, "list_directory")
+            await _record_gate_result(
+                db=db,
+                task_id=task_id,
+                attempt=attempt,
+                gate_name="infra_preflight",
+                status="failed",
+                command=preflight_cmd,
+                summary=summary,
+            )
+            return {
+                "passed": False,
+                "infra_failure": True,
+                "error_message": f"INFRA_FAILURE: {summary[:220]}",
+                "failed_gate_names": ["infra_preflight"],
+                "run_contract": None,
+                "fix_written_files": [],
+            }
+
+        await _record_gate_result(
+            db=db,
+            task_id=task_id,
+            attempt=attempt,
+            gate_name="infra_preflight",
+            status="passed",
+            command=preflight_cmd,
+            summary="worker connectivity OK",
+        )
+
+        run_contract, run_summary, run_infra = await _load_and_validate_run_contract(
+            working_dir=working_dir,
+        )
+        if run_contract is None:
+            await _record_gate_result(
+                db=db,
+                task_id=task_id,
+                attempt=attempt,
+                gate_name="run_contract",
+                status="failed",
+                command=f"file_read {_RUN_CONTRACT_FILE}",
+                summary=run_summary,
+            )
+            if run_infra:
+                return {
+                    "passed": False,
+                    "infra_failure": True,
+                    "error_message": f"INFRA_FAILURE: {run_summary[:220]}",
+                    "failed_gate_names": ["run_contract"],
+                    "run_contract": None,
+                    "fix_written_files": [],
+                }
+            failed_gates.append(
+                {
+                    "gate_name": "run_contract",
+                    "command": f"file_read {_RUN_CONTRACT_FILE}",
+                    "summary": run_summary,
+                }
+            )
+            last_contract = None
+        else:
+            await _record_gate_result(
+                db=db,
+                task_id=task_id,
+                attempt=attempt,
+                gate_name="run_contract",
+                status="passed",
+                command=f"file_read {_RUN_CONTRACT_FILE}",
+                summary=run_summary,
+            )
+            last_contract = run_contract
+
+        if not last_contract:
+            for gate_name in ("lint", "tests", "smoke"):
+                await _record_gate_result(
+                    db=db,
+                    task_id=task_id,
+                    attempt=attempt,
+                    gate_name=gate_name,
+                    status="skipped",
+                    command="",
+                    summary="Skipped because run_contract failed",
+                )
+        else:
+            runtime = _runtime_from_contract(last_contract)
+
+            lint_linter = "ruff" if runtime == "python" else "eslint"
+            lint_cmd = (
+                "python -m ruff check ." if lint_linter == "ruff" else "npx eslint ."
+            )
+            try:
+                lint_result = await send_action(
+                    "lint_project",
+                    {"working_dir": working_dir, "linter": lint_linter},
+                    timeout=120,
+                    confirmed=True,
+                )
+            except Exception as exc:
+                lint_summary = f"{type(exc).__name__}: {exc}"
+                await _record_gate_result(
+                    db=db,
+                    task_id=task_id,
+                    attempt=attempt,
+                    gate_name="lint",
+                    status="failed",
+                    command=lint_cmd,
+                    summary=lint_summary,
+                )
+                infra_failure = True
+                failed_gates.append(
+                    {"gate_name": "lint", "command": lint_cmd, "summary": lint_summary}
+                )
+            else:
+                lint_failed = (
+                    lint_result.get("status") == "error" or _action_exit_code(lint_result) != 0
+                )
+                lint_summary = (
+                    _action_error_text(lint_result, "lint_project")
+                    if lint_failed
+                    else _action_excerpt(lint_result)
+                )
+                await _record_gate_result(
+                    db=db,
+                    task_id=task_id,
+                    attempt=attempt,
+                    gate_name="lint",
+                    status="failed" if lint_failed else "passed",
+                    command=lint_cmd,
+                    summary=lint_summary,
+                )
+                if lint_failed:
+                    if _is_infra_error(lint_summary):
+                        infra_failure = True
+                    failed_gates.append(
+                        {"gate_name": "lint", "command": lint_cmd, "summary": lint_summary}
+                    )
+
+            test_runner = "pytest" if runtime == "python" else "npm"
+            tests_cmd = "python -m pytest --tb=short -q" if runtime == "python" else "npm test"
+            files, tests_scan_cmd, list_error, list_infra = await _list_project_files(
+                working_dir=working_dir
+            )
+            if list_infra:
+                await _record_gate_result(
+                    db=db,
+                    task_id=task_id,
+                    attempt=attempt,
+                    gate_name="tests",
+                    status="failed",
+                    command=tests_scan_cmd,
+                    summary=list_error or "Failed to list files for test discovery",
+                )
+                infra_failure = True
+                failed_gates.append(
+                    {
+                        "gate_name": "tests",
+                        "command": tests_scan_cmd,
+                        "summary": list_error or "Failed to list files for test discovery",
+                    }
+                )
+            elif list_error:
+                await _record_gate_result(
+                    db=db,
+                    task_id=task_id,
+                    attempt=attempt,
+                    gate_name="tests",
+                    status="failed",
+                    command=tests_scan_cmd,
+                    summary=list_error,
+                )
+                failed_gates.append(
+                    {
+                        "gate_name": "tests",
+                        "command": tests_scan_cmd,
+                        "summary": list_error,
+                    }
+                )
+            elif not _has_detected_tests(runtime=runtime, files=files):
+                summary = "No tests detected; strict mode requires tests."
+                await _record_gate_result(
+                    db=db,
+                    task_id=task_id,
+                    attempt=attempt,
+                    gate_name="tests",
+                    status="failed",
+                    command=tests_scan_cmd,
+                    summary=summary,
+                )
+                failed_gates.append(
+                    {
+                        "gate_name": "tests",
+                        "command": tests_scan_cmd,
+                        "summary": summary,
+                    }
+                )
+            else:
+                try:
+                    tests_result = await send_action(
+                        "run_tests",
+                        {"working_dir": working_dir, "runner": test_runner},
+                        timeout=300,
+                        confirmed=True,
+                    )
+                except Exception as exc:
+                    tests_summary = f"{type(exc).__name__}: {exc}"
+                    await _record_gate_result(
+                        db=db,
+                        task_id=task_id,
+                        attempt=attempt,
+                        gate_name="tests",
+                        status="failed",
+                        command=tests_cmd,
+                        summary=tests_summary,
+                    )
+                    infra_failure = True
+                    failed_gates.append(
+                        {
+                            "gate_name": "tests",
+                            "command": tests_cmd,
+                            "summary": tests_summary,
+                        }
+                    )
+                else:
+                    tests_failed = (
+                        tests_result.get("status") == "error"
+                        or _action_exit_code(tests_result) != 0
+                    )
+                    tests_summary = (
+                        _action_error_text(tests_result, "run_tests")
+                        if tests_failed
+                        else _action_excerpt(tests_result)
+                    )
+                    await _record_gate_result(
+                        db=db,
+                        task_id=task_id,
+                        attempt=attempt,
+                        gate_name="tests",
+                        status="failed" if tests_failed else "passed",
+                        command=tests_cmd,
+                        summary=tests_summary,
+                    )
+                    if tests_failed:
+                        if _is_infra_error(tests_summary):
+                            infra_failure = True
+                        failed_gates.append(
+                            {
+                                "gate_name": "tests",
+                                "command": tests_cmd,
+                                "summary": tests_summary,
+                            }
+                        )
+
+            smoke_cmd = str(last_contract.get("command") or "").strip()
+            try:
+                smoke_result = await send_action(
+                    "exec_command",
+                    {"command": smoke_cmd, "working_dir": working_dir},
+                    timeout=120,
+                    confirmed=True,
+                )
+            except Exception as exc:
+                smoke_summary = f"{type(exc).__name__}: {exc}"
+                await _record_gate_result(
+                    db=db,
+                    task_id=task_id,
+                    attempt=attempt,
+                    gate_name="smoke",
+                    status="failed",
+                    command=smoke_cmd,
+                    summary=smoke_summary,
+                )
+                infra_failure = True
+                failed_gates.append(
+                    {"gate_name": "smoke", "command": smoke_cmd, "summary": smoke_summary}
+                )
+            else:
+                smoke_failed = (
+                    smoke_result.get("status") == "error"
+                    or _action_exit_code(smoke_result) != 0
+                )
+                smoke_summary = (
+                    _action_error_text(smoke_result, "exec_command")
+                    if smoke_failed
+                    else _action_excerpt(smoke_result)
+                )
+                await _record_gate_result(
+                    db=db,
+                    task_id=task_id,
+                    attempt=attempt,
+                    gate_name="smoke",
+                    status="failed" if smoke_failed else "passed",
+                    command=smoke_cmd,
+                    summary=smoke_summary,
+                )
+                if smoke_failed:
+                    if _is_infra_error(smoke_summary):
+                        infra_failure = True
+                    failed_gates.append(
+                        {
+                            "gate_name": "smoke",
+                            "command": smoke_cmd,
+                            "summary": smoke_summary,
+                        }
+                    )
+
+        if infra_failure:
+            top = failed_gates[0] if failed_gates else {"summary": "infra failure"}
+            return {
+                "passed": False,
+                "infra_failure": True,
+                "error_message": f"INFRA_FAILURE: {top.get('summary', '')[:220]}",
+                "failed_gate_names": [gate["gate_name"] for gate in failed_gates],
+                "run_contract": None,
+                "fix_written_files": [],
+            }
+
+        if not failed_gates:
+            return {
+                "passed": True,
+                "infra_failure": False,
+                "error_message": "",
+                "failed_gate_names": [],
+                "run_contract": last_contract,
+                "pass_summary": "QUALITY_GATES_PASSED: infra_preflight,run_contract,lint,tests,smoke",
+                "fix_written_files": [],
+            }
+
+        if attempt < max_attempts:
+            try:
+                fix_written_files = await _run_quality_fix_pass(
+                    project=project,
+                    milestone_text=milestone_text,
+                    working_dir=working_dir,
+                    failing_gates=failed_gates,
+                )
+            except Exception as exc:
+                reason = str(exc).strip() or "quality auto-fix pass failed"
+                if reason.startswith("FALLBACK_UNAVAILABLE:"):
+                    failed_names = [gate["gate_name"] for gate in failed_gates]
+                    return {
+                        "passed": False,
+                        "infra_failure": False,
+                        "error_message": reason,
+                        "failed_gate_names": failed_names,
+                        "run_contract": last_contract,
+                        "fix_written_files": [],
+                    }
+                logger.warning(
+                    "Quality auto-fix pass failed for task %s attempt %s: %s",
+                    task_id,
+                    attempt,
+                    exc,
+                )
+            else:
+                if fix_written_files:
+                    logger.info(
+                        "Quality auto-fix pass wrote %d file(s) for task %s",
+                        len(fix_written_files),
+                        task_id,
+                    )
+            continue
+
+        failed_names = [gate["gate_name"] for gate in failed_gates]
+        short = ",".join(failed_names[:3])
+        return {
+            "passed": False,
+            "infra_failure": False,
+            "error_message": f"GATES_FAILED: {short}",
+            "failed_gate_names": failed_names,
+            "run_contract": last_contract,
+            "fix_written_files": [],
+        }
+
+    return {
+        "passed": False,
+        "infra_failure": False,
+        "error_message": "GATES_FAILED: unknown",
+        "failed_gate_names": [],
+        "run_contract": None,
+        "fix_written_files": [],
+    }
+
+
+# â”€â”€ Entry: Start Coding â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def start_coding_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """User tapped 🚀 Start Coding — ask GitHub/folder setup preference."""
+    """User tapped ðŸš€ Start Coding â€” ask GitHub/folder setup preference."""
     await update.callback_query.answer()
 
     project_id = context.user_data.get(_PROJECT_ID_KEY)
@@ -153,12 +992,14 @@ async def _start_coding_loop(
         return False
 
     context.bot_data.pop(f"run_project_{user_id}", None)
+    context.bot_data.pop(_run_files_key(user_id, project["id"]), None)
+    context.bot_data.pop(_run_contract_key(user_id, project["id"]), None)
     slug = _slugify(project["name"])
     working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
 
     await message.reply_text(
-        "Starting coding session…\n"
-        f"📁 Project folder: <code>{working_dir}</code>\n\n"
+        "Starting coding sessionâ€¦\n"
+        f"ðŸ“ Project folder: <code>{working_dir}</code>\n\n"
         "I'll send you each milestone for approval before executing. "
         "Use /status anytime to check progress.",
         parse_mode="HTML",
@@ -175,7 +1016,7 @@ async def coding_github_choice_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """User chose GitHub setup option — spin up the background coding loop."""
+    """User chose GitHub setup option â€” spin up the background coding loop."""
     await update.callback_query.answer()
 
     cb_data    = update.callback_query.data or ""
@@ -184,7 +1025,7 @@ async def coding_github_choice_handler(
     chat_id    = update.effective_chat.id
 
     if not project_id:
-        await update.callback_query.message.reply_text("Session expired — start over.")
+        await update.callback_query.message.reply_text("Session expired â€” start over.")
         return
 
     db = context.bot_data.get(KEY_DB)
@@ -207,7 +1048,7 @@ async def coding_github_choice_handler(
     )
 
 
-# ── Milestone approval callbacks ─────────────────────────────────────────────
+# â”€â”€ Milestone approval callbacks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def retry_coding_handler(
     update: Update,
@@ -271,8 +1112,8 @@ async def approve_milestone_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """User tapped ✅ Run It — signal the coding loop to proceed."""
-    await update.callback_query.answer("Running…")
+    """User tapped âœ… Run It â€” signal the coding loop to proceed."""
+    await update.callback_query.answer("Runningâ€¦")
     user_id  = update.effective_user.id
     event_key = _MS_EVENT_KEY.format(uid=user_id)
     event: asyncio.Event | None = context.bot_data.get(event_key)
@@ -289,8 +1130,8 @@ async def skip_milestone_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """User tapped ⏭ Skip — signal the coding loop to skip this milestone."""
-    await update.callback_query.answer("Skipping…")
+    """User tapped â­ Skip â€” signal the coding loop to skip this milestone."""
+    await update.callback_query.answer("Skippingâ€¦")
     user_id   = update.effective_user.id
     event_key = _MS_EVENT_KEY.format(uid=user_id)
     event: asyncio.Event | None = context.bot_data.get(event_key)
@@ -303,8 +1144,8 @@ async def stop_milestone_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """User tapped 🛑 Stop Session — signal the coding loop to abort."""
-    await update.callback_query.answer("Stopping…")
+    """User tapped ðŸ›‘ Stop Session â€” signal the coding loop to abort."""
+    await update.callback_query.answer("Stoppingâ€¦")
     user_id   = update.effective_user.id
     event_key = _MS_EVENT_KEY.format(uid=user_id)
     event: asyncio.Event | None = context.bot_data.get(event_key)
@@ -317,13 +1158,13 @@ async def stop_milestone_handler(
         )
 
 
-# ── Dashboard ─────────────────────────────────────────────────────────────────
+# â”€â”€ Dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def dashboard_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """/status — show the latest project's task progress."""
+    """/status â€” show the latest project's task progress."""
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     db      = context.bot_data.get(KEY_DB)
@@ -339,7 +1180,7 @@ async def dashboard_handler(
     projects = await list_projects(db, user_id=user["id"])
     if not projects:
         await update.message.reply_text(
-            "No projects yet. Tap 🚀 Start a Project to begin.",
+            "No projects yet. Tap ðŸš€ Start a Project to begin.",
             reply_markup=main_menu(),
         )
         return
@@ -348,19 +1189,19 @@ async def dashboard_handler(
     tasks   = await list_tasks(db, project_id=project["id"])
 
     STATUS_EMOJI = {
-        "pending": "⏳",
-        "running": "⚙️",
-        "done":    "✅",
-        "failed":  "❌",
+        "pending": "â³",
+        "running": "âš™ï¸",
+        "done":    "âœ…",
+        "failed":  "âŒ",
     }
 
     if tasks:
         task_lines = "\n".join(
-            f"{STATUS_EMOJI.get(t['status'], '❓')} {t['title']}"
+            f"{STATUS_EMOJI.get(t['status'], 'â“')} {t['title']}"
             for t in tasks
         )
     else:
-        task_lines = "No tasks yet — coding hasn't started."
+        task_lines = "No tasks yet â€” coding hasn't started."
 
     loop_key   = _ACTIVE_LOOP_KEY.format(uid=tg_user.id)
     is_running = (
@@ -368,30 +1209,43 @@ async def dashboard_handler(
         and context.bot_data[loop_key]
         and not context.bot_data[loop_key].done()
     )
-    status_note = " | 🔄 Coding in progress" if is_running else ""
+    status_note = " | ðŸ”„ Coding in progress" if is_running else ""
 
     slug        = _slugify(project["name"])
     working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
 
     text = (
-        f"<b>📊 {project['name']}</b> — {project['project_type']}\n"
-        f"📁 <code>{working_dir}</code>\n"
+        f"<b>ðŸ“Š {project['name']}</b> â€” {project['project_type']}\n"
+        f"ðŸ“ <code>{working_dir}</code>\n"
         f"Status: {project['status']}{status_note}\n\n"
         f"{task_lines}"
     )
 
     # Show Run Project button if coding is done and a project_id is stored.
     run_pid = context.bot_data.get(f"run_project_{tg_user.id}")
+    show_run_cta = False
     if run_pid and not is_running:
+        run_project_row = await get_project(db, run_pid)
+        if run_project_row:
+            if _is_strict_project(run_project_row):
+                show_run_cta = _has_cached_run_contract(
+                    bot_data=context.bot_data,
+                    user_id=tg_user.id,
+                    project_id=run_pid,
+                )
+            else:
+                show_run_cta = True
+
+    if show_run_cta:
         keyboard = run_project()
     else:
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Main Menu", callback_data="nav:main_menu")],
+            [InlineKeyboardButton("ðŸ  Main Menu", callback_data="nav:main_menu")],
         ])
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
-# ── Background coding loop ────────────────────────────────────────────────────
+# â”€â”€ Background coding loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def _coding_loop(
     app,
@@ -406,7 +1260,7 @@ async def _coding_loop(
     1. (Optional) Set up GitHub repo + project folder on CLAW worker.
     2. Extract milestones from the stored plan via LLM.
     3. For each milestone:
-       a. Send to user with ✅ Run It / ⏭ Skip buttons.
+       a. Send to user with âœ… Run It / â­ Skip buttons.
        b. Wait up to 1 h for user decision.
        c. If approved: dispatch run_coding_agent to CLAW worker.
        d. Notify user of result.
@@ -416,9 +1270,13 @@ async def _coding_loop(
     router = app.bot_data.get(KEY_ROUTER)
     slug   = _slugify(project["name"])
     working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
+    strict_mode = _is_strict_project(project)
+    run_files_cache_key = _run_files_key(user_id, project["id"])
+    run_contract_cache_key = _run_contract_key(user_id, project["id"])
+    last_valid_run_contract: dict[str, Any] | None = None
 
     try:
-        # ── Always create the project folder on the worker ────────────────────
+        # â”€â”€ Always create the project folder on the worker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if is_worker_available():
             try:
                 await send_action(
@@ -427,16 +1285,16 @@ async def _coding_loop(
                     confirmed=True,
                 )
             except Exception:
-                pass  # Directory may already exist — not fatal.
+                pass  # Directory may already exist â€” not fatal.
         else:
             await app.bot.send_message(
-                chat_id, "⚠️ Worker not connected — cannot create project folder."
+                chat_id, "âš ï¸ Worker not connected â€” cannot create project folder."
             )
             return
 
-        # ── Optional GitHub setup ──────────────────────────────────────────────
+        # â”€â”€ Optional GitHub setup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if do_github:
-            await app.bot.send_message(chat_id, "🔧 Setting up GitHub repo and project folder…")
+            await app.bot.send_message(chat_id, "ðŸ”§ Setting up GitHub repo and project folderâ€¦")
             try:
                 # Step 1: git init.
                 init_result = await send_action(
@@ -487,7 +1345,7 @@ async def _coding_loop(
                     {
                         "working_dir": working_dir,
                         "repo_name":   slug,
-                        "description": f"Created by SKYNET — {project['project_type']}",
+                        "description": f"Created by SKYNET â€” {project['project_type']}",
                         "private":     True,
                     },
                     timeout=120,
@@ -498,14 +1356,14 @@ async def _coding_loop(
                 _gh_inner = gh_result.get("result", {})
                 if _gh_inner.get("returncode", 0) != 0:
                     raise RuntimeError(_gh_inner.get("stderr") or _gh_inner.get("stdout") or "gh_create_repo failed")
-                await app.bot.send_message(chat_id, "✅ GitHub repo created and pushed.")
+                await app.bot.send_message(chat_id, "âœ… GitHub repo created and pushed.")
             except Exception as exc:
                 await app.bot.send_message(
-                    chat_id, f"⚠️ GitHub setup failed: {exc}\nContinuing anyway…"
+                    chat_id, f"âš ï¸ GitHub setup failed: {exc}\nContinuing anywayâ€¦"
                 )
 
-        # ── Extract milestones from plan ──────────────────────────────────────
-        await app.bot.send_message(chat_id, "📋 Breaking the plan into milestones…")
+        # â”€â”€ Extract milestones from plan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        await app.bot.send_message(chat_id, "ðŸ“‹ Breaking the plan into milestonesâ€¦")
         milestones = await _extract_milestones(router, project)
         total = len(milestones)
 
@@ -527,7 +1385,7 @@ async def _coding_loop(
         skipped_milestones = 0
         all_written_files: list[str] = []
 
-        # ── Milestone loop ────────────────────────────────────────────────────
+        # â”€â”€ Milestone loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         for i, milestone_text in enumerate(milestones, 1):
             # Show milestone to user.
             await app.bot.send_message(
@@ -548,7 +1406,7 @@ async def _coding_loop(
                 await asyncio.wait_for(event.wait(), timeout=3600)
             except asyncio.TimeoutError:
                 await app.bot.send_message(
-                    chat_id, f"⏰ Milestone {i} timed out — skipping."
+                    chat_id, f"â° Milestone {i} timed out â€” skipping."
                 )
                 app.bot_data.pop(event_key, None)
                 skipped_milestones += 1
@@ -560,13 +1418,13 @@ async def _coding_loop(
             if decision == "stop":
                 await app.bot.send_message(
                     chat_id,
-                    f"🛑 Session stopped at milestone {i}/{total}.\n"
+                    f"ðŸ›‘ Session stopped at milestone {i}/{total}.\n"
                     "Use /status to review completed milestones.",
                 )
                 return
 
             if decision == "skip":
-                await app.bot.send_message(chat_id, f"⏭ Milestone {i} skipped.")
+                await app.bot.send_message(chat_id, f"â­ Milestone {i} skipped.")
                 skipped_milestones += 1
                 continue
 
@@ -579,12 +1437,12 @@ async def _coding_loop(
                 description=milestone_text,
             )
             await update_task_status(db, task_rec["id"], status="running")
-            await app.bot.send_message(chat_id, f"⚙️ Executing milestone {i}…")
+            await app.bot.send_message(chat_id, f"âš™ï¸ Executing milestone {i}â€¦")
 
             # Dispatch to CLAW worker.
             if not is_worker_available():
                 await app.bot.send_message(
-                    chat_id, "⚠️ Worker disconnected — cannot execute. Skipping."
+                    chat_id, "âš ï¸ Worker disconnected â€” cannot execute. Skipping."
                 )
                 await update_task_status(
                     db, task_rec["id"],
@@ -627,52 +1485,23 @@ async def _coding_loop(
                     )
 
             try:
-                # ── Try router-based coding first (Gemini/Groq/Claude) ────
-                router_written: list[str] = []
-                try:
-                    coding_resp = await router.chat(
-                        messages=[{"role": "user", "content": prompt}],
-                        system=_CODING_SYSTEM_PROMPT,
-                        max_tokens=4096,
-                        task_type="coding",
-                    )
-                    if coding_resp.text:
-                        blocks = _parse_code_blocks(coding_resp.text)
-                        if blocks:
-                            for fname, file_content in blocks:
-                                await send_action(
-                                    "file_write",
-                                    {"file": f"{working_dir}/{fname}", "content": file_content},
-                                    timeout=15,
-                                    confirmed=True,
-                                )
-                                router_written.append(fname)
-                            logger.info(
-                                "Router coding wrote %d file(s) via %s: %s",
-                                len(router_written),
-                                coding_resp.provider_name,
-                                ", ".join(router_written),
-                            )
-                except Exception as exc:
-                    logger.info("Router coding unavailable, using Ollama SSH: %s", exc)
+                # â”€â”€ Try router-based coding first (Gemini/Groq/Claude) â”€â”€â”€â”€
+                claude_ollama_mode = _uses_claude_ollama(project)
 
-                if router_written:
-                    # Router succeeded — skip Ollama SSH path.
-                    inner = {
-                        "returncode": 0,
-                        "stdout": f"Wrote {len(router_written)} file(s): {', '.join(router_written)}",
-                        "files_written": router_written,
-                    }
-
-                if not router_written:
-                    # Auto-retry: up to 3 attempts if no files generated or non-zero exit.
+                if claude_ollama_mode:
+                    # New profile: always use Claude CLI against Ollama in attempt 1.
                     max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
                         result = await send_action(
                             "run_coding_agent",
                             {
-                                "prompt":      prompt,
+                                "agent": "claude",
+                                "backend": "ollama",
+                                "model": cfg.CLAUDE_OLLAMA_DEFAULT_MODEL,
+                                "prompt": prompt,
                                 "working_dir": working_dir,
+                                "timeout_seconds": 1800,
+                                "auto_pull_model": cfg.CLAUDE_OLLAMA_AUTO_PULL,
                             },
                             timeout=1800,
                             confirmed=True,
@@ -685,17 +1514,16 @@ async def _coding_loop(
                         written = inner.get("files_written") or []
 
                         if return_code == 0 and written:
-                            break  # success
+                            break
 
                         if attempt < max_attempts:
                             reason = "no files generated" if not written else f"exit code {return_code}"
                             await app.bot.send_message(
                                 chat_id,
-                                f"⚠️ Attempt {attempt}/{max_attempts} — {reason}. Retrying…"
+                                f"âš ï¸ Attempt {attempt}/{max_attempts} â€” {reason}. Retryingâ€¦"
                             )
                             continue
 
-                        # All attempts exhausted
                         if return_code != 0:
                             detail = (
                                 inner.get("stderr")
@@ -703,6 +1531,83 @@ async def _coding_loop(
                                 or f"Failed after {max_attempts} attempts (exit {return_code})"
                             )
                             raise RuntimeError(str(detail))
+                else:
+                    # Legacy profile keeps router-first behavior.
+                    router_written: list[str] = []
+                    try:
+                        coding_resp = await router.chat(
+                            messages=[{"role": "user", "content": prompt}],
+                            system=_CODING_SYSTEM_PROMPT,
+                            max_tokens=4096,
+                            task_type="coding",
+                        )
+                        if coding_resp.text:
+                            blocks = _parse_code_blocks(coding_resp.text)
+                            if blocks:
+                                for fname, file_content in blocks:
+                                    await send_action(
+                                        "file_write",
+                                        {"file": f"{working_dir}/{fname}", "content": file_content},
+                                        timeout=15,
+                                        confirmed=True,
+                                    )
+                                    router_written.append(fname)
+                                logger.info(
+                                    "Router coding wrote %d file(s) via %s: %s",
+                                    len(router_written),
+                                    coding_resp.provider_name,
+                                    ", ".join(router_written),
+                                )
+                    except Exception as exc:
+                        logger.info("Router coding unavailable, using coding CLI fallback: %s", exc)
+
+                    if router_written:
+                        inner = {
+                            "returncode": 0,
+                            "stdout": f"Wrote {len(router_written)} file(s): {', '.join(router_written)}",
+                            "files_written": router_written,
+                        }
+
+                    if not router_written:
+                        max_attempts = 3
+                        for attempt in range(1, max_attempts + 1):
+                            result = await send_action(
+                                "run_coding_agent",
+                                {
+                                    "agent": "claude",
+                                    "backend": "auto",
+                                    "prompt": prompt,
+                                    "working_dir": working_dir,
+                                    "timeout_seconds": 1800,
+                                },
+                                timeout=1800,
+                                confirmed=True,
+                            )
+                            if result.get("status") == "error":
+                                raise RuntimeError(result.get("error", "run_coding_agent failed"))
+
+                            inner = result.get("result", result)
+                            return_code = inner.get("returncode", inner.get("exit_code", 0))
+                            written = inner.get("files_written") or []
+
+                            if return_code == 0 and written:
+                                break
+
+                            if attempt < max_attempts:
+                                reason = "no files generated" if not written else f"exit code {return_code}"
+                                await app.bot.send_message(
+                                    chat_id,
+                                    f"âš ï¸ Attempt {attempt}/{max_attempts} â€” {reason}. Retryingâ€¦"
+                                )
+                                continue
+
+                            if return_code != 0:
+                                detail = (
+                                    inner.get("stderr")
+                                    or inner.get("stdout")
+                                    or f"Failed after {max_attempts} attempts (exit {return_code})"
+                                )
+                                raise RuntimeError(str(detail))
 
                 summary = (inner.get("stdout") or inner.get("stderr") or "")[:500].strip()
 
@@ -718,11 +1623,49 @@ async def _coding_loop(
                             f.strip() for f in m.group(1).split(",") if f.strip()
                         )
 
+                if strict_mode:
+                    gate_result = await _run_strict_quality_gates(
+                        db=db,
+                        task_id=task_rec["id"],
+                        project=project,
+                        milestone_text=milestone_text,
+                        working_dir=working_dir,
+                    )
+                    if not gate_result.get("passed"):
+                        failed_names = gate_result.get("failed_gate_names") or []
+                        err = str(gate_result.get("error_message") or "GATES_FAILED")
+                        if (
+                            not err.startswith("INFRA_FAILURE:")
+                            and not err.startswith("FALLBACK_UNAVAILABLE:")
+                            and failed_names
+                        ):
+                            err = f"GATES_FAILED: {','.join(failed_names)}"
+                        err = err[:300]
+                        await update_task_status(
+                            db,
+                            task_rec["id"],
+                            status="failed",
+                            error_message=err,
+                        )
+                        failed_milestones += 1
+                        await app.bot.send_message(
+                            chat_id,
+                            f"Ã¢ÂÅ’ Milestone {i} failed:\n<code>{html_mod.escape(err)}</code>",
+                            parse_mode="HTML",
+                        )
+                        continue
+                    run_contract = gate_result.get("run_contract")
+                    if isinstance(run_contract, dict):
+                        last_valid_run_contract = run_contract
+                    pass_summary = str(gate_result.get("pass_summary") or "").strip()
+                    if pass_summary:
+                        summary = (summary + "\n" + pass_summary).strip()[:500]
+
                 await update_task_status(
                     db, task_rec["id"], status="done", result_summary=summary
                 )
                 successful_milestones += 1
-                notice = f"✅ Milestone {i} complete!"
+                notice = f"âœ… Milestone {i} complete!"
                 if summary:
                     notice += f"\n\n{summary}"
                 await app.bot.send_message(chat_id, notice)
@@ -734,19 +1677,37 @@ async def _coding_loop(
                 )
                 failed_milestones += 1
                 await app.bot.send_message(
-                    chat_id, f"❌ Milestone {i} failed:\n<code>{html_mod.escape(str(err))}</code>",
+                    chat_id, f"âŒ Milestone {i} failed:\n<code>{html_mod.escape(str(err))}</code>",
                     parse_mode="HTML",
                 )
 
-        # ── Done ──────────────────────────────────────────────────────────────
+        # â”€â”€ Done â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         milestone_summary = (
             f"complete={successful_milestones}, "
             f"failed={failed_milestones}, "
             f"skipped={skipped_milestones}"
         )
         if successful_milestones > 0:
+            unique_written: list[str] = []
+            seen_written: set[str] = set()
+            for path in all_written_files:
+                clean = str(path).strip()
+                if not clean:
+                    continue
+                key = clean.lower()
+                if key in seen_written:
+                    continue
+                seen_written.add(key)
+                unique_written.append(clean)
+
             app.bot_data[f"run_project_{user_id}"] = project["id"]
-            app.bot_data[f"run_files_{user_id}"] = all_written_files
+            app.bot_data[run_files_cache_key] = unique_written
+            if strict_mode and last_valid_run_contract:
+                app.bot_data[run_contract_cache_key] = last_valid_run_contract
+            elif strict_mode:
+                app.bot_data.pop(run_contract_cache_key, None)
+
+            can_run_now = (not strict_mode) or bool(last_valid_run_contract)
             await app.bot.send_message(
                 chat_id,
                 f"\U0001F389 <b>{project['name']}</b> coding session complete!\n"
@@ -754,7 +1715,7 @@ async def _coding_loop(
                 f"{milestone_summary}\n\n"
                 "Use /status to review milestones or run the project now.",
                 parse_mode="HTML",
-                reply_markup=run_project(),
+                reply_markup=run_project() if can_run_now else main_menu(),
             )
         else:
             await app.bot.send_message(
@@ -778,106 +1739,169 @@ async def _coding_loop(
         )
 
 
-# ── Run Project ───────────────────────────────────────────────────────────────
+# â”€â”€ Run Project â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def run_project_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """User tapped ▶️ Run Project — execute the project script on the CLAW worker."""
+    """User tapped Run Project and wants execution on the worker."""
     await update.callback_query.answer()
 
     user_id = update.effective_user.id
-    db      = context.bot_data.get(KEY_DB)
+    db = context.bot_data.get(KEY_DB)
 
     # Prefer the project from the last coding session; fallback to most recent.
-    pid_key    = f"run_project_{user_id}"
+    pid_key = f"run_project_{user_id}"
     project_id = context.bot_data.get(pid_key)
-    project    = None
+    project = None
     if project_id:
         project = await get_project(db, project_id)
 
     if not project:
-        tg_user  = update.effective_user
-        user     = await ensure_user(
+        tg_user = update.effective_user
+        user = await ensure_user(
             db,
             telegram_user_id=tg_user.id,
-            username=tg_user.username    or "",
+            username=tg_user.username or "",
             first_name=tg_user.first_name or "",
-            last_name=tg_user.last_name   or "",
+            last_name=tg_user.last_name or "",
         )
         projects = await list_projects(db, user_id=user["id"])
-        project  = projects[0] if projects else None
+        project = projects[0] if projects else None
 
     if not project:
         await update.callback_query.message.reply_text(
-            "No project found to run.", reply_markup=main_menu()
-        )
-        return
-
-    if not is_worker_available():
-        await update.callback_query.message.reply_text(
-            "⚠️ Worker not connected — can't run the project right now.",
-            reply_markup=run_project(),
-        )
-        return
-
-    slug        = _slugify(project["name"])
-    working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
-    project_type = str(project.get("project_type", "") or "")
-
-    # --- Detect the actual entry-point script --------------------------------
-    # Priority 1: use files stored during the coding loop (no network needed).
-    stored_files = context.bot_data.get(f"run_files_{user_id}") or []
-    if stored_files:
-        resolved = _select_entrypoint(
-            files=stored_files, slug=slug, project_type=project_type,
-        )
-    else:
-        resolved = None
-
-    # Priority 2: fall back to listing the directory on the worker.
-    if not resolved:
-        try:
-            list_result = await send_action(
-                "list_directory",
-                {"directory": working_dir, "recursive": True},
-                timeout=20,
-                confirmed=True,
-            )
-            if list_result.get("status") == "error":
-                raise RuntimeError(list_result.get("error", "list_directory failed"))
-
-            list_inner = list_result.get("result", list_result)
-            list_code = list_inner.get("returncode", list_inner.get("exit_code", 1))
-            if list_code != 0:
-                detail = list_inner.get("stderr") or list_inner.get("stdout") or "list_directory failed"
-                raise RuntimeError(str(detail))
-
-            listing = str(list_inner.get("stdout") or "")
-            discovered_files = _extract_file_paths_from_listing(listing, working_dir=working_dir)
-            resolved = _select_entrypoint(
-                files=discovered_files, slug=slug, project_type=project_type,
-            )
-        except Exception as exc:
-            logger.warning("Could not list project dir %s: %s", working_dir, exc)
-
-    if not resolved:
-        await update.callback_query.message.reply_text(
-            f"⚠️ No runnable entry point found in <code>{html_mod.escape(working_dir)}</code>.\n"
-            "The coding agent may not have finished writing files. "
-            "Try running the coding loop again.",
-            parse_mode="HTML",
+            "No project found to run.",
             reply_markup=main_menu(),
         )
         return
 
-    run_cmd, run_target = resolved
+    strict_mode = _is_strict_project(project)
+    run_files_cache_key = _run_files_key(user_id, project["id"])
+    run_contract_cache_key = _run_contract_key(user_id, project["id"])
+
+    if not is_worker_available():
+        await update.callback_query.message.reply_text(
+            "Worker not connected - cannot run the project right now.",
+            reply_markup=run_project() if not strict_mode else main_menu(),
+        )
+        return
+
+    slug = _slugify(project["name"])
+    working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
+    project_type = str(project.get("project_type", "") or "")
+
+    run_cmd: str | None = None
+    run_target: str | None = None
+
+    if strict_mode:
+        cached_contract = _validate_cached_run_contract(
+            context.bot_data.get(run_contract_cache_key)
+        )
+        if cached_contract:
+            run_cmd = cached_contract["command"]
+            run_target = cached_contract["entrypoint"]
+        else:
+            manifest_contract, manifest_summary, manifest_infra = await _load_and_validate_run_contract(
+                working_dir=working_dir,
+            )
+            if manifest_contract:
+                context.bot_data[run_contract_cache_key] = manifest_contract
+                run_cmd = manifest_contract["command"]
+                run_target = manifest_contract["entrypoint"]
+            else:
+                detail = html_mod.escape(manifest_summary[:260])
+                if manifest_infra:
+                    msg = (
+                        f"Run failed: infrastructure error validating <code>{_RUN_CONTRACT_FILE}</code>: {detail}"
+                    )
+                else:
+                    msg = (
+                        f"Strict run contract is missing or invalid (<code>{_RUN_CONTRACT_FILE}</code>): {detail}"
+                    )
+                await update.callback_query.message.reply_text(
+                    msg,
+                    parse_mode="HTML",
+                    reply_markup=main_menu(),
+                )
+                return
+    else:
+        stored_files = context.bot_data.get(run_files_cache_key) or []
+        if stored_files:
+            resolved = _select_entrypoint(
+                files=stored_files,
+                slug=slug,
+                project_type=project_type,
+            )
+        else:
+            resolved = None
+
+        if not resolved:
+            try:
+                list_result = await send_action(
+                    "list_directory",
+                    {"directory": working_dir, "recursive": True},
+                    timeout=20,
+                    confirmed=True,
+                )
+            except Exception as exc:
+                detail = f"{type(exc).__name__}: {exc}"
+                await update.callback_query.message.reply_text(
+                    f"Run failed: infrastructure error while listing files: <code>{html_mod.escape(detail[:260])}</code>",
+                    parse_mode="HTML",
+                    reply_markup=run_project(),
+                )
+                return
+
+            if list_result.get("status") == "error" or _action_exit_code(list_result) != 0:
+                detail = _action_error_text(list_result, "list_directory")
+                await update.callback_query.message.reply_text(
+                    f"Run failed: infrastructure error while listing files: <code>{html_mod.escape(detail[:260])}</code>",
+                    parse_mode="HTML",
+                    reply_markup=run_project(),
+                )
+                return
+
+            listing = str(_action_inner_result(list_result).get("stdout") or "")
+            discovered_files = _extract_file_paths_from_listing(
+                listing,
+                working_dir=working_dir,
+            )
+            resolved = _select_entrypoint(
+                files=discovered_files,
+                slug=slug,
+                project_type=project_type,
+            )
+
+        if not resolved:
+            await update.callback_query.message.reply_text(
+                f"No runnable entry point found in <code>{html_mod.escape(working_dir)}</code>.\n"
+                "The coding agent may not have finished writing files. Try running the coding loop again.",
+                parse_mode="HTML",
+                reply_markup=main_menu(),
+            )
+            return
+
+        run_cmd, run_target = resolved
+
+    if not run_cmd:
+        await update.callback_query.message.reply_text(
+            "No runnable command is available for this project.",
+            reply_markup=main_menu(),
+        )
+        return
 
     await update.callback_query.message.reply_text(
-        f"▶️ Running <code>{html_mod.escape(run_target or '')}</code> on your laptop…",
+        f"Running <code>{html_mod.escape(run_target or '')}</code> on your laptop...",
         parse_mode="HTML",
     )
+
+    run_markup = run_project() if (not strict_mode or _has_cached_run_contract(
+        bot_data=context.bot_data,
+        user_id=user_id,
+        project_id=project["id"],
+    )) else main_menu()
 
     try:
         result = await send_action(
@@ -887,34 +1911,33 @@ async def run_project_handler(
             confirmed=True,
         )
         if result.get("status") == "error":
-            raise RuntimeError(result.get("error", "exec_command failed"))
+            detail = _action_error_text(result, "exec_command")
+            if _is_infra_error(detail):
+                raise RuntimeError(f"Infrastructure error: {detail}")
+            raise RuntimeError(detail)
 
-        # The gateway wraps the worker's response: {"status": "success", "result": {...}}
-        inner     = result.get("result", result)
-        stdout    = (inner.get("stdout") or "").strip()
-        stderr    = (inner.get("stderr") or "").strip()
+        inner = _action_inner_result(result)
+        stdout = (inner.get("stdout") or "").strip()
+        stderr = (inner.get("stderr") or "").strip()
         exit_code = inner.get("returncode", inner.get("exit_code", 0))
 
         output = html_mod.escape((stdout or stderr or "(no output)")[:1000])
         status_line = (
-            f"✅ Finished (exit {exit_code})"
+            f"Finished (exit {exit_code})"
             if exit_code == 0
-            else f"❌ Exited with code {exit_code}"
+            else f"Exited with code {exit_code}"
         )
         await update.callback_query.message.reply_text(
             f"<pre>{output}</pre>\n\n{status_line}",
             parse_mode="HTML",
-            reply_markup=run_project(),
+            reply_markup=run_markup,
         )
     except Exception as exc:
         await update.callback_query.message.reply_text(
-            f"❌ Run failed: {html_mod.escape(str(exc)[:300])}",
+            f"Run failed: {html_mod.escape(str(exc)[:300])}",
             parse_mode="HTML",
-            reply_markup=run_project(),
+            reply_markup=run_markup,
         )
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _project_prefers_node(project_type: str) -> bool:
     lowered = project_type.lower()
@@ -1087,7 +2110,7 @@ async def _extract_milestones(router, project: dict) -> list[str]:
         if isinstance(milestones, list) and all(isinstance(m, str) for m in milestones):
             return [m.strip() for m in milestones if m.strip()]
     except Exception:
-        logger.warning("JSON milestone extraction failed — falling back to line parsing")
+        logger.warning("JSON milestone extraction failed â€” falling back to line parsing")
 
     # Fallback: split on numbered list items (1. ... 2. ...)
     fallback = _parse_milestones_fallback(plan)
@@ -1096,7 +2119,7 @@ async def _extract_milestones(router, project: dict) -> list[str]:
 
     # Last resort: ask the LLM to generate milestones from the project name and type
     # (handles cases where the plan text is garbage or a meta-response).
-    logger.warning("No milestones found in plan text — generating from project info")
+    logger.warning("No milestones found in plan text â€” generating from project info")
     try:
         gen_system = (
             "You are a project planner. Generate 2-4 coding milestones for the given project. "

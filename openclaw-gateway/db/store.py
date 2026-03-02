@@ -80,6 +80,8 @@ async def create_project(
     name: str,
     project_type: str = "Other",
     description: str = "",
+    coding_profile: str = "legacy",
+    quality_profile: str = "legacy",
 ) -> dict[str, Any]:
     """Create a new project and return its row."""
     project_id = _new_id()
@@ -88,11 +90,12 @@ async def create_project(
     await db.execute(
         """
         INSERT INTO projects (id, user_id, name, display_name, project_type, description,
-                              status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?)
+                              coding_profile, quality_profile, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)
         """,
         (project_id, int(user_id), _name, _name, project_type.strip(),
-         description.strip(), now, now),
+         description.strip(), coding_profile.strip() or "legacy",
+         quality_profile.strip() or "legacy", now, now),
     )
     await db.commit()
     return await get_project(db, project_id)
@@ -189,6 +192,68 @@ async def update_task_status(
 
 
 # ── Provider usage ────────────────────────────────────────────────────────────
+
+async def create_task_gate_result(
+    db: aiosqlite.Connection,
+    *,
+    task_id: int,
+    attempt: int,
+    gate_name: str,
+    status: str,
+    command: str = "",
+    summary: str = "",
+) -> dict[str, Any]:
+    async with db.execute(
+        """
+        INSERT INTO task_gate_results
+            (task_id, attempt, gate_name, status, command, summary)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(task_id),
+            int(attempt),
+            gate_name.strip(),
+            status.strip(),
+            command.strip(),
+            summary.strip(),
+        ),
+    ) as cur:
+        gate_result_id = cur.lastrowid
+    await db.commit()
+    async with db.execute(
+        "SELECT * FROM task_gate_results WHERE id = ?",
+        (gate_result_id,),
+    ) as cur:
+        return _row(await cur.fetchone())
+
+
+async def list_task_gate_results(
+    db: aiosqlite.Connection,
+    *,
+    task_id: int,
+) -> list[dict[str, Any]]:
+    async with db.execute(
+        """
+        SELECT * FROM task_gate_results
+        WHERE task_id = ?
+        ORDER BY attempt ASC, id ASC
+        """,
+        (int(task_id),),
+    ) as cur:
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def delete_task_gate_results(
+    db: aiosqlite.Connection,
+    *,
+    task_id: int,
+) -> None:
+    await db.execute(
+        "DELETE FROM task_gate_results WHERE task_id = ?",
+        (int(task_id),),
+    )
+    await db.commit()
+
 
 async def record_provider_usage(
     db: aiosqlite.Connection,

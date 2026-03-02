@@ -270,7 +270,7 @@ CODING_TOOLS: list[dict] = [
         "name": "run_coding_agent",
         "description": (
             "Run a local coding agent CLI in non-interactive mode on the laptop "
-            "(Codex, Claude, or Cline)."
+            "with explicit agent/backend routing."
         ),
         "input_schema": {
             "type": "object",
@@ -279,6 +279,15 @@ CODING_TOOLS: list[dict] = [
                     "type": "string",
                     "enum": ["codex", "claude", "cline"],
                     "description": "Which coding agent to run.",
+                },
+                "backend": {
+                    "type": "string",
+                    "enum": ["ollama", "native", "auto"],
+                    "description": "Execution backend selection.",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional model id for compatible agents.",
                 },
                 "prompt": {
                     "type": "string",
@@ -291,6 +300,10 @@ CODING_TOOLS: list[dict] = [
                 "timeout_seconds": {
                     "type": "integer",
                     "description": "Optional timeout (30-3600, default 1800).",
+                },
+                "auto_pull_model": {
+                    "type": "boolean",
+                    "description": "When backend=ollama, pull missing model once before failing.",
                 },
             },
             "required": ["agent", "prompt"],

@@ -74,8 +74,14 @@ async def send_action(
     _force_ssh = os.environ.get("OPENCLAW_EXECUTION_MODE", "").lower() in (
         "ssh", "ssh_tunnel", "tunnel", "ssh-only",
     )
+    _coding_actions = {"run_coding_agent", "check_coding_agents", "configure_coding_agent"}
+    _prefer_ssh_for_coding = (
+        cfg.CODING_TRANSPORT == "ssh_first"
+        and action in _coding_actions
+        and _ssh_exec.is_configured()
+    )
 
-    if _force_ssh or _agent_ws is None:
+    if _force_ssh or _prefer_ssh_for_coding or _agent_ws is None:
         if _ssh_exec.is_configured():
             logger.info("Routing action '%s' via SSH tunnel executor.", action)
             return await _ssh_exec.execute_action(action, params or {}, confirmed=confirmed)

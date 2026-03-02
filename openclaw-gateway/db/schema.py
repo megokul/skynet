@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS projects (
     display_name TEXT    NOT NULL DEFAULT '',
     project_type TEXT    NOT NULL DEFAULT 'Other',
     description  TEXT    NOT NULL DEFAULT '',
+    coding_profile TEXT  NOT NULL DEFAULT 'legacy',
+    quality_profile TEXT  NOT NULL DEFAULT 'legacy',
     status       TEXT    NOT NULL DEFAULT 'ideation',
     created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -48,6 +50,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS task_gate_results (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    attempt    INTEGER NOT NULL,
+    gate_name  TEXT    NOT NULL,
+    status     TEXT    NOT NULL,
+    command    TEXT    NOT NULL DEFAULT '',
+    summary    TEXT    NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 -- ── Provider usage ────────────────────────────────────────────────────────────
 -- Daily quota tracking — one row per provider per day.
 CREATE TABLE IF NOT EXISTS provider_usage (
@@ -64,6 +77,8 @@ CREATE TABLE IF NOT EXISTS provider_usage (
 -- ── Indexes (only those safe to create before migrations) ─────────────────────
 CREATE INDEX IF NOT EXISTS idx_users_telegram_id  ON users(telegram_user_id);
 CREATE INDEX IF NOT EXISTS idx_provider_usage_day ON provider_usage(provider_name, date);
+CREATE INDEX IF NOT EXISTS idx_task_gate_results_lookup
+    ON task_gate_results(task_id, attempt, gate_name);
 """
 
 # Clean tasks DDL used when recreating the table from a legacy schema.
@@ -95,6 +110,8 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
         "ALTER TABLE projects ADD COLUMN display_name  TEXT    NOT NULL DEFAULT ''",
         "ALTER TABLE projects ADD COLUMN user_id       INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE projects ADD COLUMN project_type  TEXT    NOT NULL DEFAULT 'Other'",
+        "ALTER TABLE projects ADD COLUMN coding_profile TEXT NOT NULL DEFAULT 'legacy'",
+        "ALTER TABLE projects ADD COLUMN quality_profile TEXT NOT NULL DEFAULT 'legacy'",
         "ALTER TABLE projects ADD COLUMN status        TEXT    NOT NULL DEFAULT 'ideation'",
     ]:
         try:
@@ -137,6 +154,8 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
     for idx_sql in [
         "CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_tasks_project  ON tasks(project_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_task_gate_results_lookup "
+        "ON task_gate_results(task_id, attempt, gate_name)",
     ]:
         try:
             await db.execute(idx_sql)

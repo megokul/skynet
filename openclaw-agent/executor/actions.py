@@ -42,6 +42,15 @@ _CODING_AGENT_PREFIX_ARGS: dict[str, list[str]] = {
     "cline": ["-p"],
 }
 _CODING_AGENT_TIMEOUT_SECONDS = 1800
+_CODING_BACKENDS = {"auto", "ollama", "native"}
+_CLAUDE_OLLAMA_BASE_URL = os.environ.get("SKYNET_CLAUDE_OLLAMA_BASE_URL", "http://localhost:11434").strip()
+_CLAUDE_OLLAMA_AUTH_TOKEN = os.environ.get("SKYNET_CLAUDE_OLLAMA_AUTH_TOKEN", "ollama").strip()
+_CLAUDE_OLLAMA_DEFAULT_MODEL = os.environ.get("SKYNET_CLAUDE_OLLAMA_DEFAULT_MODEL", "qwen3-coder").strip()
+_CLAUDE_OLLAMA_AUTO_PULL = (os.environ.get("SKYNET_CLAUDE_OLLAMA_AUTO_PULL", "1").strip().lower() in {"1", "true", "yes", "on"})
+try:
+    _CLAUDE_OLLAMA_MIN_CONTEXT = int(os.environ.get("SKYNET_CLAUDE_OLLAMA_MIN_CONTEXT", "64000") or "64000")
+except ValueError:
+    _CLAUDE_OLLAMA_MIN_CONTEXT = 64000
 _BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
 _WEB_SEARCH_TIMEOUT_SECONDS = 15
 
@@ -55,6 +64,7 @@ async def _run(
     *,
     cwd: str | None = None,
     timeout: int = _SUBPROCESS_TIMEOUT,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     Run a fixed argument list as an async subprocess.
@@ -67,6 +77,7 @@ async def _run(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env=env,
     )
     try:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -691,16 +702,74 @@ def _resolve_coding_binary(name: str) -> tuple[str, str]:
     return (resolved or "", binary)
 
 
+def _bool_param(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _resolve_backend(agent: str, backend: str) -> tuple[str | None, str | None]:
+    if backend not in _CODING_BACKENDS:
+        return None, "backend must be one of: auto, ollama, native."
+    if agent == "claude":
+        if backend == "auto":
+            return "ollama", None
+        return backend, None
+    if backend == "ollama":
+        return None, "backend=ollama is only supported for agent='claude'."
+    if backend == "auto":
+        return "native", None
+    return backend, None
+
+
+def _check_ollama_model(base_url: str, model: str) -> dict[str, Any]:
+    endpoint = f"{base_url.rstrip('/')}/api/tags"
+    try:
+        with request.urlopen(endpoint, timeout=15) as resp:
+            payload = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        return {"reachable": False, "present": False, "summary": str(exc)}
+
+    try:
+        data = json.loads(payload)
+    except Exception as exc:
+        return {"reachable": False, "present": False, "summary": f"Invalid Ollama response: {exc}"}
+
+    names = {
+        str(item.get("name") or "").strip()
+        for item in (data.get("models") or [])
+        if isinstance(item, dict)
+    }
+    if model in names:
+        return {"reachable": True, "present": True, "summary": "model present"}
+    return {"reachable": True, "present": False, "summary": "model missing"}
+
+
 async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
     """
     Run a local coding agent CLI in non-interactive mode.
 
-    Supported agents: codex, claude, cline.
+    Supports explicit backend routing:
+      - backend=ollama for claude (Anthropic-compatible API via Ollama)
+      - backend=native for direct CLI behavior
+      - backend=auto (defaults to ollama for claude; native otherwise)
     """
     agent = _require_param(params, "agent").strip().lower()
     prompt = _require_param(params, "prompt")
     cwd = params.get("working_dir")
     timeout = params.get("timeout_seconds", _CODING_AGENT_TIMEOUT_SECONDS)
+    backend_raw = str(params.get("backend") or "auto").strip().lower()
+    model = str(params.get("model") or "").strip()
+    base_url = str(params.get("base_url") or _CLAUDE_OLLAMA_BASE_URL or "http://localhost:11434").strip().rstrip("/")
+    auto_pull_model = _bool_param(params.get("auto_pull_model"), _CLAUDE_OLLAMA_AUTO_PULL)
 
     if agent not in _CODING_AGENT_BINARIES:
         allowed = ", ".join(sorted(_CODING_AGENT_BINARIES.keys()))
@@ -709,6 +778,10 @@ async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
         return {"returncode": 1, "stdout": "", "stderr": "working_dir must be a string path."}
     if not isinstance(timeout, int) or timeout < 30 or timeout > 3600:
         return {"returncode": 1, "stdout": "", "stderr": "timeout_seconds must be an integer between 30 and 3600."}
+
+    resolved_backend, backend_error = _resolve_backend(agent, backend_raw)
+    if backend_error:
+        return {"returncode": 1, "stdout": "", "stderr": backend_error}
 
     resolved, configured = _resolve_coding_binary(agent)
     if not resolved:
@@ -720,6 +793,88 @@ async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
                 f"Set SKYNET_{agent.upper()}_BIN or OPENCLAW_{agent.upper()}_BIN to the executable path."
             ),
         }
+
+    if agent == "claude" and resolved_backend == "ollama":
+        selected_model = model or _CLAUDE_OLLAMA_DEFAULT_MODEL
+        check = _check_ollama_model(base_url, selected_model)
+        if not check["reachable"]:
+            return {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": f"OLLAMA_SETUP_ERROR: {check['summary']}",
+            }
+
+        if not check["present"]:
+            if not auto_pull_model:
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": (
+                        f"OLLAMA_MODEL_MISSING: '{selected_model}' not found. "
+                        "Set auto_pull_model=true or pre-pull the model."
+                    ),
+                }
+
+            pull_timeout = max(120, min(timeout, 1800))
+            pull = await _run(["ollama", "pull", selected_model], timeout=pull_timeout)
+            if pull["returncode"] != 0:
+                detail = pull["stderr"] or pull["stdout"] or "unknown pull error"
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": f"OLLAMA_MODEL_SETUP_ERROR: pull failed for '{selected_model}'. {detail}",
+                }
+
+            check = _check_ollama_model(base_url, selected_model)
+            if not check["reachable"] or not check["present"]:
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": f"OLLAMA_MODEL_SETUP_ERROR: '{selected_model}' unavailable after pull.",
+                }
+
+        env = dict(os.environ)
+        env.update(
+            {
+                "ANTHROPIC_AUTH_TOKEN": _CLAUDE_OLLAMA_AUTH_TOKEN or "ollama",
+                "ANTHROPIC_API_KEY": "",
+                "ANTHROPIC_BASE_URL": base_url,
+            }
+        )
+        result = await _run(
+            [resolved, "--model", selected_model, "-p", prompt],
+            cwd=cwd,
+            timeout=timeout,
+            env=env,
+        )
+
+        show = await _run(["ollama", "show", selected_model], timeout=45)
+        if show["returncode"] == 0:
+            text = f"{show['stdout']}\n{show['stderr']}"
+            match = re.search(r"context length[^0-9]*([0-9][0-9,]*)", text, flags=re.IGNORECASE) or re.search(
+                r"num_ctx[^0-9]*([0-9][0-9,]*)",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                try:
+                    detected_ctx = int(match.group(1).replace(",", ""))
+                except ValueError:
+                    detected_ctx = None
+                if detected_ctx is not None and detected_ctx < _CLAUDE_OLLAMA_MIN_CONTEXT:
+                    warning = (
+                        f"Warning: detected model context {detected_ctx} tokens, "
+                        f"below target {_CLAUDE_OLLAMA_MIN_CONTEXT}."
+                    )
+                    result["stdout"] = f"{warning}\n{result['stdout']}".strip()
+        return result
+
+    if agent == "claude":
+        args = [resolved]
+        if model:
+            args.extend(["--model", model])
+        args.extend(["-p", prompt])
+        return await _run(args, cwd=cwd, timeout=timeout)
 
     args = [resolved, *_CODING_AGENT_PREFIX_ARGS[agent], prompt]
     return await _run(args, cwd=cwd, timeout=timeout)

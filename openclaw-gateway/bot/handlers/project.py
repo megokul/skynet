@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 
+import config as cfg
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -306,6 +307,16 @@ async def approve_plan(
     plan       = context.user_data.get(_PLAN_KEY, "")
 
     try:
+        coding_default = str(cfg.CODING_DEFAULT_PROFILE or "legacy").strip().lower()
+        if coding_default not in {"legacy", "claude_ollama"}:
+            coding_default = "legacy"
+
+        default_profile = cfg.STRICT_QUALITY_GATES_DEFAULT_PROFILE
+        if default_profile not in {"strict", "legacy"}:
+            default_profile = "strict"
+        quality_profile = (
+            default_profile if cfg.STRICT_QUALITY_GATES_ENABLED else "legacy"
+        )
         user = await ensure_user(
             db,
             telegram_user_id=tg_user.id,
@@ -319,6 +330,8 @@ async def approve_plan(
             name=name,
             project_type=type_label,
             description=plan,
+            coding_profile=coding_default,
+            quality_profile=quality_profile,
         )
     except Exception:
         logger.exception("Failed to save project name=%r type=%r", name, type_label)

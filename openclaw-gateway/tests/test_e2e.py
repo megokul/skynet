@@ -462,7 +462,7 @@ class TestRunProject:
         context = make_context(bot_data={
             KEY_DB: MagicMock(),
             f"run_project_{self.USER_ID}": self.PROJECT["id"],
-            f"run_files_{self.USER_ID}": ["skyapp.py"],
+            f"run_files_{self.USER_ID}_{self.PROJECT['id']}": ["skyapp.py"],
         })
 
         mock_result = {"stdout": "Hello from SkyApp!\n", "stderr": "", "exit_code": 0}
@@ -545,7 +545,7 @@ class TestRunProject:
         context = make_context(bot_data={
             KEY_DB: MagicMock(),
             f"run_project_{self.USER_ID}": self.PROJECT["id"],
-            f"run_files_{self.USER_ID}": ["skyapp.py"],
+            f"run_files_{self.USER_ID}_{self.PROJECT['id']}": ["skyapp.py"],
         })
 
         mock_result = {
@@ -568,7 +568,7 @@ class TestRunProject:
             for c in update.callback_query.message.reply_text.call_args_list
         )
         assert "ModuleNotFoundError" in all_replies
-        assert "exit 1" in all_replies or "❌" in all_replies
+        assert "code 1" in all_replies or "exit 1" in all_replies or "❌" in all_replies
 
     @pytest.mark.asyncio
     async def test_run_project_handles_top_level_error_envelope(self):
@@ -576,7 +576,7 @@ class TestRunProject:
         context = make_context(bot_data={
             KEY_DB: MagicMock(),
             f"run_project_{self.USER_ID}": self.PROJECT["id"],
-            f"run_files_{self.USER_ID}": ["skyapp.py"],
+            f"run_files_{self.USER_ID}_{self.PROJECT['id']}": ["skyapp.py"],
         })
 
         mock_result = {"status": "error", "error": "Worker rejected exec_command"}
@@ -688,7 +688,7 @@ class TestRunProject:
         )
 
         # Written files stored for run handler
-        assert app.bot_data.get(f"run_files_{user_id}") == ["skyapp.py"], (
+        assert app.bot_data.get(f"run_files_{user_id}_{project['id']}") == ["skyapp.py"], (
             "run_files_{uid} must be set in bot_data after completion"
         )
 
@@ -985,7 +985,7 @@ class TestCodingLoopErrorSurfacing:
         context = make_context(bot_data={
             KEY_DB: MagicMock(),
             f"run_project_{self.USER_ID}": self.PROJECT["id"],
-            f"run_files_{self.USER_ID}": ["skyapp.py"],
+            f"run_files_{self.USER_ID}_{self.PROJECT['id']}": ["skyapp.py"],
         })
 
         with (

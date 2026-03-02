@@ -253,7 +253,11 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _build_windows_command(args: list[str], cwd: str | None = None) -> str:
+def _build_windows_command(
+    args: list[str],
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
     """
     Build windows command.
     
@@ -284,6 +288,9 @@ def _build_windows_command(args: list[str], cwd: str | None = None) -> str:
     ]
     if cwd:
         script_lines.append(f"Set-Location -LiteralPath {_ps_quote(cwd)}")
+    if env:
+        for key, value in env.items():
+            script_lines.append(f"$env:{key} = {_ps_quote(str(value))}")
     script_lines.append(f"& {cmd}")
     script_lines.append("$code = $LASTEXITCODE")
     script_lines.append("if ($null -eq $code) { $code = 0 }")
@@ -332,7 +339,11 @@ def _sanitize_powershell_output(text: str) -> str:
     return cleaned.strip()
 
 
-def _build_linux_command(args: list[str], cwd: str | None = None) -> str:
+def _build_linux_command(
+    args: list[str],
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
     """
     Build linux command.
     
@@ -359,6 +370,13 @@ def _build_linux_command(args: list[str], cwd: str | None = None) -> str:
     import shlex
 
     run = " ".join(shlex.quote(str(a)) for a in args)
+    export = ""
+    if env:
+        export = " ".join(
+            f"{key}={shlex.quote(str(value))}" for key, value in env.items()
+        )
+        if export:
+            run = f"{export} {run}"
     if cwd:
         return f"cd {shlex.quote(cwd)} && {run}"
     return run
@@ -580,7 +598,16 @@ class SSHTunnelExecutor:
             result = await loop.run_in_executor(None, self._execute_sync, action, params)
             return {"status": "ok", "action": action, "result": result}
         except Exception as exc:
-            return {"status": "error", "action": action, "error": f"SSH action failed: {exc}"}
+            err_type = type(exc).__name__
+            err_msg = str(exc).strip()
+            if not err_msg:
+                err_msg = err_type
+            else:
+                err_msg = f"{err_type}: {err_msg}"
+            if isinstance(exc, (OSError, TimeoutError, paramiko.SSHException)):
+                err_msg = f"SSH_INFRA {self.host}:{self.port} - {err_msg}"
+            _log.error("SSH action '%s' failed: %s", action, err_msg, exc_info=True)
+            return {"status": "error", "action": action, "error": f"SSH action failed: {err_msg}"}
 
     def _probe_sync(self) -> None:
         """
@@ -668,15 +695,19 @@ class SSHTunnelExecutor:
             except (OSError, paramiko.SSHException) as exc:
                 last_exc = exc
                 client.close()
+                err_detail = str(exc).strip() or type(exc).__name__
                 if attempt < max_retries:
                     delay = attempt * 2  # 2s, 4s
                     _log.warning(
                         "SSH connect attempt %d/%d failed (%s), retrying in %ds…",
-                        attempt, max_retries, exc, delay,
+                        attempt, max_retries, err_detail, delay,
                     )
                     time.sleep(delay)
                     continue
-                raise last_exc  # all retries exhausted
+                _log.error("SSH connect failed after %d attempts: %s", max_retries, err_detail)
+                raise RuntimeError(
+                    f"SSH connect failed to {self.host}:{self.port} after {max_retries} attempts: {err_detail}"
+                ) from exc
 
             # Warm up the transport by opening (then closing) an SFTP session.
             # Some SSH servers/tunnels close the transport after the first exec
@@ -730,7 +761,12 @@ class SSHTunnelExecutor:
         finally:
             client.close()
 
-    def _build_command(self, args: list[str], cwd: str | None) -> str:
+    def _build_command(
+        self,
+        args: list[str],
+        cwd: str | None,
+        env: dict[str, str] | None = None,
+    ) -> str:
         """
         Build command.
         
@@ -755,8 +791,8 @@ class SSHTunnelExecutor:
         """
 
         if self.remote_os == "windows":
-            return _build_windows_command(args, cwd=cwd)
-        return _build_linux_command(args, cwd=cwd)
+            return _build_windows_command(args, cwd=cwd, env=env)
+        return _build_linux_command(args, cwd=cwd, env=env)
 
     def _require_str(self, params: dict[str, Any], key: str) -> str:
         """
@@ -794,6 +830,7 @@ class SSHTunnelExecutor:
         *,
         cwd: str | None = None,
         timeout: int | None = None,
+        env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
         Run command.
@@ -820,7 +857,7 @@ class SSHTunnelExecutor:
         - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
         """
 
-        command = self._build_command(args, cwd=cwd)
+        command = self._build_command(args, cwd=cwd, env=env)
         _, stdout, stderr = client.exec_command(
             command,
             timeout=timeout or self.command_timeout,
@@ -1055,6 +1092,301 @@ class SSHTunnelExecutor:
             "files_written": files_written,
         }
 
+    @staticmethod
+    def _is_missing_command_output(text: str) -> bool:
+        lowered = (text or "").lower()
+        markers = (
+            "is not recognized",
+            "command not found",
+            "no such file or directory",
+            "cannot find the file specified",
+            "not found",
+        )
+        return any(marker in lowered for marker in markers)
+
+    def _run_python_snippet(
+        self,
+        client: paramiko.SSHClient,
+        script: str,
+        args: list[str],
+        *,
+        timeout: int = 60,
+    ) -> dict[str, Any]:
+        interpreters: list[list[str]] = [["python"]]
+        if self.remote_os == "windows":
+            interpreters.append(["py", "-3"])
+        else:
+            interpreters.append(["python3"])
+
+        last_result: dict[str, Any] | None = None
+        for prefix in interpreters:
+            result = self._run_command(
+                client,
+                [*prefix, "-c", script, *args],
+                cwd=None,
+                timeout=timeout,
+            )
+            last_result = result
+            if result.get("returncode", 1) == 0:
+                return result
+            combined = f"{result.get('stderr', '')}\n{result.get('stdout', '')}"
+            if self._is_missing_command_output(combined):
+                continue
+            return result
+        return last_result or {"returncode": 1, "stdout": "", "stderr": "Python runtime not found on remote host."}
+
+    @staticmethod
+    def _bool_param(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        return default
+
+    def _resolve_backend(self, *, agent: str, backend: str) -> tuple[str | None, str | None]:
+        backend = (backend or "auto").strip().lower()
+        if backend not in {"auto", "ollama", "native"}:
+            return None, "backend must be one of: auto, ollama, native."
+        if agent == "claude":
+            if backend == "auto":
+                return "ollama", None
+            return backend, None
+        if backend == "ollama":
+            return None, f"backend=ollama is only supported for agent='claude'."
+        if backend == "auto":
+            return "native", None
+        return backend, None
+
+    def _ollama_check_model(
+        self,
+        client: paramiko.SSHClient,
+        *,
+        base_url: str,
+        model: str,
+    ) -> dict[str, Any]:
+        script = (
+            "import json, sys, urllib.request\n"
+            "base=(sys.argv[1] if len(sys.argv)>1 else '').rstrip('/')\n"
+            "model=sys.argv[2] if len(sys.argv)>2 else ''\n"
+            "try:\n"
+            "    resp=urllib.request.urlopen(base + '/api/tags', timeout=15)\n"
+            "    data=json.loads(resp.read().decode('utf-8', errors='replace'))\n"
+            "except Exception as exc:\n"
+            "    print(f'CONNECT_ERROR:{exc}')\n"
+            "    raise SystemExit(2)\n"
+            "names=set()\n"
+            "for item in (data.get('models') or []):\n"
+            "    if isinstance(item, dict):\n"
+            "        name=str(item.get('name') or '').strip()\n"
+            "        if name:\n"
+            "            names.add(name)\n"
+            "if model in names:\n"
+            "    print('MODEL_OK')\n"
+            "    raise SystemExit(0)\n"
+            "print('MODEL_MISSING')\n"
+            "raise SystemExit(3)\n"
+        )
+        result = self._run_python_snippet(
+            client,
+            script,
+            [base_url, model],
+            timeout=90,
+        )
+        rc = int(result.get("returncode", 1))
+        out = str(result.get("stdout") or "").strip()
+        err = str(result.get("stderr") or "").strip()
+        if rc == 0:
+            return {"reachable": True, "present": True, "summary": "model present"}
+        if rc == 3:
+            return {"reachable": True, "present": False, "summary": "model missing"}
+        if rc == 2:
+            return {"reachable": False, "present": False, "summary": out or err or "cannot reach Ollama API"}
+        return {"reachable": False, "present": False, "summary": err or out or "ollama preflight failed"}
+
+    def _ollama_pull_model(
+        self,
+        client: paramiko.SSHClient,
+        *,
+        model: str,
+        timeout: int,
+    ) -> dict[str, Any]:
+        pull_timeout = max(120, min(timeout, 1800))
+        return self._run_command(
+            client,
+            ["ollama", "pull", model],
+            cwd=None,
+            timeout=pull_timeout,
+        )
+
+    def _ollama_context_warning(
+        self,
+        client: paramiko.SSHClient,
+        *,
+        model: str,
+    ) -> str:
+        show = self._run_command(client, ["ollama", "show", model], cwd=None, timeout=45)
+        if int(show.get("returncode", 1)) != 0:
+            return ""
+        text = f"{show.get('stdout', '')}\n{show.get('stderr', '')}"
+        patterns = (
+            r"context length[^0-9]*([0-9][0-9,]*)",
+            r"num_ctx[^0-9]*([0-9][0-9,]*)",
+        )
+        context_value: int | None = None
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            raw = match.group(1).replace(",", "")
+            try:
+                context_value = int(raw)
+            except ValueError:
+                context_value = None
+            if context_value is not None:
+                break
+        if context_value is None:
+            return ""
+        if context_value >= max(1, int(bot_cfg.CLAUDE_OLLAMA_MIN_CONTEXT)):
+            return ""
+        return (
+            f"Warning: detected model context {context_value} tokens, below "
+            f"target {int(bot_cfg.CLAUDE_OLLAMA_MIN_CONTEXT)}."
+        )
+
+    def _run_coding_agent_native(
+        self,
+        *,
+        client: paramiko.SSHClient,
+        agent: str,
+        prompt: str,
+        cwd: str | None,
+        timeout: int,
+        model: str,
+    ) -> dict[str, Any]:
+        binary = self._coding_bins[agent]
+        if self.remote_os == "windows":
+            binary, available = self._resolve_windows_binary(client, binary)
+            if not available:
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": (
+                        f"'{agent}' CLI is not installed or not on PATH. "
+                        f"Expected binary: {self._coding_bins[agent]}"
+                    ),
+                }
+
+        if agent == "claude":
+            args = [binary]
+            if model:
+                args.extend(["--model", model])
+            args.extend(["-p", prompt])
+            return self._run_command(client, args, cwd=cwd, timeout=timeout)
+
+        args = [binary, *self._coding_prefix[agent], prompt]
+        initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
+        if agent != "cline":
+            return initial
+        if initial["returncode"] == 0:
+            return initial
+        if not self._cline_auto_switch:
+            return initial
+        if not self._is_retryable_cline_failure(initial):
+            return initial
+        return self._run_cline_with_auto_switch(
+            client=client,
+            binary=binary,
+            prompt=prompt,
+            cwd=cwd if isinstance(cwd, str) else None,
+            timeout=timeout,
+            initial_result=initial,
+        )
+
+    def _run_coding_agent_claude_ollama(
+        self,
+        *,
+        client: paramiko.SSHClient,
+        prompt: str,
+        cwd: str | None,
+        timeout: int,
+        model: str,
+        base_url: str,
+        auto_pull_model: bool,
+    ) -> dict[str, Any]:
+        binary = self._coding_bins["claude"]
+        if self.remote_os == "windows":
+            binary, available = self._resolve_windows_binary(client, binary)
+            if not available:
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": (
+                        "'claude' CLI is not installed or not on PATH. "
+                        f"Expected binary: {self._coding_bins['claude']}"
+                    ),
+                }
+
+        check = self._ollama_check_model(client, base_url=base_url, model=model)
+        if not check["reachable"]:
+            return {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": f"OLLAMA_SETUP_ERROR: {check['summary']}",
+            }
+
+        if not check["present"]:
+            if not auto_pull_model:
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": (
+                        f"OLLAMA_MODEL_MISSING: '{model}' not found. "
+                        "Set auto_pull_model=true or pre-pull the model."
+                    ),
+                }
+            pull = self._ollama_pull_model(client, model=model, timeout=timeout)
+            if int(pull.get("returncode", 1)) != 0:
+                reason = str(pull.get("stderr") or pull.get("stdout") or "").strip()
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": f"OLLAMA_MODEL_SETUP_ERROR: pull failed for '{model}'. {reason}",
+                }
+            check_after = self._ollama_check_model(client, base_url=base_url, model=model)
+            if not check_after["reachable"]:
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": f"OLLAMA_SETUP_ERROR: {check_after['summary']}",
+                }
+            if not check_after["present"]:
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": (
+                        f"OLLAMA_MODEL_SETUP_ERROR: '{model}' still missing after pull."
+                    ),
+                }
+
+        args = [binary, "--model", model, "-p", prompt]
+        env = {
+            "ANTHROPIC_AUTH_TOKEN": bot_cfg.CLAUDE_OLLAMA_AUTH_TOKEN or "ollama",
+            "ANTHROPIC_API_KEY": "",
+            "ANTHROPIC_BASE_URL": base_url,
+        }
+        run = self._run_command(client, args, cwd=cwd, timeout=timeout, env=env)
+        warning = self._ollama_context_warning(client, model=model)
+        if warning:
+            current_out = str(run.get("stdout") or "").strip()
+            run["stdout"] = f"{warning}\n{current_out}".strip()
+        return run
+
     def _run_command_action(self, client: paramiko.SSHClient, action: str, params: dict[str, Any]) -> dict[str, Any]:
         """
         Run command action.
@@ -1266,66 +1598,67 @@ class SSHTunnelExecutor:
             return configured
 
         if action == "run_coding_agent":
-            # "agent" defaults to "ollama" — the SSH executor is the coding agent;
-            # it calls Ollama on the laptop via SSH and writes the generated files back.
-            agent = str(params.get("agent") or "ollama").strip().lower()
+            agent = self._require_str(params, "agent").strip().lower()
             prompt = self._require_str(params, "prompt")
             cwd = params.get("working_dir")
             timeout = params.get("timeout_seconds", 1800)
-
-            # ── Ollama coding agent (built-in — no binary on PATH needed) ────────
-            if agent == "ollama":
-                if not isinstance(timeout, int) or timeout < 30 or timeout > 3600:
-                    timeout = 1800
-                ollama_url = str(
-                    params.get("ollama_url")
-                    or os.environ.get("OPENCLAW_OLLAMA_URL", "http://localhost:11434")
-                )
-                ollama_model = str(
-                    params.get("model")
-                    or os.environ.get("OPENCLAW_OLLAMA_MODEL", "qwen2.5-coder:7b")
-                )
-                return self._run_ollama_coding_agent(
-                    client, prompt, cwd, ollama_model, ollama_url, int(timeout)
-                )
-            # ─────────────────────────────────────────────────────────────────────
+            backend_raw = str(params.get("backend") or "auto").strip().lower()
+            model = str(params.get("model") or "").strip()
+            base_url = str(
+                params.get("base_url")
+                or bot_cfg.CLAUDE_OLLAMA_BASE_URL
+                or "http://localhost:11434"
+            ).strip().rstrip("/")
+            auto_pull_model = self._bool_param(
+                params.get("auto_pull_model"),
+                bool(bot_cfg.CLAUDE_OLLAMA_AUTO_PULL),
+            )
 
             if agent not in self._coding_bins:
                 allowed = ", ".join(sorted(self._coding_bins.keys()))
-                return {"returncode": 1, "stdout": "", "stderr": f"Unknown coding agent '{agent}'. Allowed: {allowed}"}
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": f"Unknown coding agent '{agent}'. Allowed: {allowed}",
+                }
             if cwd is not None and not isinstance(cwd, str):
-                return {"returncode": 1, "stdout": "", "stderr": "working_dir must be a string path."}
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "working_dir must be a string path.",
+                }
             if not isinstance(timeout, int) or timeout < 30 or timeout > 3600:
-                return {"returncode": 1, "stdout": "", "stderr": "timeout_seconds must be an integer between 30 and 3600."}
-            binary = self._coding_bins[agent]
-            if self.remote_os == "windows":
-                binary, available = self._resolve_windows_binary(client, binary)
-                if not available:
-                    return {
-                        "returncode": 1,
-                        "stdout": "",
-                        "stderr": (
-                            f"'{agent}' CLI is not installed or not on PATH. "
-                            f"Expected binary: {self._coding_bins[agent]}"
-                        ),
-                    }
-            args = [binary, *self._coding_prefix[agent], prompt]
-            initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
-            if agent != "cline":
-                return initial
-            if initial["returncode"] == 0:
-                return initial
-            if not self._cline_auto_switch:
-                return initial
-            if not self._is_retryable_cline_failure(initial):
-                return initial
-            return self._run_cline_with_auto_switch(
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "timeout_seconds must be an integer between 30 and 3600.",
+                }
+
+            resolved_backend, backend_error = self._resolve_backend(
+                agent=agent,
+                backend=backend_raw,
+            )
+            if backend_error:
+                return {"returncode": 1, "stdout": "", "stderr": backend_error}
+
+            if agent == "claude" and resolved_backend == "ollama":
+                return self._run_coding_agent_claude_ollama(
+                    client=client,
+                    prompt=prompt,
+                    cwd=cwd if isinstance(cwd, str) else None,
+                    timeout=timeout,
+                    model=model or bot_cfg.CLAUDE_OLLAMA_DEFAULT_MODEL,
+                    base_url=base_url or "http://localhost:11434",
+                    auto_pull_model=auto_pull_model,
+                )
+
+            return self._run_coding_agent_native(
                 client=client,
-                binary=binary,
+                agent=agent,
                 prompt=prompt,
                 cwd=cwd if isinstance(cwd, str) else None,
                 timeout=timeout,
-                initial_result=initial,
+                model=model,
             )
 
         if action == "docker_build":
