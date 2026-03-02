@@ -101,6 +101,13 @@ jobs:
       OPENCLAW_SSH_CLAUDE_BIN: ${{ secrets.OPENCLAW_SSH_CLAUDE_BIN }}
       OPENCLAW_SSH_CLINE_BIN: ${{ secrets.OPENCLAW_SSH_CLINE_BIN }}
       OPENCLAW_LAPTOP_SSH_PUBLIC_KEY: ${{ secrets.OPENCLAW_LAPTOP_SSH_PUBLIC_KEY }}
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      OPENCLAW_OLLAMA_URL: ${{ secrets.OPENCLAW_OLLAMA_URL }}
+      OPENCLAW_OLLAMA_MODEL: ${{ secrets.OPENCLAW_OLLAMA_MODEL }}
+      OPENCLAW_LOG_LEVEL: ${{ secrets.OPENCLAW_LOG_LEVEL }}
+      SKYNET_LOG_ENABLE_LOCAL_FILES: ${{ secrets.SKYNET_LOG_ENABLE_LOCAL_FILES }}
+      SKYNET_LOG_ENABLE_SSH_MIRROR: ${{ secrets.SKYNET_LOG_ENABLE_SSH_MIRROR }}
+      SKYNET_LOG_S3_ENABLED: ${{ secrets.SKYNET_LOG_S3_ENABLED }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -154,8 +161,17 @@ jobs:
         run: |
           if [ -n "${OPENCLAW_SSH_PRIVATE_KEY_B64:-}" ]; then
             mkdir -p .secrets
+            # Remove stale path if it exists as a directory (Docker creates dirs for missing bind mounts)
+            if [ -d ".secrets/laptop_ed25519" ]; then
+              rm -rf .secrets/laptop_ed25519
+            fi
             printf '%s' "${OPENCLAW_SSH_PRIVATE_KEY_B64}" | base64 -d > .secrets/laptop_ed25519
             chmod 600 .secrets/laptop_ed25519
+            # Verify it's a regular file, not a directory
+            if [ ! -f ".secrets/laptop_ed25519" ]; then
+              echo "ERROR: SSH key at .secrets/laptop_ed25519 is not a regular file"
+              exit 1
+            fi
             echo "OPENCLAW_SSH_KEY_FILE=.secrets/laptop_ed25519" >> "$GITHUB_ENV"
             if [ -z "${OPENCLAW_SSH_KEY_PATH:-}" ]; then
               echo "OPENCLAW_SSH_KEY_PATH=/app/keys/laptop_ed25519" >> "$GITHUB_ENV"
@@ -183,7 +199,7 @@ jobs:
             printf 'DEEPSEEK_API_KEY=%s\n' "${DEEPSEEK_API_KEY}"
             printf 'OPENAI_API_KEY=%s\n' "${OPENAI_API_KEY}"
             printf 'ANTHROPIC_API_KEY=%s\n' "${ANTHROPIC_API_KEY}"
-            printf 'AI_PROVIDER_PRIORITY=%s\n' "${AI_PROVIDER_PRIORITY:-gemini,groq,openrouter,deepseek,openai,claude,ollama}"
+            printf 'AI_PROVIDER_PRIORITY=%s\n' "${AI_PROVIDER_PRIORITY:-claude,gemini,openai,deepseek,openrouter,groq}"
             printf 'AUTO_APPROVE_GIT_ACTIONS=%s\n' "${AUTO_APPROVE_GIT_ACTIONS:-1}"
             printf 'AUTO_APPROVE_AND_START=%s\n' "${AUTO_APPROVE_AND_START:-1}"
             printf 'AUTO_PLAN_MIN_IDEAS=%s\n' "${AUTO_PLAN_MIN_IDEAS:-3}"
@@ -213,11 +229,18 @@ jobs:
             printf 'OPENCLAW_SSH_COMMAND_TIMEOUT=%s\n' "${OPENCLAW_SSH_COMMAND_TIMEOUT:-180}"
             printf 'OPENCLAW_SSH_HEALTH_CACHE_SECONDS=%s\n' "${OPENCLAW_SSH_HEALTH_CACHE_SECONDS:-15}"
             printf 'OPENCLAW_SSH_REMOTE_OS=%s\n' "${OPENCLAW_SSH_REMOTE_OS:-windows}"
-            printf 'OPENCLAW_SSH_ALLOWED_ROOTS=%s\n' "${OPENCLAW_SSH_ALLOWED_ROOTS:-E:\\MyProjects}"
+            printf 'OPENCLAW_SSH_ALLOWED_ROOTS=%s\n' "${OPENCLAW_SSH_ALLOWED_ROOTS:-E:\\SKYNET-SANDBOX}"
             printf 'OPENCLAW_SSH_STRICT_HOST_KEY=%s\n' "${OPENCLAW_SSH_STRICT_HOST_KEY:-0}"
             printf 'OPENCLAW_SSH_CODEX_BIN=%s\n' "${OPENCLAW_SSH_CODEX_BIN:-codex}"
             printf 'OPENCLAW_SSH_CLAUDE_BIN=%s\n' "${OPENCLAW_SSH_CLAUDE_BIN:-claude}"
             printf 'OPENCLAW_SSH_CLINE_BIN=%s\n' "${OPENCLAW_SSH_CLINE_BIN:-cline}"
+            printf 'GH_TOKEN=%s\n' "${GH_TOKEN}"
+            printf 'OPENCLAW_OLLAMA_URL=%s\n' "${OPENCLAW_OLLAMA_URL:-http://localhost:11434}"
+            printf 'OPENCLAW_OLLAMA_MODEL=%s\n' "${OPENCLAW_OLLAMA_MODEL:-qwen2.5-coder:7b}"
+            printf 'OPENCLAW_LOG_LEVEL=%s\n' "${OPENCLAW_LOG_LEVEL:-INFO}"
+            printf 'SKYNET_LOG_ENABLE_LOCAL_FILES=%s\n' "${SKYNET_LOG_ENABLE_LOCAL_FILES:-0}"
+            printf 'SKYNET_LOG_ENABLE_SSH_MIRROR=%s\n' "${SKYNET_LOG_ENABLE_SSH_MIRROR:-1}"
+            printf 'SKYNET_LOG_S3_ENABLED=%s\n' "${SKYNET_LOG_S3_ENABLED:-1}"
           } > .env.ci
           chmod 600 .env.ci
 
@@ -256,6 +279,21 @@ jobs:
           if ! docker compose --env-file .env.ci ps --status running openclaw-gateway | grep -q openclaw-gateway; then
             echo "OpenClaw gateway is not running"
             docker compose --env-file .env.ci logs --tail=120 openclaw-gateway
+            exit 1
+          fi
+          # Verify openclaw-gateway HTTP API is responding
+          GW_OK=false
+          for i in {1..10}; do
+            if docker exec openclaw-gateway python -c "import urllib.request; urllib.request.urlopen('http://localhost:8766/status')" 2>/dev/null; then
+              echo "Gateway health check passed"
+              GW_OK=true
+              break
+            fi
+            sleep 3
+          done
+          if [ "$GW_OK" != "true" ]; then
+            echo "Gateway health check failed on port 8766"
+            docker compose --env-file .env.ci logs --tail=60 openclaw-gateway
             exit 1
           fi
 

@@ -4,23 +4,25 @@ Last updated (UTC): 2026-03-02
 
 ## Current Goal
 
-Optimize Ollama coding pipeline: switch to 7b model for full GPU acceleration, fix code block filename parsing.
+Harden CI/CD pipeline so pushing to main is the only deploy step needed — no manual SCP, SSH, or docker commands.
 
 ## Current Repo State
 
 - Branch: `main`
-- Ollama coding agent fully operational via SSH tunnel (EC2 → laptop)
-- Container running with `qwen2.5-coder:7b`, live e2e tests passing
+- Ollama coding agent operational via SSH tunnel (EC2 → laptop) with `qwen2.5-coder:7b`
+- GitHub Actions self-hosted runner on EC2 handles build + deploy via `docker compose`
 
 ## What Was Completed
 
-- Switched Ollama model from `qwen2.5-coder:32b-instruct-q4_K_M` to `qwen2.5-coder:7b` for full GPU acceleration (59 tok/s vs 3 tok/s).
-- Set `OLLAMA_FLASH_ATTENTION=1` as machine-level env var on laptop.
-- Fixed code block parser: 7b model outputs ` ```python ` instead of ` ```filename.py `. Added fallback that maps language tags to file extensions (e.g. `python` → `main.py`).
-- Improved system prompt with explicit examples telling model to use filenames, not language names.
-- Tested and reverted `num_gpu=99` override which degraded performance (forced 19GB into slow GPU shared memory → 0.5 tok/s).
-- Updated `.env`, `docker-compose.yml`, and `ssh_tunnel_executor.py` defaults.
-- Rebuilt and redeployed container on EC2 with correct model and `--add-host` flag.
+- Added missing env vars to CI workflow: `GH_TOKEN`, `OPENCLAW_OLLAMA_URL`, `OPENCLAW_OLLAMA_MODEL`, logging vars
+- Added env vars to `.env.ci` build step with correct defaults
+- Added `GH_TOKEN` to `docker-compose.yml` for GitHub repo creation on laptop
+- Added SSH key file guard: removes stale directory before decoding, verifies result is a file
+- Added gateway health check: polls `http://localhost:8766/status` after deploy
+- Fixed stale defaults: `AI_PROVIDER_PRIORITY` removed `ollama`, `OPENCLAW_SSH_ALLOWED_ROOTS` → `E:\SKYNET-SANDBOX`
+- Added `.dockerignore` to prevent stale `data/skynet.db` from being baked into images
+- Fixed HTML escaping in Telegram bot output (prevents `<module>` parse errors)
+- Improved Ollama system prompt and code block parser for 7b model compatibility
 
 ## Test Results
 
@@ -28,17 +30,13 @@ Optimize Ollama coding pipeline: switch to 7b model for full GPU acceleration, f
   - `36 passed, 1 skipped`
 - `docker exec openclaw-gateway python tests/e2e_live.py`
   - `ALL STEPS PASSED` (9.7s with 7b model)
-  - Step 1: create_directory OK
-  - Step 2: run_coding_agent OK (Wrote 1 file: main.py)
-  - Step 3: file_read verify OK
-  - Step 4: exec_command OK (output: SKYNET_E2E_OK)
-- Ollama benchmark: 59.3 tok/s, 100% GPU (4.9GB/8GB VRAM), load time 3.2s
+- Ollama benchmark: 59.3 tok/s, 100% GPU (4.9GB/8GB VRAM)
 
 ## Trace Evidence
 
 - Live e2e test run via `tests/e2e_live.py` inside container
-- request_id=ollama-7b-optimization-20260302
-- task_id=perf-ollama-7b-switch
+- request_id=ci-cd-hardening-20260302
+- task_id=ci-cd-env-vars-and-guards
 - skynet.trace.log
 - audit.jsonl
 
@@ -48,12 +46,12 @@ Optimize Ollama coding pipeline: switch to 7b model for full GPU acceleration, f
 
 ## Blockers
 
-- EC2 repo uses HTTPS without credentials; `git pull` fails. Files must be copied via `scp` and image rebuilt manually.
+- None. CI/CD handles full deploy cycle.
 
 ## Required Next Steps
 
-1. Fix EC2 git credentials (switch to SSH remote or configure GH_TOKEN for HTTPS).
-2. Monitor 7b code quality on real Telegram projects; consider 14b if quality drops.
+1. Monitor 7b code quality on real Telegram projects; consider 14b if quality drops.
+2. Add deploy success notification to Telegram (optional).
 
 ## Policy Checklist
 
