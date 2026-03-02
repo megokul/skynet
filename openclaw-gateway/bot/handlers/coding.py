@@ -15,6 +15,7 @@ Milestone approvals are signalled via asyncio.Event stored in bot_data.
 from __future__ import annotations
 
 import asyncio
+import html as html_mod
 import json
 import logging
 import re
@@ -586,7 +587,7 @@ async def _coding_loop(
                 )
                 failed_milestones += 1
                 await app.bot.send_message(
-                    chat_id, f"❌ Milestone {i} failed:\n<code>{err}</code>",
+                    chat_id, f"❌ Milestone {i} failed:\n<code>{html_mod.escape(str(err))}</code>",
                     parse_mode="HTML",
                 )
 
@@ -698,7 +699,7 @@ async def run_project_handler(
         stderr    = (inner.get("stderr") or "").strip()
         exit_code = inner.get("returncode", inner.get("exit_code", 0))
 
-        output = (stdout or stderr or "(no output)")[:1000]
+        output = html_mod.escape((stdout or stderr or "(no output)")[:1000])
         status_line = (
             f"✅ Finished (exit {exit_code})"
             if exit_code == 0
@@ -711,7 +712,8 @@ async def run_project_handler(
         )
     except Exception as exc:
         await update.callback_query.message.reply_text(
-            f"❌ Run failed: {str(exc)[:300]}",
+            f"❌ Run failed: {html_mod.escape(str(exc)[:300])}",
+            parse_mode="HTML",
             reply_markup=run_project(),
         )
 
