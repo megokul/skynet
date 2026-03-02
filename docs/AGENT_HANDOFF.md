@@ -27,6 +27,7 @@ Harden CI/CD pipeline so pushing to main is the only deploy step needed — no m
 - Added milestone generation fallback: generates milestones from project info when plan text has none
 - Fixed Python module shadowing bug: `blakely.py` + `blakely/utils.py` conflict. Added system prompt rule + post-generation rename (`foo/` → `lib/`) with import rewriting
 - Fixed "No existing session" SSH error: added SFTP warmup after connect() and close/reopen SFTP around long-running exec_command
+- Fixed "Connection reset by peer" SSH banner error: added retry loop (3 attempts, exponential backoff) in `_connect()` for transient connection failures
 
 ## Test Results
 
