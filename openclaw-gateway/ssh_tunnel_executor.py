@@ -821,6 +821,9 @@ class SSHTunnelExecutor:
         "- Include every file needed (source, config, requirements, etc.).\n"
         "- Do NOT add explanations outside code blocks.\n"
         "- Use the working directory as the project root.\n"
+        "- NEVER create a subdirectory with the same name as a top-level .py file. "
+        "For example, if you have main.py, do NOT also create main/utils.py — "
+        "use a different directory name like lib/ or helpers/ instead.\n"
     )
 
     def _run_ollama_coding_agent(
@@ -934,6 +937,37 @@ class SSHTunnelExecutor:
                 ext = _LANG_EXT.get(tag.lower(), f".{tag.lower()}")
                 fallback = f"main{ext}" if idx == 0 else f"file{idx}{ext}"
                 file_blocks.append((fallback, content))
+
+        # ── Fix shadowing: if foo.py and foo/bar.py both exist, rename the
+        # subdirectory to lib/ so Python doesn't treat foo.py as the package.
+        top_level_stems = set()
+        for fn, _ in file_blocks:
+            parts = fn.replace("\\", "/").split("/")
+            if len(parts) == 1 and parts[0].endswith(".py"):
+                top_level_stems.add(parts[0].rsplit(".", 1)[0])
+
+        # Map of conflicting stems that need renaming (e.g. "blakely" → "lib").
+        shadow_renames: dict[str, str] = {}
+        for stem in top_level_stems:
+            for fn, _ in file_blocks:
+                parts = fn.replace("\\", "/").split("/")
+                if len(parts) > 1 and parts[0] == stem:
+                    shadow_renames[stem] = "lib"
+                    break
+
+        if shadow_renames:
+            fixed_blocks: list[tuple[str, str]] = []
+            for fn, content in file_blocks:
+                parts = fn.replace("\\", "/").split("/")
+                if len(parts) > 1 and parts[0] in shadow_renames:
+                    parts[0] = shadow_renames[parts[0]]
+                    fn = "/".join(parts)
+                # Rewrite imports: from <old_pkg>.x import y → from lib.x import y
+                for old_name, new_name in shadow_renames.items():
+                    content = content.replace(f"from {old_name}.", f"from {new_name}.")
+                    content = content.replace(f"import {old_name}.", f"import {new_name}.")
+                fixed_blocks.append((fn, content))
+            file_blocks = fixed_blocks
 
         for filename, content in file_blocks:
 

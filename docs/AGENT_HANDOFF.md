@@ -25,6 +25,7 @@ Harden CI/CD pipeline so pushing to main is the only deploy step needed — no m
 - Improved Ollama system prompt and code block parser for 7b model compatibility
 - Added plan validation: retries if AI outputs meta-response instead of real plan
 - Added milestone generation fallback: generates milestones from project info when plan text has none
+- Fixed Python module shadowing bug: `blakely.py` + `blakely/utils.py` conflict. Added system prompt rule + post-generation rename (`foo/` → `lib/`) with import rewriting
 
 ## Test Results
 
