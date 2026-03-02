@@ -28,12 +28,12 @@ Harden CI/CD pipeline so pushing to main is the only deploy step needed — no m
 - Fixed Python module shadowing bug: `blakely.py` + `blakely/utils.py` conflict. Added system prompt rule + post-generation rename (`foo/` → `lib/`) with import rewriting
 - Fixed "No existing session" SSH error: added SFTP warmup after connect() and close/reopen SFTP around long-running exec_command
 - Fixed "Connection reset by peer" SSH banner error: added retry loop (3 attempts, exponential backoff) in `_connect()` for transient connection failures
-- Fixed "Run Project" file-not-found error: `run_project_handler` now lists `.py` files in project dir before running, auto-detects entry point (`{slug}.py` → `main.py` → `app.py` → first `.py`), and shows user-friendly error when no Python files exist
+- Fixed "Run Project" file-not-found error: root cause was coding loop discarding written file names. SSH executor now returns `files_written` list; coding loop stores it in `bot_data[run_files_{uid}]`; run handler uses stored files directly (no disk listing needed). Falls back to `list_directory` on bot restart.
 
 ## Test Results
 
 - `python -m pytest openclaw-gateway/tests -q`
-  - `36 passed, 1 skipped`
+  - `37 passed`
 - `docker exec openclaw-gateway python tests/e2e_live.py`
   - `ALL STEPS PASSED` (9.7s with 7b model)
 - Ollama benchmark: 59.3 tok/s, 100% GPU (4.9GB/8GB VRAM)

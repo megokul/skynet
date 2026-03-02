@@ -1051,6 +1051,7 @@ class SSHTunnelExecutor:
             "returncode": 0 if files_written else 1,
             "stdout": "\n".join(summary_parts),
             "stderr": "",
+            "files_written": files_written,
         }
 
     def _run_command_action(self, client: paramiko.SSHClient, action: str, params: dict[str, Any]) -> dict[str, Any]:

@@ -142,7 +142,11 @@ async def test_full_flow_hi_to_project_deliverables(tmp_path):
                     if __name__ == "__main__":
                         raise SystemExit(main())
                 """))
-            return {"stdout": f"Created {script}", "exit_code": 0}
+            return {
+                "stdout": f"Wrote 1 file(s): {slug}.py",
+                "exit_code": 0,
+                "files_written": [f"{slug}.py"],
+            }
 
         if action == "list_directory":
             wd = params["directory"]
@@ -332,6 +336,7 @@ async def test_full_flow_hi_to_project_deliverables(tmp_path):
     assert done_msgs, f"No completion message; messages: {sent_by_loop}"
     assert "📁" in done_msgs[0]
     assert bot_data.get(f"run_project_{USER_ID}") == project_id
+    assert bot_data.get(f"run_files_{USER_ID}"), "run_files must be set after coding loop"
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 11 — ▶️ Run Project → actually executes the file, checks output

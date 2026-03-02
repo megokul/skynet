@@ -476,6 +476,7 @@ async def _coding_loop(
         successful_milestones = 0
         failed_milestones = 0
         skipped_milestones = 0
+        all_written_files: list[str] = []
 
         # ── Milestone loop ────────────────────────────────────────────────────
         for i, milestone_text in enumerate(milestones, 1):
@@ -579,6 +580,19 @@ async def _coding_loop(
                     raise RuntimeError(str(detail))
 
                 summary = (inner.get("stdout") or inner.get("stderr") or "")[:500].strip()
+
+                # Track written files for the run handler.
+                written = inner.get("files_written") or []
+                if written:
+                    all_written_files.extend(written)
+                else:
+                    # Fallback: parse "Wrote N file(s): a.py, b.py" from stdout
+                    m = re.search(r"Wrote \d+ file\(s\): (.+)", summary)
+                    if m:
+                        all_written_files.extend(
+                            f.strip() for f in m.group(1).split(",") if f.strip()
+                        )
+
                 await update_task_status(
                     db, task_rec["id"], status="done", result_summary=summary
                 )
@@ -607,6 +621,7 @@ async def _coding_loop(
         )
         if successful_milestones > 0:
             app.bot_data[f"run_project_{user_id}"] = project["id"]
+            app.bot_data[f"run_files_{user_id}"] = all_written_files
             await app.bot.send_message(
                 chat_id,
                 f"\U0001F389 <b>{project['name']}</b> coding session complete!\n"
@@ -684,93 +699,55 @@ async def run_project_handler(
 
     slug        = _slugify(project["name"])
     working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
+    project_type = str(project.get("project_type", "") or "")
 
     # --- Detect the actual entry-point script --------------------------------
-    project_type = str(project.get("project_type", "") or "")
-    run_cmd: str | None = None
-    run_target: str | None = None
-    try:
-        list_result = await send_action(
-            "list_directory",
-            {"directory": working_dir, "recursive": True},
-            timeout=20,
-            confirmed=True,
+    # Priority 1: use files stored during the coding loop (no network needed).
+    stored_files = context.bot_data.get(f"run_files_{user_id}") or []
+    if stored_files:
+        resolved = _select_entrypoint(
+            files=stored_files, slug=slug, project_type=project_type,
         )
-        if list_result.get("status") == "error":
-            raise RuntimeError(list_result.get("error", "list_directory failed"))
+    else:
+        resolved = None
 
-        list_inner = list_result.get("result", list_result)
-        list_code = list_inner.get("returncode", list_inner.get("exit_code", 1))
-        if list_code != 0:
-            detail = list_inner.get("stderr") or list_inner.get("stdout") or "list_directory failed"
-            raise RuntimeError(str(detail))
-
-        listing = str(list_inner.get("stdout") or "")
-        discovered_files = _extract_file_paths_from_listing(listing, working_dir=working_dir)
-        resolved: tuple[str, str] | None = None
-
-        manifest_rel = _find_run_manifest(discovered_files)
-        if manifest_rel:
-            manifest_result = await send_action(
-                "file_read",
-                {"file": f"{working_dir}/{manifest_rel}"},
-                timeout=10,
+    # Priority 2: fall back to listing the directory on the worker.
+    if not resolved:
+        try:
+            list_result = await send_action(
+                "list_directory",
+                {"directory": working_dir, "recursive": True},
+                timeout=20,
                 confirmed=True,
             )
-            if manifest_result.get("status") == "error":
-                logger.warning(
-                    "Run manifest read failed for %s: %s",
-                    working_dir,
-                    manifest_result.get("error", "unknown error"),
-                )
-            else:
-                manifest_inner = manifest_result.get("result", manifest_result)
-                manifest_code = manifest_inner.get("returncode", manifest_inner.get("exit_code", 1))
-                manifest_text = str(manifest_inner.get("stdout") or "")
-                if manifest_code == 0:
-                    resolved = _resolve_run_manifest(manifest_text)
-                    if not resolved:
-                        logger.warning(
-                            "Ignoring invalid run manifest in %s/%s",
-                            working_dir,
-                            manifest_rel,
-                        )
-                else:
-                    logger.warning(
-                        "Run manifest read returned non-zero in %s/%s: %s",
-                        working_dir,
-                        manifest_rel,
-                        manifest_inner.get("stderr") or manifest_inner.get("stdout") or manifest_code,
-                    )
+            if list_result.get("status") == "error":
+                raise RuntimeError(list_result.get("error", "list_directory failed"))
 
-        if not resolved:
+            list_inner = list_result.get("result", list_result)
+            list_code = list_inner.get("returncode", list_inner.get("exit_code", 1))
+            if list_code != 0:
+                detail = list_inner.get("stderr") or list_inner.get("stdout") or "list_directory failed"
+                raise RuntimeError(str(detail))
+
+            listing = str(list_inner.get("stdout") or "")
+            discovered_files = _extract_file_paths_from_listing(listing, working_dir=working_dir)
             resolved = _select_entrypoint(
-                files=discovered_files,
-                slug=slug,
-                project_type=project_type,
+                files=discovered_files, slug=slug, project_type=project_type,
             )
-        if not resolved:
-            await update.callback_query.message.reply_text(
-                f"⚠️ No runnable Python/JavaScript entrypoint found in <code>{html_mod.escape(working_dir)}</code>.\n"
-                "The coding agent may not have finished writing files, or it produced a project type that "
-                "can't be started with the current Run Project action.",
-                parse_mode="HTML",
-                reply_markup=main_menu(),
-            )
-            return
+        except Exception as exc:
+            logger.warning("Could not list project dir %s: %s", working_dir, exc)
 
-        run_cmd, run_target = resolved
-    except Exception as exc:
-        fallback_ext = "js" if _project_prefers_node(project_type) else "py"
-        fallback_interpreter = "node" if fallback_ext == "js" else "python"
-        run_target = f"{slug}.{fallback_ext}"
-        run_cmd = f"{fallback_interpreter} {run_target}"
-        logger.warning(
-            "Could not inspect project dir %s; falling back to '%s' (%s)",
-            working_dir,
-            run_cmd,
-            exc,
+    if not resolved:
+        await update.callback_query.message.reply_text(
+            f"⚠️ No runnable entry point found in <code>{html_mod.escape(working_dir)}</code>.\n"
+            "The coding agent may not have finished writing files. "
+            "Try running the coding loop again.",
+            parse_mode="HTML",
+            reply_markup=main_menu(),
         )
+        return
+
+    run_cmd, run_target = resolved
 
     await update.callback_query.message.reply_text(
         f"▶️ Running <code>{html_mod.escape(run_target or '')}</code> on your laptop…",

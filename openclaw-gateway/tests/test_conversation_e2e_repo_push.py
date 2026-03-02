@@ -182,7 +182,9 @@ async def test_conversation_e2e_generates_code_and_pushes_local_remote(tmp_path:
                 ),
                 encoding="utf-8",
             )
-            return _worker_ok(0, f"Created {script}", "")
+            result = _worker_ok(0, f"Wrote 1 file(s): {wd.name}.py", "")
+            result["result"]["files_written"] = [f"{wd.name}.py"]
+            return result
 
         if action == "list_directory":
             wd_path = Path(params["directory"])
