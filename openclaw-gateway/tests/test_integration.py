@@ -123,6 +123,7 @@ async def test_full_flow_hi_to_project_deliverables(tmp_path):
 
     # ─── CLAW worker stub ─────────────────────────────────────────────────────
     # run_coding_agent  → creates a real Python file inside tmp_path
+    # list_directory    → returns listing used to detect project entry point
     # exec_command      → actually runs that Python file with subprocess
 
     async def fake_send_action(action, params, **kw):
@@ -143,18 +144,26 @@ async def test_full_flow_hi_to_project_deliverables(tmp_path):
                 """))
             return {"stdout": f"Created {script}", "exit_code": 0}
 
+        if action == "list_directory":
+            wd = params["directory"]
+            if not os.path.isdir(wd):
+                return {"stdout": "", "stderr": "directory not found", "returncode": 1}
+            lines = []
+            for name in sorted(os.listdir(wd)):
+                path = os.path.join(wd, name)
+                if os.path.isdir(path):
+                    lines.append(f"[DIR] {name}/")
+                else:
+                    lines.append(f"{name}  ({os.path.getsize(path)} bytes)")
+            return {
+                "stdout": "\n".join(lines),
+                "stderr": "",
+                "returncode": 0,
+            }
+
         if action == "exec_command":
             cmd = params["command"]          # e.g. "python integrationproject.py"
             wd  = params["working_dir"]
-
-            # Handle dir listing used by run_project_handler to detect entry point
-            if cmd.startswith("dir "):
-                py_files = [f for f in os.listdir(wd) if f.endswith(".py")] if os.path.isdir(wd) else []
-                return {
-                    "stdout":    "\n".join(py_files),
-                    "stderr":    "",
-                    "returncode": 0 if py_files else 1,
-                }
 
             proc = subprocess.run(
                 [sys.executable] + cmd.split()[1:],   # replace "python" with current interpreter

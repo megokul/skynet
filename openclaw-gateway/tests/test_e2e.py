@@ -21,6 +21,7 @@ Three full-stack scenarios (all Telegram + DB + AI + gateway calls are mocked):
 from __future__ import annotations
 
 import asyncio
+import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
@@ -463,7 +464,10 @@ class TestRunProject:
             f"run_project_{self.USER_ID}": self.PROJECT["id"],
         })
 
-        ls_result   = {"stdout": "skyapp.py\n", "stderr": "", "returncode": 0}
+        list_result = {
+            "status": "success",
+            "result": {"stdout": "skyapp.py  (120 bytes)\n", "stderr": "", "returncode": 0},
+        }
         mock_result = {"stdout": "Hello from SkyApp!\n", "stderr": "", "exit_code": 0}
 
         with (
@@ -471,12 +475,15 @@ class TestRunProject:
                   new=AsyncMock(return_value=self.PROJECT)),
             patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
-                  new=AsyncMock(side_effect=[ls_result, mock_result])) as mock_send,
+                  new=AsyncMock(side_effect=[list_result, mock_result])) as mock_send,
         ):
             await run_project_handler(update, context)
 
-        # Two calls: dir listing + exec_command
+        # Two calls: list_directory + exec_command
         assert mock_send.await_count == 2
+        first_action, first_params = mock_send.call_args_list[0].args[:2]
+        assert first_action == "list_directory"
+        assert first_params["recursive"] is True
         action, params = mock_send.call_args_list[1].args[:2]
         assert action == "exec_command", f"Expected 'exec_command', got {action!r}"
 
@@ -503,6 +510,133 @@ class TestRunProject:
     # ── 3b: failed run shows stderr and non-zero exit code ───────────────────
 
     @pytest.mark.asyncio
+    async def test_run_project_detects_nested_entrypoint(self):
+        update = make_callback_update(CB_RUN_PROJECT, user_id=self.USER_ID)
+        context = make_context(bot_data={
+            KEY_DB: MagicMock(),
+            f"run_project_{self.USER_ID}": self.PROJECT["id"],
+        })
+        list_result = {
+            "status": "success",
+            "result": {
+                "stdout": "[DIR] src/\n  main.py  (88 bytes)\n",
+                "stderr": "",
+                "returncode": 0,
+            },
+        }
+        mock_result = {"stdout": "Hello from nested app!\n", "stderr": "", "exit_code": 0}
+
+        with (
+            patch("bot.handlers.coding.get_project", new=AsyncMock(return_value=self.PROJECT)),
+            patch("bot.handlers.coding.is_worker_available", return_value=True),
+            patch(
+                "bot.handlers.coding.send_action",
+                new=AsyncMock(side_effect=[list_result, mock_result]),
+            ) as mock_send,
+        ):
+            await run_project_handler(update, context)
+
+        action, params = mock_send.call_args_list[1].args[:2]
+        assert action == "exec_command"
+        assert params["command"].startswith("python "), params["command"]
+        assert "src/main.py" in params["command"], params["command"]
+
+    @pytest.mark.asyncio
+    async def test_run_project_prefers_valid_manifest(self):
+        update = make_callback_update(CB_RUN_PROJECT, user_id=self.USER_ID)
+        context = make_context(bot_data={
+            KEY_DB: MagicMock(),
+            f"run_project_{self.USER_ID}": self.PROJECT["id"],
+        })
+        list_result = {
+            "status": "success",
+            "result": {
+                "stdout": "skynet_run.json  (90 bytes)\n[DIR] src/\n  server.js  (88 bytes)\n",
+                "stderr": "",
+                "returncode": 0,
+            },
+        }
+        manifest_result = {
+            "status": "success",
+            "result": {
+                "stdout": json.dumps(
+                    {
+                        "interpreter": "node",
+                        "entrypoint": "src/server.js",
+                        "args": ["--port", "8080"],
+                    }
+                ),
+                "stderr": "",
+                "returncode": 0,
+            },
+        }
+        run_result = {"stdout": "Node app started\n", "stderr": "", "exit_code": 0}
+
+        with (
+            patch("bot.handlers.coding.get_project", new=AsyncMock(return_value=self.PROJECT)),
+            patch("bot.handlers.coding.is_worker_available", return_value=True),
+            patch(
+                "bot.handlers.coding.send_action",
+                new=AsyncMock(side_effect=[list_result, manifest_result, run_result]),
+            ) as mock_send,
+        ):
+            await run_project_handler(update, context)
+
+        assert mock_send.await_count == 3
+        second_action, second_params = mock_send.call_args_list[1].args[:2]
+        assert second_action == "file_read"
+        assert second_params["file"].endswith("skynet_run.json")
+
+        action, params = mock_send.call_args_list[2].args[:2]
+        assert action == "exec_command"
+        assert params["command"] == "node src/server.js --port 8080"
+
+    @pytest.mark.asyncio
+    async def test_run_project_invalid_manifest_falls_back_to_file_scan(self):
+        update = make_callback_update(CB_RUN_PROJECT, user_id=self.USER_ID)
+        context = make_context(bot_data={
+            KEY_DB: MagicMock(),
+            f"run_project_{self.USER_ID}": self.PROJECT["id"],
+        })
+        list_result = {
+            "status": "success",
+            "result": {
+                "stdout": "skynet_run.json  (54 bytes)\nskyapp.py  (100 bytes)\n",
+                "stderr": "",
+                "returncode": 0,
+            },
+        }
+        manifest_result = {
+            "status": "success",
+            "result": {
+                "stdout": json.dumps(
+                    {
+                        "interpreter": "bash",
+                        "entrypoint": "run.sh",
+                    }
+                ),
+                "stderr": "",
+                "returncode": 0,
+            },
+        }
+        run_result = {"stdout": "fallback ok\n", "stderr": "", "exit_code": 0}
+
+        with (
+            patch("bot.handlers.coding.get_project", new=AsyncMock(return_value=self.PROJECT)),
+            patch("bot.handlers.coding.is_worker_available", return_value=True),
+            patch(
+                "bot.handlers.coding.send_action",
+                new=AsyncMock(side_effect=[list_result, manifest_result, run_result]),
+            ) as mock_send,
+        ):
+            await run_project_handler(update, context)
+
+        action, params = mock_send.call_args_list[2].args[:2]
+        assert action == "exec_command"
+        assert params["command"].startswith("python "), params["command"]
+        assert "skyapp.py" in params["command"]
+
+    @pytest.mark.asyncio
     async def test_run_project_shows_failure_output(self):
         update  = make_callback_update(CB_RUN_PROJECT, user_id=self.USER_ID)
         context = make_context(bot_data={
@@ -510,7 +644,10 @@ class TestRunProject:
             f"run_project_{self.USER_ID}": self.PROJECT["id"],
         })
 
-        ls_result = {"stdout": "skyapp.py\n", "stderr": "", "returncode": 0}
+        list_result = {
+            "status": "success",
+            "result": {"stdout": "skyapp.py  (120 bytes)\n", "stderr": "", "returncode": 0},
+        }
         mock_result = {
             "stdout": "",
             "stderr": "ModuleNotFoundError: No module named 'requests'",
@@ -522,7 +659,7 @@ class TestRunProject:
                   new=AsyncMock(return_value=self.PROJECT)),
             patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
-                  new=AsyncMock(side_effect=[ls_result, mock_result])),
+                  new=AsyncMock(side_effect=[list_result, mock_result])),
         ):
             await run_project_handler(update, context)
 
@@ -541,7 +678,10 @@ class TestRunProject:
             f"run_project_{self.USER_ID}": self.PROJECT["id"],
         })
 
-        ls_result = {"stdout": "skyapp.py\n", "stderr": "", "returncode": 0}
+        list_result = {
+            "status": "success",
+            "result": {"stdout": "skyapp.py  (120 bytes)\n", "stderr": "", "returncode": 0},
+        }
         mock_result = {"status": "error", "error": "Worker rejected exec_command"}
 
         with (
@@ -549,7 +689,7 @@ class TestRunProject:
                   new=AsyncMock(return_value=self.PROJECT)),
             patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
-                  new=AsyncMock(side_effect=[ls_result, mock_result])),
+                  new=AsyncMock(side_effect=[list_result, mock_result])),
         ):
             await run_project_handler(update, context)
 
@@ -923,7 +1063,10 @@ class TestCodingLoopErrorSurfacing:
         run_project_handler must unwrap result["result"]["stdout"] (real worker format)
         and display it, not look at the top-level result["stdout"].
         """
-        ls_result = {"stdout": "skyapp.py\n", "stderr": "", "returncode": 0}
+        list_result = {
+            "status": "success",
+            "result": {"stdout": "skyapp.py  (120 bytes)\n", "stderr": "", "returncode": 0},
+        }
         real_envelope = {
             "status": "success",
             "result": {
@@ -947,7 +1090,7 @@ class TestCodingLoopErrorSurfacing:
                   new=AsyncMock(return_value=self.PROJECT)),
             patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
-                  new=AsyncMock(side_effect=[ls_result, real_envelope])),
+                  new=AsyncMock(side_effect=[list_result, real_envelope])),
         ):
             await run_project_handler(update, context)
 
