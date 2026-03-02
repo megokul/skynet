@@ -761,7 +761,42 @@ async def _extract_milestones(router, project: dict) -> list[str]:
         logger.warning("JSON milestone extraction failed — falling back to line parsing")
 
     # Fallback: split on numbered list items (1. ... 2. ...)
-    return _parse_milestones_fallback(plan)
+    fallback = _parse_milestones_fallback(plan)
+    if fallback:
+        return fallback
+
+    # Last resort: ask the LLM to generate milestones from the project name and type
+    # (handles cases where the plan text is garbage or a meta-response).
+    logger.warning("No milestones found in plan text — generating from project info")
+    try:
+        gen_system = (
+            "You are a project planner. Generate 2-4 coding milestones for the given project. "
+            "Each milestone is ONE self-contained coding task. "
+            "Output ONLY a valid JSON array of strings, no extra text."
+        )
+        gen_messages = [{
+            "role": "user",
+            "content": (
+                f"Project name: {project['name']}\n"
+                f"Type: {project.get('project_type', 'Other')}\n"
+                f"Description: {plan[:500]}\n\n"
+                "Generate milestones as a JSON array of strings."
+            ),
+        }]
+        response = await router.chat(
+            messages=gen_messages, system=gen_system,
+            max_tokens=512, task_type="planning",
+        )
+        raw = (response.text or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        milestones = json.loads(raw)
+        if isinstance(milestones, list) and all(isinstance(m, str) for m in milestones):
+            return [m.strip() for m in milestones if m.strip()]
+    except Exception:
+        logger.warning("Last-resort milestone generation also failed")
+
+    return []
 
 
 def _parse_milestones_fallback(plan: str) -> list[str]:

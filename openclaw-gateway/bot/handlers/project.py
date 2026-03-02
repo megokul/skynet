@@ -258,6 +258,32 @@ async def _do_generate_plan(
         await message.reply_text("Could not generate the plan. Please try /plan again.")
         return GATHERING_REQUIREMENTS
 
+    # Validate plan looks like a real plan (not a meta-response from the AI).
+    _plan_markers = ("milestone", "feature", "project structure", "tech stack", "overview")
+    plan_lower = plan.lower()
+    is_real_plan = any(marker in plan_lower for marker in _plan_markers) and len(plan) > 100
+    if not is_real_plan:
+        # Retry once with a more explicit prompt.
+        logger.warning("Plan looks invalid (no milestones/structure) — retrying")
+        retry_msg = (
+            "You MUST generate the full project plan now. "
+            "Include: Overview, Core Features, Tech Stack, Project Structure, and "
+            "a numbered Milestones list. Do NOT ask more questions."
+        )
+        history.append({"role": "user", "content": retry_msg})
+        try:
+            response = await router.chat(
+                messages=history,
+                system=_specialist_prompt(name, type_label, template),
+                max_tokens=2048,
+                task_type="planning",
+            )
+            retry_plan = (response.text or "").strip()
+            if retry_plan and len(retry_plan) > 100:
+                plan = retry_plan
+        except Exception:
+            pass  # Keep the original plan as fallback
+
     context.user_data[_PLAN_KEY] = plan
     history.append({"role": "assistant", "content": plan})
     context.user_data[_REQS_HISTORY] = history
