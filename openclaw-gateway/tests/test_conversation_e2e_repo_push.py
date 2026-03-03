@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import subprocess
 import sys
@@ -138,6 +139,15 @@ async def test_conversation_e2e_generates_code_and_pushes_local_remote(tmp_path:
             filepath.write_text(content, encoding="utf-8")
             return _worker_ok(0, f"Wrote {len(content)} bytes to {filepath}", "")
 
+        if action == "file_read":
+            filepath = Path(params["file"])
+            if not filepath.exists():
+                return _worker_ok(1, "", f"File not found: {filepath}")
+            content = filepath.read_text(encoding="utf-8")
+            result = _worker_ok(0, content, "")
+            result["result"]["content"] = content
+            return result
+
         if action == "git_add_all":
             rc, out, err = _run(["git", "add", "-A"], cwd=params["working_dir"])
             return _worker_ok(rc, out, err)
@@ -169,6 +179,10 @@ async def test_conversation_e2e_generates_code_and_pushes_local_remote(tmp_path:
             wd = Path(params["working_dir"])
             wd.mkdir(parents=True, exist_ok=True)
             script = wd / f"{wd.name}.py"
+            tests_dir = wd / "tests"
+            tests_dir.mkdir(parents=True, exist_ok=True)
+            smoke_test = tests_dir / "test_smoke.py"
+            run_manifest = wd / "skynet_run.json"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -182,8 +196,33 @@ async def test_conversation_e2e_generates_code_and_pushes_local_remote(tmp_path:
                 ),
                 encoding="utf-8",
             )
-            result = _worker_ok(0, f"Wrote 1 file(s): {wd.name}.py", "")
-            result["result"]["files_written"] = [f"{wd.name}.py"]
+            smoke_test.write_text(
+                "def test_smoke():\n"
+                "    assert True\n",
+                encoding="utf-8",
+            )
+            run_manifest.write_text(
+                json.dumps(
+                    {
+                        "interpreter": "python",
+                        "entrypoint": f"{wd.name}.py",
+                        "args": [],
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = _worker_ok(
+                0,
+                f"Wrote 3 file(s): {wd.name}.py, skynet_run.json, tests/test_smoke.py",
+                "",
+            )
+            result["result"]["files_written"] = [
+                f"{wd.name}.py",
+                "skynet_run.json",
+                "tests/test_smoke.py",
+            ]
             return result
 
         if action == "list_directory":
@@ -191,11 +230,20 @@ async def test_conversation_e2e_generates_code_and_pushes_local_remote(tmp_path:
             if not wd_path.is_dir():
                 return _worker_ok(1, "", "directory not found")
             lines: list[str] = []
-            for entry in sorted(wd_path.iterdir(), key=lambda p: p.name.lower()):
-                if entry.is_dir():
-                    lines.append(f"[DIR] {entry.name}/")
-                else:
-                    lines.append(f"{entry.name}  ({entry.stat().st_size} bytes)")
+            recursive = bool(params.get("recursive"))
+            if recursive:
+                for entry in sorted(wd_path.rglob("*"), key=lambda p: str(p).lower()):
+                    rel = entry.relative_to(wd_path).as_posix()
+                    if entry.is_dir():
+                        lines.append(f"[DIR] {rel}/")
+                    else:
+                        lines.append(f"{rel}  ({entry.stat().st_size} bytes)")
+            else:
+                for entry in sorted(wd_path.iterdir(), key=lambda p: p.name.lower()):
+                    if entry.is_dir():
+                        lines.append(f"[DIR] {entry.name}/")
+                    else:
+                        lines.append(f"{entry.name}  ({entry.stat().st_size} bytes)")
             return _worker_ok(0, "\n".join(lines), "")
 
         if action == "exec_command":
@@ -295,7 +343,7 @@ async def test_conversation_e2e_generates_code_and_pushes_local_remote(tmp_path:
     assert rc == 0, f"Expected refs/heads/main in bare remote, got rc={rc}, out={out!r}"
 
     tasks = await list_tasks(db, project_id=project_id)
-    assert tasks and all(t["status"] == "done" for t in tasks)
+    assert tasks and all(t["status"] == "done" for t in tasks), f"tasks={tasks}"
     assert bot_data.get(f"run_project_{user_id}") == project_id
     assert any(CB_RUN_PROJECT in sum(_callbacks(m), []) for m in sent_markups), "Run Project CTA missing."
 

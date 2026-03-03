@@ -377,10 +377,22 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
     Only providers with valid API keys are included.
     If GEMINI_ONLY_MODE is enabled, only Gemini is registered.
     """
-    from .providers.gemini import GeminiProvider
-    from .providers.groq import GroqProvider
-    from .providers.openai_compat import OpenAICompatProvider
     from .providers.ollama_proxy import OllamaProxyProvider
+    try:
+        from .providers.gemini import GeminiProvider
+    except ModuleNotFoundError as exc:
+        GeminiProvider = None  # type: ignore[assignment]
+        logger.warning("Gemini provider unavailable: %s", exc)
+    try:
+        from .providers.groq import GroqProvider
+    except ModuleNotFoundError as exc:
+        GroqProvider = None  # type: ignore[assignment]
+        logger.warning("Groq provider unavailable: %s", exc)
+    try:
+        from .providers.openai_compat import OpenAICompatProvider
+    except ModuleNotFoundError as exc:
+        OpenAICompatProvider = None  # type: ignore[assignment]
+        logger.warning("OpenAI-compatible providers unavailable: %s", exc)
 
     providers: list[BaseProvider] = []
     gemini_only_mode = _is_truthy(config.get("GEMINI_ONLY_MODE", "0"))
@@ -388,12 +400,18 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
     # Strict Gemini-only runtime (no Ollama/fallback providers).
     if gemini_only_mode:
         if config.get("GOOGLE_AI_API_KEY"):
-            gemini_model = config.get("GEMINI_MODEL", "gemini-2.0-flash")
-            providers.append(GeminiProvider(config["GOOGLE_AI_API_KEY"], model=gemini_model))
-            logger.info(
-                "Registered provider: Gemini Flash (model=%s, gemini_only_mode=true)",
-                gemini_model,
-            )
+            if GeminiProvider is None:
+                logger.error(
+                    "GEMINI_ONLY_MODE is enabled and GOOGLE_AI_API_KEY is set, "
+                    "but Gemini SDK is unavailable."
+                )
+            else:
+                gemini_model = config.get("GEMINI_MODEL", "gemini-2.0-flash")
+                providers.append(GeminiProvider(config["GOOGLE_AI_API_KEY"], model=gemini_model))
+                logger.info(
+                    "Registered provider: Gemini Flash (model=%s, gemini_only_mode=true)",
+                    gemini_model,
+                )
         else:
             logger.error(
                 "GEMINI_ONLY_MODE is enabled but GOOGLE_AI_API_KEY is missing."
@@ -407,17 +425,23 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
 
     # 1. Gemini — secondary (biggest free cloud tier)
     if config.get("GOOGLE_AI_API_KEY"):
-        gemini_model = config.get("GEMINI_MODEL", "gemini-2.0-flash")
-        providers.append(GeminiProvider(config["GOOGLE_AI_API_KEY"], model=gemini_model))
-        logger.info("Registered provider: Gemini Flash (model=%s)", gemini_model)
+        if GeminiProvider is None:
+            logger.warning("Skipping Gemini provider: SDK dependency unavailable.")
+        else:
+            gemini_model = config.get("GEMINI_MODEL", "gemini-2.0-flash")
+            providers.append(GeminiProvider(config["GOOGLE_AI_API_KEY"], model=gemini_model))
+            logger.info("Registered provider: Gemini Flash (model=%s)", gemini_model)
 
     # 2. Groq — fast secondary
     if config.get("GROQ_API_KEY"):
-        providers.append(GroqProvider(config["GROQ_API_KEY"]))
-        logger.info("Registered provider: Groq")
+        if GroqProvider is None:
+            logger.warning("Skipping Groq provider: SDK dependency unavailable.")
+        else:
+            providers.append(GroqProvider(config["GROQ_API_KEY"]))
+            logger.info("Registered provider: Groq")
 
     # 3. OpenRouter — free model priority chain
-    if config.get("OPENROUTER_API_KEY"):
+    if config.get("OPENROUTER_API_KEY") and OpenAICompatProvider is not None:
         deprecated_openrouter_models = {
             "google/gemini-2.0-flash-exp:free",
         }
@@ -481,7 +505,10 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
             )
 
     # 4. DeepSeek — near-free
-    if config.get("DEEPSEEK_API_KEY"):
+    if config.get("OPENROUTER_API_KEY") and OpenAICompatProvider is None:
+        logger.warning("Skipping OpenRouter provider: SDK dependency unavailable.")
+
+    if config.get("DEEPSEEK_API_KEY") and OpenAICompatProvider is not None:
         providers.append(OpenAICompatProvider(
             api_key=config["DEEPSEEK_API_KEY"],
             model="deepseek-chat",
@@ -495,7 +522,10 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
         logger.info("Registered provider: DeepSeek")
 
     # 5. OpenAI — if credits available
-    if config.get("OPENAI_API_KEY"):
+    if config.get("DEEPSEEK_API_KEY") and OpenAICompatProvider is None:
+        logger.warning("Skipping DeepSeek provider: SDK dependency unavailable.")
+
+    if config.get("OPENAI_API_KEY") and OpenAICompatProvider is not None:
         providers.append(OpenAICompatProvider(
             api_key=config["OPENAI_API_KEY"],
             model="gpt-4o-mini",
@@ -508,6 +538,9 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
         logger.info("Registered provider: OpenAI")
 
     # 6. Claude — if credits available
+    if config.get("OPENAI_API_KEY") and OpenAICompatProvider is None:
+        logger.warning("Skipping OpenAI provider: SDK dependency unavailable.")
+
     if config.get("ANTHROPIC_API_KEY"):
         try:
             from .providers.anthropic_ai import AnthropicProvider

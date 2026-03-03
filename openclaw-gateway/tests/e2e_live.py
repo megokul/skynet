@@ -1,14 +1,15 @@
 """
-SKYNET live end-to-end runner with persistent tracing.
+SKYNET live E2E runner with persistent tracing.
 
-Run this on a host that can SSH to the worker laptop:
+Default mode runs the full conversation simulation:
+  hi -> project creation -> requirements -> plan -> approve -> coding -> run project
 
-    cd openclaw-gateway
-    python tests/e2e_live.py
+Usage:
+  python openclaw-gateway/tests/e2e_live.py
 
-The script writes structured JSONL traces to:
-  - SKYNET_LIVE_TRACE_FILE (if set), or
-  - tests/.artifacts/e2e-live-<timestamp>.log
+Modes:
+  SKYNET_LIVE_E2E_FLOW=conversation  (default)
+  SKYNET_LIVE_E2E_FLOW=direct        (legacy direct coding smoke)
 """
 
 from __future__ import annotations
@@ -16,11 +17,17 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional dependency at runtime
+    load_dotenv = None  # type: ignore[assignment]
 
 # Make sure we can import from the gateway package.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -71,7 +78,7 @@ class LiveTrace:
 
 
 def _fail(trace: LiveTrace, message: str, *, detail: Any | None = None) -> None:
-    text = str(detail)[:1000] if detail is not None else ""
+    text = str(detail)[:1200] if detail is not None else ""
     trace.log("run.fail", message=message, detail=text)
     print(f"[FAIL] {message}")
     if text:
@@ -95,6 +102,64 @@ def _check_env(trace: LiveTrace) -> None:
         print("       Set OPENCLAW_SSH_* vars and retry.")
         print(f"[TRACE] {trace.path}")
         sys.exit(0)
+
+
+def _load_live_env(trace: LiveTrace) -> None:
+    if load_dotenv is None:
+        trace.log("env.dotenv", status="unavailable", reason="python-dotenv not installed")
+        return
+
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = []
+    explicit = os.environ.get("SKYNET_ENV_FILE", "").strip()
+    if explicit:
+        candidates.append(Path(explicit))
+    candidates.extend(
+        [
+            repo_root / ".env",
+            repo_root / "openclaw-gateway" / ".env",
+        ]
+    )
+
+    loaded: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            key = str(candidate.resolve()).lower()
+        except Exception:
+            key = str(candidate).lower()
+        if key in seen or not candidate.exists():
+            continue
+        seen.add(key)
+        load_dotenv(candidate, override=False)
+        loaded.append(str(candidate))
+
+    trace.log("env.dotenv", loaded_files=loaded)
+
+
+def _run_conversation_flow(trace: LiveTrace) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    target = (
+        "openclaw-gateway/tests/test_e2e_conversation_live.py::"
+        "test_live_conversation_real_planner_codegen_and_github_push"
+    )
+    cmd = [sys.executable, "-m", "pytest", target, "-q", "-s"]
+    env = os.environ.copy()
+    env["SKYNET_E2E_LIVE"] = os.environ.get("SKYNET_E2E_LIVE", "1")
+    env["SKYNET_LIVE_TRACE_FILE"] = str(trace.path)
+
+    trace.log(
+        "conversation.invoke",
+        repo_root=str(repo_root),
+        cmd=" ".join(cmd),
+    )
+    rc = subprocess.call(cmd, cwd=str(repo_root), env=env)
+    trace.log("conversation.exit", returncode=rc)
+    if rc != 0:
+        _fail(trace, "Conversation live E2E failed.", detail=f"pytest exit code: {rc}")
+    trace.log("run.success", flow="conversation")
+    print("[OK] Conversation live E2E passed.")
+    print(f"[TRACE] {trace.path}")
 
 
 async def _execute_action_with_trace(
@@ -151,12 +216,8 @@ async def _execute_action_with_trace(
     return result
 
 
-async def run() -> None:
+async def _run_direct_flow(trace: LiveTrace) -> None:
     from ssh_tunnel_executor import get_ssh_executor
-
-    trace = LiveTrace("e2e-live")
-    trace.log("run.start", python=sys.version.split()[0], cwd=os.getcwd())
-    _check_env(trace)
 
     executor = get_ssh_executor()
     if not executor.is_configured():
@@ -166,7 +227,6 @@ async def run() -> None:
     working_dir = base_dir.rstrip("\\") + "\\" + SLUG
     trace.log("run.config", base_dir=base_dir, working_dir=working_dir)
 
-    # Step 1: Create project directory.
     result = await _execute_action_with_trace(
         trace=trace,
         executor=executor,
@@ -177,7 +237,6 @@ async def run() -> None:
     if result.get("status") == "error" or result.get("result", {}).get("returncode", 0) != 0:
         _fail(trace, f"Could not create directory: {working_dir}", detail=result)
 
-    # Step 2: Run coding agent.
     model = os.environ.get("SKYNET_CLAUDE_OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:7b")
     backend = os.environ.get("SKYNET_LIVE_E2E_BACKEND", "ollama")
     agent = os.environ.get("SKYNET_LIVE_E2E_AGENT", "claude")
@@ -211,7 +270,6 @@ async def run() -> None:
     if inner.get("returncode", 0) != 0:
         _fail(trace, "run_coding_agent returned non-zero", detail=inner)
 
-    # Step 3: Verify main.py.
     main_py = working_dir.rstrip("\\") + "\\main.py"
     result = await _execute_action_with_trace(
         trace=trace,
@@ -226,7 +284,6 @@ async def run() -> None:
         _fail(trace, f"main.py not found or empty at {main_py}", detail=result)
     trace.log("file.main_py", path=main_py, content_len=len(content))
 
-    # Step 4: Execute project.
     result = await _execute_action_with_trace(
         trace=trace,
         executor=executor,
@@ -244,10 +301,24 @@ async def run() -> None:
     else:
         trace.log("run.output_ok", marker="SKYNET_E2E_OK")
 
-    trace.log("run.success", working_dir=working_dir)
-    print("[OK] Live E2E passed.")
+    trace.log("run.success", flow="direct", working_dir=working_dir)
+    print("[OK] Direct live E2E passed.")
     print(f"[TRACE] {trace.path}")
     print(f"[ARTIFACT] working_dir={working_dir}")
+
+
+async def run() -> None:
+    trace = LiveTrace("e2e-live")
+    trace.log("run.start", python=sys.version.split()[0], cwd=os.getcwd())
+    _load_live_env(trace)
+    _check_env(trace)
+
+    flow = os.environ.get("SKYNET_LIVE_E2E_FLOW", "conversation").strip().lower()
+    trace.log("run.mode", flow=flow)
+    if flow in {"conversation", "chat"}:
+        _run_conversation_flow(trace)
+        return
+    await _run_direct_flow(trace)
 
 
 if __name__ == "__main__":

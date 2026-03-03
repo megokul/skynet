@@ -14,6 +14,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from telegram.ext import ConversationHandler
 
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional dependency at runtime
+    load_dotenv = None  # type: ignore[assignment]
+
 import gateway as gateway_module
 from ai.provider_router import ProviderRouter, build_providers, parse_provider_priority
 from db.schema import init_db
@@ -53,6 +58,35 @@ from bot.keyboards import (
     CB_START_PROJECT,
 )
 from bot.state import KEY_DB, KEY_ROUTER
+
+
+def _load_live_env_from_dotenv() -> None:
+    if load_dotenv is None:
+        return
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = []
+    explicit = os.environ.get("SKYNET_ENV_FILE", "").strip()
+    if explicit:
+        candidates.append(Path(explicit))
+    candidates.extend(
+        [
+            repo_root / ".env",
+            repo_root / "openclaw-gateway" / ".env",
+        ]
+    )
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            key = str(candidate.resolve()).lower()
+        except Exception:
+            key = str(candidate).lower()
+        if key in seen or not candidate.exists():
+            continue
+        seen.add(key)
+        load_dotenv(candidate, override=False)
+
+
+_load_live_env_from_dotenv()
 
 
 def _make_live_trace_logger(test_name: str):
@@ -100,9 +134,14 @@ async def test_live_conversation_real_planner_codegen_and_github_push():
         pytest.skip(f"Missing live E2E SSH env vars: {', '.join(missing)}")
 
     with patch.dict(os.environ, {"OPENCLAW_EXECUTION_MODE": "ssh"}, clear=False):
-        if not get_ssh_executor().is_configured():
+        executor = get_ssh_executor()
+        if not executor.is_configured():
             trace("test.skip", reason="SSH executor is not configured")
             pytest.skip("SSH executor is not configured for live E2E.")
+        healthy, detail = await executor.health_check()
+        if not healthy:
+            trace("test.skip", reason="SSH executor unreachable", detail=detail)
+            pytest.skip(f"SSH executor unreachable: {detail}")
 
         trace(
             "test.start",
@@ -265,8 +304,21 @@ async def test_live_conversation_real_planner_codegen_and_github_push():
             decision_key = _MS_DECISION_KEY.format(uid=user_id)
 
             async def auto_approve_until_complete():
+                seen_loop = False
+                loop_missing_ticks = 0
                 for idx in range(4800):  # ~20 min max @ 0.25s
                     loop_task = bot_data.get(loop_key)
+                    if loop_task:
+                        seen_loop = True
+                        loop_missing_ticks = 0
+                    elif seen_loop:
+                        loop_missing_ticks += 1
+                        if loop_missing_ticks >= 20:
+                            trace(
+                                "auto_approve.loop_finished_without_task",
+                                iterations=idx,
+                            )
+                            return
                     if loop_task and loop_task.done():
                         trace("auto_approve.done", iterations=idx)
                         return
