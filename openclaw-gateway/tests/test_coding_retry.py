@@ -167,6 +167,60 @@ async def test_coding_preflight_blocks_when_claude_cli_missing():
 
 
 @pytest.mark.asyncio
+async def test_milestone_event_registered_before_message_render():
+    project = {
+        "id": "proj_event_order",
+        "name": "Event Order",
+        "project_type": "Python App",
+        "status": "approved",
+        "coding_profile": "legacy",
+    }
+    user_id = 42
+    chat_id = 100
+    event_key = _MS_EVENT_KEY.format(uid=user_id)
+    decision_key = _MS_DECISION_KEY.format(uid=user_id)
+
+    app = MagicMock()
+    app.bot_data = {}
+    observed_registration = False
+
+    async def _send(_cid, text, **_kwargs):
+        nonlocal observed_registration
+        if "Milestone 1/1" in str(text):
+            observed_registration = True
+            assert event_key in app.bot_data, "Milestone event must exist before message is sent."
+            app.bot_data[decision_key] = "approve"
+            app.bot_data[event_key].set()
+
+    app.bot.send_message = AsyncMock(side_effect=_send)
+
+    async def _send_action_side_effect(action, params, **kwargs):
+        del params, kwargs
+        if action == "run_coding_agent":
+            return {
+                "status": "success",
+                "result": {
+                    "returncode": 0,
+                    "stdout": "Wrote 1 file(s): event_order.py",
+                    "stderr": "",
+                    "files_written": ["event_order.py"],
+                },
+            }
+        return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
+
+    with (
+        patch("bot.handlers.coding._extract_milestones", new=AsyncMock(return_value=["Do one thing"])),
+        patch("bot.handlers.coding.is_worker_available", return_value=True),
+        patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)),
+        patch("bot.handlers.coding.create_task", new=AsyncMock(return_value={"id": 101})),
+        patch("bot.handlers.coding.update_task_status", new=AsyncMock()),
+    ):
+        await _coding_loop(app, chat_id, user_id, project, do_github=False)
+
+    assert observed_registration, "Milestone message was not observed in test."
+
+
+@pytest.mark.asyncio
 async def test_retry_handler_reuses_saved_github_preference():
     user_id = 42
     project_id = "proj1"

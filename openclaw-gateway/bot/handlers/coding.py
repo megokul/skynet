@@ -1458,6 +1458,13 @@ async def _coding_loop(
 
         # â”€â”€ Milestone loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         for i, milestone_text in enumerate(milestones, 1):
+            # Register approval event before rendering buttons so fast taps are not lost.
+            event = asyncio.Event()
+            event_key    = _MS_EVENT_KEY.format(uid=user_id)
+            decision_key = _MS_DECISION_KEY.format(uid=user_id)
+            app.bot_data[event_key] = event
+            app.bot_data.pop(decision_key, None)
+
             # Show milestone to user.
             await app.bot.send_message(
                 chat_id,
@@ -1467,11 +1474,6 @@ async def _coding_loop(
             )
 
             # Wait for user decision (up to 1 hour).
-            event = asyncio.Event()
-            event_key    = _MS_EVENT_KEY.format(uid=user_id)
-            decision_key = _MS_DECISION_KEY.format(uid=user_id)
-            app.bot_data[event_key] = event
-            app.bot_data.pop(decision_key, None)
 
             try:
                 await asyncio.wait_for(event.wait(), timeout=3600)

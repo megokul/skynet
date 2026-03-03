@@ -21,6 +21,7 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 - Added deterministic Telegram chat simulation test that reproduces claude-missing setup failures before milestone execution.
 - Fixed deploy/runtime env drift by wiring SKYNET_CLAUDE_OLLAMA_* vars in CI and adding backward-compatible OPENCLAW_OLLAMA_* fallbacks in gateway/agent config.
 - Set safer model/autopull defaults for fallback paths so runtime does not silently drift to large model pulls.
+- Fixed milestone approval race by registering the approval event before sending milestone buttons, preventing fast taps from being dropped as "no active milestone".
 ## Current Repo State
 
 - Branch: `main`
