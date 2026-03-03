@@ -185,6 +185,53 @@ def _action_excerpt(result: dict[str, Any], *, limit: int = 240) -> str:
     return text[:limit]
 
 
+async def _send_action_with_heartbeat(
+    *,
+    app,
+    chat_id: int,
+    action: str,
+    params: dict[str, Any],
+    timeout: int,
+    label: str,
+    confirmed: bool = True,
+) -> dict[str, Any]:
+    """
+    Run a long worker action while periodically notifying the user the task is still active.
+    """
+    interval = int(getattr(cfg, "CODING_PROGRESS_HEARTBEAT_SECONDS", 30) or 30)
+    if interval <= 0:
+        return await send_action(
+            action,
+            params,
+            timeout=timeout,
+            confirmed=confirmed,
+        )
+
+    pending = asyncio.create_task(
+        send_action(
+            action,
+            params,
+            timeout=timeout,
+            confirmed=confirmed,
+        )
+    )
+    elapsed = 0
+
+    try:
+        while True:
+            try:
+                return await asyncio.wait_for(asyncio.shield(pending), timeout=interval)
+            except asyncio.TimeoutError:
+                elapsed += interval
+                await app.bot.send_message(
+                    chat_id,
+                    f"\u23f3 Still working on {label} ({elapsed}s elapsed)...",
+                )
+    finally:
+        if not pending.done():
+            pending.cancel()
+
+
 def _is_infra_error(message: str) -> bool:
     lower = (message or "").lower()
     infra_markers = (
@@ -1565,9 +1612,11 @@ async def _coding_loop(
                     # New profile: always use Claude CLI against Ollama in attempt 1.
                     max_attempts = 3
                     for attempt in range(1, max_attempts + 1):
-                        result = await send_action(
-                            "run_coding_agent",
-                            {
+                        result = await _send_action_with_heartbeat(
+                            app=app,
+                            chat_id=chat_id,
+                            action="run_coding_agent",
+                            params={
                                 "agent": "claude",
                                 "backend": "ollama",
                                 "model": cfg.CLAUDE_OLLAMA_DEFAULT_MODEL,
@@ -1577,7 +1626,7 @@ async def _coding_loop(
                                 "auto_pull_model": cfg.CLAUDE_OLLAMA_AUTO_PULL,
                             },
                             timeout=1800,
-                            confirmed=True,
+                            label=f"coding agent attempt {attempt}/{max_attempts}",
                         )
                         if result.get("status") == "error":
                             raise RuntimeError(result.get("error", "run_coding_agent failed"))
@@ -1644,9 +1693,11 @@ async def _coding_loop(
                     if not router_written:
                         max_attempts = 3
                         for attempt in range(1, max_attempts + 1):
-                            result = await send_action(
-                                "run_coding_agent",
-                                {
+                            result = await _send_action_with_heartbeat(
+                                app=app,
+                                chat_id=chat_id,
+                                action="run_coding_agent",
+                                params={
                                     "agent": "claude",
                                     "backend": "auto",
                                     "prompt": prompt,
@@ -1654,7 +1705,7 @@ async def _coding_loop(
                                     "timeout_seconds": 1800,
                                 },
                                 timeout=1800,
-                                confirmed=True,
+                                label=f"coding agent attempt {attempt}/{max_attempts}",
                             )
                             if result.get("status") == "error":
                                 raise RuntimeError(result.get("error", "run_coding_agent failed"))

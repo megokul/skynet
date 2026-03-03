@@ -129,6 +129,9 @@ CODING_DEFAULT_PROFILE: str = _s(
 CODING_TRANSPORT: str = _s(
     "SKYNET_CODING_TRANSPORT", "ssh_first"
 ).lower()
+CODING_PROGRESS_HEARTBEAT_SECONDS: int = _i(
+    "SKYNET_CODING_PROGRESS_HEARTBEAT_SECONDS", 30
+)
 
 # Backward-compatible fallbacks so older OPENCLAW_* env wiring still works.
 _CLAUDE_OLLAMA_BASE_URL_DEFAULT = _s(

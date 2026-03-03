@@ -22,6 +22,7 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 - Fixed deploy/runtime env drift by wiring SKYNET_CLAUDE_OLLAMA_* vars in CI and adding backward-compatible OPENCLAW_OLLAMA_* fallbacks in gateway/agent config.
 - Set safer model/autopull defaults for fallback paths so runtime does not silently drift to large model pulls.
 - Fixed milestone approval race by registering the approval event before sending milestone buttons, preventing fast taps from being dropped as "no active milestone".
+- Added heartbeat progress updates during long `run_coding_agent` calls so users can see coding is still active.
 ## Current Repo State
 
 - Branch: `main`
@@ -66,6 +67,10 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
   - 29 passed
 - python -m pytest openclaw-agent/tests/test_executor.py -q
   - 19 passed
+- python -m pytest openclaw-gateway/tests/test_coding_retry.py -q
+  - 7 passed
+- python -m pytest openclaw-gateway/tests/test_telegram_chat_simulation.py openclaw-gateway/tests/test_e2e.py -q
+  - 24 passed
 ## Trace Evidence
 
 - Live e2e test run via `tests/e2e_live.py` inside container

@@ -221,6 +221,76 @@ async def test_milestone_event_registered_before_message_render():
 
 
 @pytest.mark.asyncio
+async def test_coding_loop_emits_progress_heartbeat_for_slow_agent():
+    project = {
+        "id": "proj_heartbeat",
+        "name": "Heartbeat Project",
+        "project_type": "Python App",
+        "status": "approved",
+        "coding_profile": "legacy",
+    }
+    user_id = 42
+    chat_id = 100
+
+    app = MagicMock()
+    app.bot_data = {}
+    sent_text: list[str] = []
+
+    async def _send(_cid, text, **_kwargs):
+        sent_text.append(str(text))
+
+    app.bot.send_message = AsyncMock(side_effect=_send)
+
+    async def _approve_once():
+        event_key = _MS_EVENT_KEY.format(uid=user_id)
+        decision_key = _MS_DECISION_KEY.format(uid=user_id)
+        for _ in range(300):
+            if event_key in app.bot_data:
+                app.bot_data[decision_key] = "approve"
+                app.bot_data[event_key].set()
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("Milestone approval event was never created.")
+
+    async def _send_action_side_effect(action, params, **kwargs):
+        del params, kwargs
+        if action == "run_coding_agent":
+            await asyncio.sleep(1.2)
+            return {
+                "status": "success",
+                "result": {
+                    "returncode": 0,
+                    "stdout": "Wrote 1 file(s): heartbeat.py",
+                    "stderr": "",
+                    "files_written": ["heartbeat.py"],
+                },
+            }
+        return {
+            "status": "success",
+            "result": {"returncode": 0, "stdout": "", "stderr": ""},
+        }
+
+    approve_task = asyncio.create_task(_approve_once())
+
+    with (
+        patch("bot.handlers.coding._extract_milestones", new=AsyncMock(return_value=["Do work"])),
+        patch("bot.handlers.coding.is_worker_available", return_value=True),
+        patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)),
+        patch("bot.handlers.coding.create_task", new=AsyncMock(return_value={"id": 501})),
+        patch("bot.handlers.coding.update_task_status", new=AsyncMock()),
+        patch("bot.handlers.coding.cfg.CODING_PROGRESS_HEARTBEAT_SECONDS", 1),
+    ):
+        await _coding_loop(app, chat_id, user_id, project, do_github=False)
+
+    await approve_task
+
+    all_text = "\n".join(sent_text)
+    assert "Still working on coding agent attempt" in all_text, (
+        f"Expected progress heartbeat while run_coding_agent is slow; messages: {sent_text}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_retry_handler_reuses_saved_github_preference():
     user_id = 42
     project_id = "proj1"
