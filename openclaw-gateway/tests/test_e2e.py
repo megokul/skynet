@@ -405,6 +405,19 @@ class TestStopSession:
             patch("bot.handlers.coding._extract_milestones",
                   new=AsyncMock(return_value=milestones)),
             patch("bot.handlers.coding.is_worker_available", return_value=True),
+            patch(
+                "bot.handlers.coding.send_action",
+                new=AsyncMock(
+                    return_value={
+                        "status": "success",
+                        "result": {
+                            "returncode": 0,
+                            "stdout": "claude: available (claude)",
+                            "stderr": "",
+                        },
+                    }
+                ),
+            ),
         ):
             await _coding_loop(app, chat_id, user_id, self.PROJECT, do_github=False)
 
@@ -765,12 +778,25 @@ class TestCodingLoopErrorSurfacing:
 
         approve_task = asyncio.create_task(_approve())
 
+        async def _send_action(action, params, **kwargs):
+            del params, kwargs
+            if action in {"create_directory", "check_coding_agents"}:
+                return {
+                    "status": "success",
+                    "result": {
+                        "returncode": 0,
+                        "stdout": "claude: available (claude)",
+                        "stderr": "",
+                    },
+                }
+            return send_action_return
+
         with (
             patch("bot.handlers.coding._extract_milestones",
                   new=AsyncMock(return_value=["Do the thing"])),
             patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
-                  new=AsyncMock(return_value=send_action_return)),
+                  new=AsyncMock(side_effect=_send_action)),
             patch("bot.handlers.coding.create_task",      new=mock_create_task),
             patch("bot.handlers.coding.update_task_status", new=mock_update_status),
         ):

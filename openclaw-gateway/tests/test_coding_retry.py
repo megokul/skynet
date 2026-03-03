@@ -101,6 +101,72 @@ async def test_all_failed_session_shows_retry_keyboard():
 
 
 @pytest.mark.asyncio
+async def test_coding_preflight_blocks_when_claude_cli_missing():
+    project = {
+        "id": "proj_preflight",
+        "name": "Preflight Project",
+        "project_type": "Python App",
+        "status": "approved",
+        "coding_profile": "claude_ollama",
+    }
+    user_id = 42
+    chat_id = 100
+
+    app = MagicMock()
+    app.bot_data = {}
+    sent_text: list[str] = []
+    sent_markups = []
+
+    async def _send(_cid, text, **kwargs):
+        sent_text.append(text)
+        if "reply_markup" in kwargs:
+            sent_markups.append(kwargs["reply_markup"])
+
+    app.bot.send_message = AsyncMock(side_effect=_send)
+
+    async def _send_action_side_effect(action, params, **kwargs):
+        del params, kwargs
+        if action == "create_directory":
+            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
+        if action == "check_coding_agents":
+            return {
+                "status": "success",
+                "result": {
+                    "returncode": 0,
+                    "stdout": (
+                        "codex: available (codex)\n"
+                        "claude: unavailable (expected binary: claude)\n"
+                        "cline: unavailable (expected binary: cline)"
+                    ),
+                    "stderr": "",
+                },
+            }
+        raise AssertionError(f"Unexpected action called during preflight test: {action}")
+
+    with (
+        patch("bot.handlers.coding._extract_milestones", new=AsyncMock(return_value=["Should not run"])) as mock_extract,
+        patch("bot.handlers.coding.is_worker_available", return_value=True),
+        patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)),
+        patch("bot.handlers.coding.create_task", new=AsyncMock()) as mock_create_task,
+        patch("bot.handlers.coding.update_task_status", new=AsyncMock()) as mock_update_status,
+    ):
+        await _coding_loop(app, chat_id, user_id, project, do_github=False)
+
+    mock_extract.assert_not_awaited()
+    mock_create_task.assert_not_awaited()
+    mock_update_status.assert_not_awaited()
+
+    all_text = " ".join(sent_text)
+    assert "preflight failed" in all_text.lower(), f"Expected preflight failure message, got: {sent_text}"
+    assert "claude: unavailable" in all_text.lower(), f"Expected Claude CLI detail, got: {sent_text}"
+
+    assert sent_markups, "Expected retry keyboard on preflight failure."
+    rows = _callbacks(sent_markups[-1])
+    assert rows[0] == [f"{CB_CODING_RETRY_PREFIX}{project['id']}"]
+    assert rows[1] == [CB_MY_PROJECTS, CB_MAIN_MENU]
+
+
+@pytest.mark.asyncio
 async def test_retry_handler_reuses_saved_github_preference():
     user_id = 42
     project_id = "proj1"

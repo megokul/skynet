@@ -30,6 +30,35 @@ logger = logging.getLogger("chathan.executor")
 # Upper bound on how long any single subprocess may run (seconds).
 _SUBPROCESS_TIMEOUT = 120
 
+
+def _env_first(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.environ.get(name)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return default
+
+
+def _env_bool(*names: str, default: bool = False) -> bool:
+    truthy = {"1", "true", "yes", "on"}
+    falsy = {"0", "false", "no", "off"}
+    for name in names:
+        value = os.environ.get(name)
+        if value is None:
+            continue
+        text = str(value).strip().lower()
+        if not text:
+            continue
+        if text in truthy:
+            return True
+        if text in falsy:
+            return False
+    return default
+
+
 # CLI resolution for local coding agents.
 _CODING_AGENT_BINARIES: dict[str, str] = {
     "codex": os.environ.get("SKYNET_CODEX_BIN") or os.environ.get("OPENCLAW_CODEX_BIN") or "codex",
@@ -43,10 +72,25 @@ _CODING_AGENT_PREFIX_ARGS: dict[str, list[str]] = {
 }
 _CODING_AGENT_TIMEOUT_SECONDS = 1800
 _CODING_BACKENDS = {"auto", "ollama", "native"}
-_CLAUDE_OLLAMA_BASE_URL = os.environ.get("SKYNET_CLAUDE_OLLAMA_BASE_URL", "http://localhost:11434").strip()
-_CLAUDE_OLLAMA_AUTH_TOKEN = os.environ.get("SKYNET_CLAUDE_OLLAMA_AUTH_TOKEN", "ollama").strip()
-_CLAUDE_OLLAMA_DEFAULT_MODEL = os.environ.get("SKYNET_CLAUDE_OLLAMA_DEFAULT_MODEL", "qwen3-coder").strip()
-_CLAUDE_OLLAMA_AUTO_PULL = (os.environ.get("SKYNET_CLAUDE_OLLAMA_AUTO_PULL", "1").strip().lower() in {"1", "true", "yes", "on"})
+_CLAUDE_OLLAMA_BASE_URL = _env_first(
+    "SKYNET_CLAUDE_OLLAMA_BASE_URL",
+    "OPENCLAW_OLLAMA_URL",
+    default="http://localhost:11434",
+)
+_CLAUDE_OLLAMA_AUTH_TOKEN = _env_first(
+    "SKYNET_CLAUDE_OLLAMA_AUTH_TOKEN",
+    default="ollama",
+)
+_CLAUDE_OLLAMA_DEFAULT_MODEL = _env_first(
+    "SKYNET_CLAUDE_OLLAMA_DEFAULT_MODEL",
+    "OPENCLAW_OLLAMA_MODEL",
+    default="qwen2.5-coder:7b",
+)
+_CLAUDE_OLLAMA_AUTO_PULL = _env_bool(
+    "SKYNET_CLAUDE_OLLAMA_AUTO_PULL",
+    "OPENCLAW_OLLAMA_AUTO_PULL",
+    default=False,
+)
 try:
     _CLAUDE_OLLAMA_MIN_CONTEXT = int(os.environ.get("SKYNET_CLAUDE_OLLAMA_MIN_CONTEXT", "64000") or "64000")
 except ValueError:

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-02 16:08
+Last updated (UTC): 2026-03-03 10:58
 
 ## Current Goal
 
@@ -15,6 +15,12 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 - Preserved strict run-contract behavior and project-scoped run cache keys in coding/run handlers.
 - Added fallback behavior: only after non-infra gate failure, use `claude` native backend when `ANTHROPIC_API_KEY` is present; otherwise fail with `FALLBACK_UNAVAILABLE`.
 
+### 2026-03-03 Deploy-Reliability Update
+
+- Added coding-session preflight in Telegram coding loop to fail fast when Claude CLI is unavailable, instead of burning milestone attempts.
+- Added deterministic Telegram chat simulation test that reproduces claude-missing setup failures before milestone execution.
+- Fixed deploy/runtime env drift by wiring SKYNET_CLAUDE_OLLAMA_* vars in CI and adding backward-compatible OPENCLAW_OLLAMA_* fallbacks in gateway/agent config.
+- Set safer model/autopull defaults for fallback paths so runtime does not silently drift to large model pulls.
 ## Current Repo State
 
 - Branch: `main`
@@ -53,6 +59,12 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 - `pytest -q openclaw-agent/tests/test_executor.py openclaw-gateway/tests/test_bot_ui_contract.py openclaw-gateway/tests/test_coding_retry.py openclaw-gateway/tests/test_e2e.py openclaw-gateway/tests/test_integration.py`
   - `54 passed, 1 skipped`
 
+- python -m py_compile openclaw-gateway/config.py openclaw-agent/executor/actions.py
+  - pass
+- python -m pytest openclaw-gateway/tests/test_telegram_chat_simulation.py openclaw-gateway/tests/test_coding_retry.py openclaw-gateway/tests/test_e2e.py -q
+  - 29 passed
+- python -m pytest openclaw-agent/tests/test_executor.py -q
+  - 19 passed
 ## Trace Evidence
 
 - Live e2e test run via `tests/e2e_live.py` inside container
@@ -63,6 +75,8 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 - request_id=claude-ollama-revamp-20260302
 - task_id=strict-gates-ssh-first-rollout
 
+- request_id=telegram-coding-stall-20260303
+- task_id=deploy-env-alignment-and-preflight
 ## Documentation Updates
 
 - `docs/AGENT_HANDOFF.md`

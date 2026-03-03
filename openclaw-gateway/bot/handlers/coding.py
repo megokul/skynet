@@ -284,6 +284,61 @@ def _has_cached_run_contract(
     return _validate_cached_run_contract(bot_data.get(key)) is not None
 
 
+def _agent_status_line(report: str, agent: str) -> str | None:
+    target = f"{agent.strip().lower()}:"
+    for raw in (report or "").splitlines():
+        line = raw.strip()
+        if line.lower().startswith(target):
+            return line
+    return None
+
+
+def _agent_is_explicitly_unavailable(report: str, agent: str) -> bool:
+    line = _agent_status_line(report, agent)
+    if not line:
+        return False
+    lower = line.lower()
+    return "unavailable" in lower and "available" in lower
+
+
+async def _preflight_coding_environment(
+    *,
+    project: dict[str, Any],
+) -> tuple[bool, str]:
+    """
+    Validate coding prerequisites before milestone execution.
+
+    For claude_ollama projects we require the worker to report Claude CLI
+    availability. If telemetry is absent, do not hard-fail to keep backward
+    compatibility with older workers/tests.
+    """
+    if not _uses_claude_ollama(project):
+        return True, ""
+
+    try:
+        result = await send_action(
+            "check_coding_agents",
+            {},
+            timeout=20,
+            confirmed=True,
+        )
+    except Exception as exc:
+        return False, f"Preflight check failed: {type(exc).__name__}: {exc}"
+
+    if result.get("status") == "error":
+        return False, _action_error_text(result, "check_coding_agents")
+
+    report = str(_action_inner_result(result).get("stdout") or "")
+    if _agent_is_explicitly_unavailable(report, "claude"):
+        detail = _agent_status_line(report, "claude") or "claude: unavailable"
+        return (
+            False,
+            f"{detail}. Install Claude Code or set OPENCLAW_SSH_CLAUDE_BIN.",
+        )
+
+    return True, ""
+
+
 async def _record_gate_result(
     *,
     db,
@@ -1293,6 +1348,22 @@ async def _coding_loop(
             return
 
         # â”€â”€ Optional GitHub setup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        preflight_ok, preflight_error = await _preflight_coding_environment(
+            project=project,
+        )
+        if not preflight_ok:
+            await app.bot.send_message(
+                chat_id,
+                (
+                    "\u26A0\uFE0F Coding preflight failed.\n"
+                    f"<code>{html_mod.escape(preflight_error[:320])}</code>\n\n"
+                    "Fix worker setup and tap Retry Coding."
+                ),
+                parse_mode="HTML",
+                reply_markup=retry_coding(project["id"]),
+            )
+            return
+
         if do_github:
             await app.bot.send_message(chat_id, "ðŸ”§ Setting up GitHub repo and project folderâ€¦")
             try:
