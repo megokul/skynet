@@ -16,6 +16,7 @@ from bot.handlers.coding import (
     _MS_EVENT_KEY,
     _PROJECT_ID_KEY,
     _coding_loop,
+    _stop_request_key,
     retry_coding_handler,
 )
 from bot.keyboards import (
@@ -288,6 +289,152 @@ async def test_coding_loop_emits_progress_heartbeat_for_slow_agent():
     assert "Still working on coding agent attempt" in all_text, (
         f"Expected progress heartbeat while run_coding_agent is slow; messages: {sent_text}"
     )
+
+
+@pytest.mark.asyncio
+async def test_coding_loop_timeout_aborts_and_shows_retry():
+    project = {
+        "id": "proj_timeout",
+        "name": "Timeout Project",
+        "project_type": "Python App",
+        "status": "approved",
+        "coding_profile": "legacy",
+    }
+    user_id = 42
+    chat_id = 100
+
+    app = MagicMock()
+    app.bot_data = {}
+    sent_text: list[str] = []
+    sent_markups = []
+
+    async def _send(_cid, text, **kwargs):
+        sent_text.append(str(text))
+        if "reply_markup" in kwargs:
+            sent_markups.append(kwargs["reply_markup"])
+
+    app.bot.send_message = AsyncMock(side_effect=_send)
+
+    async def _approve_once():
+        event_key = _MS_EVENT_KEY.format(uid=user_id)
+        decision_key = _MS_DECISION_KEY.format(uid=user_id)
+        for _ in range(300):
+            if event_key in app.bot_data:
+                app.bot_data[decision_key] = "approve"
+                app.bot_data[event_key].set()
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("Milestone approval event was never created.")
+
+    async def _send_action_side_effect(action, params, **kwargs):
+        del params, kwargs
+        if action == "run_coding_agent":
+            await asyncio.sleep(3.0)
+            return {
+                "status": "success",
+                "result": {
+                    "returncode": 0,
+                    "stdout": "Wrote 1 file(s): timeout.py",
+                    "stderr": "",
+                    "files_written": ["timeout.py"],
+                },
+            }
+        return {
+            "status": "success",
+            "result": {"returncode": 0, "stdout": "", "stderr": ""},
+        }
+
+    approve_task = asyncio.create_task(_approve_once())
+
+    with (
+        patch("bot.handlers.coding._extract_milestones", new=AsyncMock(return_value=["Do work"])),
+        patch("bot.handlers.coding.is_worker_available", return_value=True),
+        patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)),
+        patch("bot.handlers.coding.create_task", new=AsyncMock(return_value={"id": 601})),
+        patch("bot.handlers.coding.update_task_status", new=AsyncMock()),
+        patch("bot.handlers.coding.cfg.CODING_PROGRESS_HEARTBEAT_SECONDS", 1),
+        patch("bot.handlers.coding.cfg.CODING_AGENT_MAX_WAIT_SECONDS", 2),
+    ):
+        await _coding_loop(app, chat_id, user_id, project, do_github=False)
+
+    await approve_task
+
+    all_text = "\n".join(sent_text)
+    assert "timed out while waiting for the coding agent" in all_text.lower()
+    assert sent_markups, "Expected retry keyboard on timeout."
+    rows = _callbacks(sent_markups[-1])
+    assert rows[0] == [f"{CB_CODING_RETRY_PREFIX}{project['id']}"]
+
+
+@pytest.mark.asyncio
+async def test_coding_loop_user_stop_interrupts_slow_agent():
+    project = {
+        "id": "proj_user_stop",
+        "name": "Stop Project",
+        "project_type": "Python App",
+        "status": "approved",
+        "coding_profile": "legacy",
+    }
+    user_id = 42
+    chat_id = 100
+
+    app = MagicMock()
+    app.bot_data = {}
+    sent_text: list[str] = []
+
+    async def _send(_cid, text, **_kwargs):
+        sent_text.append(str(text))
+
+    app.bot.send_message = AsyncMock(side_effect=_send)
+
+    async def _approve_once():
+        event_key = _MS_EVENT_KEY.format(uid=user_id)
+        decision_key = _MS_DECISION_KEY.format(uid=user_id)
+        for _ in range(300):
+            if event_key in app.bot_data:
+                app.bot_data[decision_key] = "approve"
+                app.bot_data[event_key].set()
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("Milestone approval event was never created.")
+
+    async def _send_action_side_effect(action, params, **kwargs):
+        del params, kwargs
+        if action == "run_coding_agent":
+            app.bot_data[_stop_request_key(user_id)] = True
+            await asyncio.sleep(2.5)
+            return {
+                "status": "success",
+                "result": {
+                    "returncode": 0,
+                    "stdout": "Wrote 1 file(s): stop.py",
+                    "stderr": "",
+                    "files_written": ["stop.py"],
+                },
+            }
+        return {
+            "status": "success",
+            "result": {"returncode": 0, "stdout": "", "stderr": ""},
+        }
+
+    approve_task = asyncio.create_task(_approve_once())
+
+    with (
+        patch("bot.handlers.coding._extract_milestones", new=AsyncMock(return_value=["Do work"])),
+        patch("bot.handlers.coding.is_worker_available", return_value=True),
+        patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)),
+        patch("bot.handlers.coding.create_task", new=AsyncMock(return_value={"id": 602})),
+        patch("bot.handlers.coding.update_task_status", new=AsyncMock()),
+        patch("bot.handlers.coding.cfg.CODING_PROGRESS_HEARTBEAT_SECONDS", 1),
+        patch("bot.handlers.coding.cfg.CODING_AGENT_MAX_WAIT_SECONDS", 10),
+    ):
+        await _coding_loop(app, chat_id, user_id, project, do_github=False)
+
+    await approve_task
+
+    all_text = "\n".join(sent_text)
+    assert "session stopped while executing milestone" in all_text.lower()
+    assert _stop_request_key(user_id) not in app.bot_data
 
 
 @pytest.mark.asyncio

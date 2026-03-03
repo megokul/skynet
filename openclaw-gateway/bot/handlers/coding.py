@@ -15,6 +15,7 @@ Milestone approvals are signalled via asyncio.Event stored in bot_data.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html as html_mod
 import json
 import logging
@@ -114,6 +115,7 @@ def _parse_code_blocks(text: str) -> list[tuple[str, str]]:
 _MS_EVENT_KEY    = "ms_event_{uid}"
 _MS_DECISION_KEY = "ms_decision_{uid}"
 _ACTIVE_LOOP_KEY = "coding_loop_{uid}"   # stores the asyncio.Task
+_STOP_REQUEST_KEY = "coding_stop_requested_{uid}"
 _GITHUB_PREF_KEY = "coding_github_pref_{uid}_{pid}"
 
 # User_data key set by project handler after save
@@ -127,6 +129,10 @@ def _run_files_key(user_id: int, project_id: str) -> str:
 
 def _run_contract_key(user_id: int, project_id: str) -> str:
     return f"run_contract_{user_id}_{project_id}"
+
+
+def _stop_request_key(user_id: int) -> str:
+    return _STOP_REQUEST_KEY.format(uid=user_id)
 
 
 def _quality_profile(project: dict[str, Any] | None) -> str:
@@ -189,10 +195,12 @@ async def _send_action_with_heartbeat(
     *,
     app,
     chat_id: int,
+    user_id: int | None,
     action: str,
     params: dict[str, Any],
     timeout: int,
     label: str,
+    max_wait_seconds: int | None = None,
     confirmed: bool = True,
 ) -> dict[str, Any]:
     """
@@ -223,6 +231,12 @@ async def _send_action_with_heartbeat(
                 return await asyncio.wait_for(asyncio.shield(pending), timeout=interval)
             except asyncio.TimeoutError:
                 elapsed += interval
+                if user_id is not None and app.bot_data.get(_stop_request_key(user_id)):
+                    raise RuntimeError("STOP_REQUESTED: session stop requested by user")
+                if max_wait_seconds is not None and elapsed >= max_wait_seconds:
+                    raise RuntimeError(
+                        f"WAIT_TIMEOUT: {label} exceeded {max_wait_seconds}s"
+                    )
                 await app.bot.send_message(
                     chat_id,
                     f"\u23f3 Still working on {label} ({elapsed}s elapsed)...",
@@ -230,6 +244,8 @@ async def _send_action_with_heartbeat(
     finally:
         if not pending.done():
             pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending
 
 
 def _is_infra_error(message: str) -> bool:
@@ -1096,6 +1112,7 @@ async def _start_coding_loop(
     context.bot_data.pop(f"run_project_{user_id}", None)
     context.bot_data.pop(_run_files_key(user_id, project["id"]), None)
     context.bot_data.pop(_run_contract_key(user_id, project["id"]), None)
+    context.bot_data.pop(_stop_request_key(user_id), None)
     slug = _slugify(project["name"])
     working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
 
@@ -1246,15 +1263,26 @@ async def stop_milestone_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """User tapped ðŸ›‘ Stop Session â€” signal the coding loop to abort."""
-    await update.callback_query.answer("Stoppingâ€¦")
-    user_id   = update.effective_user.id
+    """User tapped Stop Session; request graceful cancellation."""
+    await update.callback_query.answer("Stopping...")
+    user_id = update.effective_user.id
+    context.bot_data[_stop_request_key(user_id)] = True
+
     event_key = _MS_EVENT_KEY.format(uid=user_id)
     event: asyncio.Event | None = context.bot_data.get(event_key)
     if event:
         context.bot_data[_MS_DECISION_KEY.format(uid=user_id)] = "stop"
         event.set()
+        return
+
+    loop_key = _ACTIVE_LOOP_KEY.format(uid=user_id)
+    active_loop = context.bot_data.get(loop_key)
+    if active_loop and not active_loop.done():
+        await update.callback_query.message.reply_text(
+            "Stopping current milestone execution... this may take a few seconds."
+        )
     else:
+        context.bot_data.pop(_stop_request_key(user_id), None)
         await update.callback_query.message.reply_text(
             "No active coding session to stop."
         )
@@ -1375,9 +1403,11 @@ async def _coding_loop(
     strict_mode = _is_strict_project(project)
     run_files_cache_key = _run_files_key(user_id, project["id"])
     run_contract_cache_key = _run_contract_key(user_id, project["id"])
+    stop_request_cache_key = _stop_request_key(user_id)
     last_valid_run_contract: dict[str, Any] | None = None
 
     try:
+        app.bot_data.pop(stop_request_cache_key, None)
         # â”€â”€ Always create the project folder on the worker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if is_worker_available():
             try:
@@ -1505,6 +1535,15 @@ async def _coding_loop(
 
         # â”€â”€ Milestone loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         for i, milestone_text in enumerate(milestones, 1):
+            if app.bot_data.get(stop_request_cache_key):
+                app.bot_data.pop(stop_request_cache_key, None)
+                await app.bot.send_message(
+                    chat_id,
+                    f"🛑 Session stopped at milestone {i}/{total}.\n"
+                    "Use /status to review completed milestones.",
+                )
+                return
+
             # Register approval event before rendering buttons so fast taps are not lost.
             event = asyncio.Event()
             event_key    = _MS_EVENT_KEY.format(uid=user_id)
@@ -1615,6 +1654,7 @@ async def _coding_loop(
                         result = await _send_action_with_heartbeat(
                             app=app,
                             chat_id=chat_id,
+                            user_id=user_id,
                             action="run_coding_agent",
                             params={
                                 "agent": "claude",
@@ -1627,6 +1667,10 @@ async def _coding_loop(
                             },
                             timeout=1800,
                             label=f"coding agent attempt {attempt}/{max_attempts}",
+                            max_wait_seconds=max(
+                                1,
+                                int(getattr(cfg, "CODING_AGENT_MAX_WAIT_SECONDS", 900) or 900),
+                            ),
                         )
                         if result.get("status") == "error":
                             raise RuntimeError(result.get("error", "run_coding_agent failed"))
@@ -1696,6 +1740,7 @@ async def _coding_loop(
                             result = await _send_action_with_heartbeat(
                                 app=app,
                                 chat_id=chat_id,
+                                user_id=user_id,
                                 action="run_coding_agent",
                                 params={
                                     "agent": "claude",
@@ -1706,6 +1751,10 @@ async def _coding_loop(
                                 },
                                 timeout=1800,
                                 label=f"coding agent attempt {attempt}/{max_attempts}",
+                                max_wait_seconds=max(
+                                    1,
+                                    int(getattr(cfg, "CODING_AGENT_MAX_WAIT_SECONDS", 900) or 900),
+                                ),
                             )
                             if result.get("status") == "error":
                                 raise RuntimeError(result.get("error", "run_coding_agent failed"))
@@ -1795,7 +1844,40 @@ async def _coding_loop(
                 await app.bot.send_message(chat_id, notice)
 
             except Exception as exc:
-                err = str(exc)[:300]
+                err = (str(exc).strip() or type(exc).__name__)[:300]
+                if err.startswith("STOP_REQUESTED:"):
+                    await update_task_status(
+                        db,
+                        task_rec["id"],
+                        status="failed",
+                        error_message="STOP_REQUESTED",
+                    )
+                    app.bot_data.pop(stop_request_cache_key, None)
+                    await app.bot.send_message(
+                        chat_id,
+                        f"🛑 Session stopped while executing milestone {i}/{total}.\n"
+                        "Use /status to review progress.",
+                    )
+                    return
+                if err.startswith("WAIT_TIMEOUT:"):
+                    await update_task_status(
+                        db,
+                        task_rec["id"],
+                        status="failed",
+                        error_message=err,
+                    )
+                    failed_milestones += 1
+                    await app.bot.send_message(
+                        chat_id,
+                        (
+                            f"⚠️ Milestone {i} timed out while waiting for the coding agent.\n"
+                            f"<code>{html_mod.escape(err)}</code>\n\n"
+                            "Tap Retry Coding after checking worker health."
+                        ),
+                        parse_mode="HTML",
+                        reply_markup=retry_coding(project["id"]),
+                    )
+                    return
                 await update_task_status(
                     db, task_rec["id"], status="failed", error_message=err
                 )
@@ -1861,6 +1943,13 @@ async def _coding_loop(
             "Use /status to see what was completed.",
             reply_markup=main_menu(),
         )
+    finally:
+        app.bot_data.pop(stop_request_cache_key, None)
+        app.bot_data.pop(_MS_EVENT_KEY.format(uid=user_id), None)
+        app.bot_data.pop(_MS_DECISION_KEY.format(uid=user_id), None)
+        loop_key = _ACTIVE_LOOP_KEY.format(uid=user_id)
+        if app.bot_data.get(loop_key) is asyncio.current_task():
+            app.bot_data.pop(loop_key, None)
 
 
 # â”€â”€ Run Project â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
