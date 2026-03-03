@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-03 11:50
+Last updated (UTC): 2026-03-03 15:32
 
 ## Current Goal
 
@@ -31,6 +31,16 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 - Added ANSI/control-sequence cleanup in PowerShell output sanitization so PTY output remains readable in logs and summaries.
 - Reworked `openclaw-gateway/tests/e2e_live.py` into a structured JSONL live trace runner (`SKYNET_LIVE_TRACE_FILE` override + periodic action wait heartbeats).
 - Expanded `openclaw-gateway/tests/test_e2e_conversation_live.py` with step/action/heartbeat trace logging to make Telegram live E2E stalls diagnosable.
+
+### 2026-03-03 Engineering-Policy + Strict-Gates Stabilization
+
+- Root-caused deploy failures in GitHub Actions (`Path Guard -> Check engineering policy`) to missing `docs/AGENT_HANDOFF.md` update in commits that changed code paths.
+- Added strict-gate reliability fixes so missing Python tooling no longer causes hard false negatives:
+  - Auto-install `ruff` and retry lint once when unavailable.
+  - Auto-install `pytest` and retry tests once when unavailable.
+  - Auto-bootstrap `tests/test_smoke.py` for Python strict-mode projects when no tests are detected.
+- Confirmed full live conversation flow (`hi` -> project creation -> coding -> run project) passes with strict gates enabled using local SSH profile.
+- Hardened provider registration for optional SDK absence and improved live E2E env loading (`SKYNET_ENV_FILE`).
 ## Current Repo State
 
 - Branch: `main`
@@ -85,6 +95,12 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
   - 32 passed
 - python -m pytest openclaw-gateway/tests/test_e2e_conversation_live.py -q
   - 1 skipped (requires `SKYNET_E2E_LIVE=1`)
+- `python -m pytest -q openclaw-gateway/tests/test_coding_retry.py`
+  - `9 passed`
+- `python -m pytest -q openclaw-gateway/tests/test_conversation_e2e_repo_push.py`
+  - `1 passed`
+- `$env:SKYNET_ENV_FILE='.env.local-e2e'; python openclaw-gateway/tests/e2e_live.py`
+  - `1 passed` (`test_live_conversation_real_planner_codegen_and_github_push`, ~236s)
 ## Trace Evidence
 
 - Live e2e test run via `tests/e2e_live.py` inside container
@@ -101,6 +117,10 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 - task_id=claude-ssh-pty-stall-fix
 - skynet.trace.log
 - openclaw-gateway/tests/.artifacts/live-postfix-20260303-114629.log
+- request_id=strict-gates-stabilization-20260303
+- task_id=live-conversation-e2e-policy-compliance
+- openclaw-gateway/tests/.artifacts/e2e-live-1772550136.log
+- openclaw-gateway/tests/.artifacts/e2e-live-1772550666.log
 ## Documentation Updates
 
 - `docs/AGENT_HANDOFF.md`
