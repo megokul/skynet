@@ -152,6 +152,11 @@ def _require_param(params: dict[str, Any], key: str) -> str:
     return value
 
 
+def _python_module_missing(result: dict[str, Any], module: str) -> bool:
+    text = f"{result.get('stderr', '')}\n{result.get('stdout', '')}".lower()
+    return f"no module named {module.lower()}" in text
+
+
 # ------------------------------------------------------------------
 # AUTO-tier actions
 # ------------------------------------------------------------------
@@ -172,7 +177,22 @@ async def run_tests(params: dict[str, Any]) -> dict[str, Any]:
     runner = params.get("runner", "pytest")
 
     if runner == "pytest":
-        return await _run(["python", "-m", "pytest", "--tb=short", "-q"], cwd=cwd)
+        result = await _run(["python", "-m", "pytest", "--tb=short", "-q"], cwd=cwd)
+        if result["returncode"] != 0 and _python_module_missing(result, "pytest"):
+            install = await _run(
+                ["python", "-m", "pip", "install", "pytest"],
+                cwd=cwd,
+                timeout=300,
+            )
+            if install["returncode"] != 0:
+                detail = str(install.get("stderr") or install.get("stdout") or "").strip()
+                base_err = str(result.get("stderr") or "").strip()
+                result["stderr"] = f"{base_err}\nPYTEST_SETUP_ERROR: {detail}".strip()
+                return result
+            retry = await _run(["python", "-m", "pytest", "--tb=short", "-q"], cwd=cwd)
+            retry["stdout"] = f"Auto-installed pytest.\n{retry.get('stdout', '')}".strip()
+            return retry
+        return result
     elif runner == "npm":
         return await _run(["npm", "test"], cwd=cwd)
     else:
@@ -189,7 +209,22 @@ async def lint_project(params: dict[str, Any]) -> dict[str, Any]:
     linter = params.get("linter", "ruff")
 
     if linter == "ruff":
-        return await _run(["python", "-m", "ruff", "check", "."], cwd=cwd)
+        result = await _run(["python", "-m", "ruff", "check", "."], cwd=cwd)
+        if result["returncode"] != 0 and _python_module_missing(result, "ruff"):
+            install = await _run(
+                ["python", "-m", "pip", "install", "ruff"],
+                cwd=cwd,
+                timeout=300,
+            )
+            if install["returncode"] != 0:
+                detail = str(install.get("stderr") or install.get("stdout") or "").strip()
+                base_err = str(result.get("stderr") or "").strip()
+                result["stderr"] = f"{base_err}\nRUFF_SETUP_ERROR: {detail}".strip()
+                return result
+            retry = await _run(["python", "-m", "ruff", "check", "."], cwd=cwd)
+            retry["stdout"] = f"Auto-installed ruff.\n{retry.get('stdout', '')}".strip()
+            return retry
+        return result
     elif linter == "eslint":
         return await _run(["npx", "eslint", "."], cwd=cwd)
     else:

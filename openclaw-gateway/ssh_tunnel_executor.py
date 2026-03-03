@@ -88,6 +88,11 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _python_module_missing(result: dict[str, Any], module: str) -> bool:
+    text = f"{result.get('stderr', '')}\n{result.get('stdout', '')}".lower()
+    return f"no module named {module.lower()}" in text
+
+
 def _parse_roots(raw: str, remote_os: str) -> list[str]:
     """
     Parse roots.
@@ -467,6 +472,32 @@ class SSHTunnelExecutor:
             "openai": os.environ.get("OPENCLAW_CLINE_OPENAI_BASE_URL", "").strip(),
             "anthropic": os.environ.get("OPENCLAW_CLINE_ANTHROPIC_BASE_URL", "").strip(),
         }
+        allowed_permission_modes = {
+            "acceptEdits",
+            "bypassPermissions",
+            "default",
+            "dontAsk",
+            "plan",
+        }
+        configured_permission_mode = os.environ.get(
+            "OPENCLAW_SSH_CLAUDE_PERMISSION_MODE",
+            "bypassPermissions",
+        ).strip()
+        if configured_permission_mode and configured_permission_mode not in allowed_permission_modes:
+            _log.warning(
+                "Invalid OPENCLAW_SSH_CLAUDE_PERMISSION_MODE=%r, falling back to bypassPermissions",
+                configured_permission_mode,
+            )
+            configured_permission_mode = "bypassPermissions"
+        self._claude_permission_mode = configured_permission_mode
+        self._claude_disable_slash_commands = _env_bool(
+            "OPENCLAW_SSH_CLAUDE_DISABLE_SLASH_COMMANDS",
+            False,
+        )
+        self._claude_dangerously_skip_permissions = _env_bool(
+            "OPENCLAW_SSH_CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS",
+            False,
+        )
 
     def is_configured(self) -> bool:
         """
@@ -875,6 +906,171 @@ class SSHTunnelExecutor:
             err = _sanitize_powershell_output(err)
         rc = stdout.channel.recv_exit_status()
         return {"returncode": int(rc), "stdout": out, "stderr": err}
+
+    def _persist_generated_files_from_blocks(
+        self,
+        *,
+        client: paramiko.SSHClient,
+        generated: str,
+        working_dir: str | None,
+    ) -> tuple[list[str], list[str]]:
+        pattern = re.compile(r"```([^\n`]+)\r?\n(.*?)```", re.DOTALL)
+        files_written: list[str] = []
+        errors: list[str] = []
+
+        # Language tag -> file extension for fallback naming.
+        lang_ext = {
+            "python": ".py", "py": ".py", "javascript": ".js", "js": ".js",
+            "typescript": ".ts", "ts": ".ts", "java": ".java", "c": ".c",
+            "cpp": ".cpp", "c++": ".cpp", "go": ".go", "rust": ".rs",
+            "ruby": ".rb", "bash": ".sh", "sh": ".sh", "html": ".html",
+            "css": ".css", "json": ".json", "yaml": ".yaml", "yml": ".yaml",
+            "toml": ".toml", "sql": ".sql", "r": ".r", "swift": ".swift",
+            "kotlin": ".kt", "dart": ".dart", "lua": ".lua", "perl": ".pl",
+        }
+
+        cwd_norm = _norm_remote_path(working_dir, self.remote_os) if working_dir else ""
+
+        file_blocks: list[tuple[str, str]] = []
+        lang_blocks: list[tuple[str, str]] = []
+        for match in pattern.finditer(generated or ""):
+            tag = match.group(1).strip()
+            content = match.group(2)
+            looks_like_file = (
+                "." in tag
+                or "/" in tag
+                or "\\" in tag
+                or (
+                    " " not in tag
+                    and tag.lower() not in lang_ext
+                    and re.match(r"^[A-Za-z0-9_.\\/-]+$", tag) is not None
+                )
+            )
+            if looks_like_file:
+                file_blocks.append((tag, content))
+            else:
+                lang_blocks.append((tag, content))
+
+        if not file_blocks and lang_blocks:
+            for idx, (tag, content) in enumerate(lang_blocks):
+                ext = lang_ext.get(tag.lower(), f".{tag.lower()}")
+                fallback = f"main{ext}" if idx == 0 else f"file{idx}{ext}"
+                file_blocks.append((fallback, content))
+
+        # Avoid foo.py + foo/bar.py import shadowing.
+        top_level_stems = set()
+        for fn, _ in file_blocks:
+            parts = fn.replace("\\", "/").split("/")
+            if len(parts) == 1 and parts[0].endswith(".py"):
+                top_level_stems.add(parts[0].rsplit(".", 1)[0])
+
+        shadow_renames: dict[str, str] = {}
+        for stem in top_level_stems:
+            for fn, _ in file_blocks:
+                parts = fn.replace("\\", "/").split("/")
+                if len(parts) > 1 and parts[0] == stem:
+                    shadow_renames[stem] = "lib"
+                    break
+
+        if shadow_renames:
+            fixed_blocks: list[tuple[str, str]] = []
+            for fn, content in file_blocks:
+                parts = fn.replace("\\", "/").split("/")
+                if len(parts) > 1 and parts[0] in shadow_renames:
+                    parts[0] = shadow_renames[parts[0]]
+                    fn = "/".join(parts)
+                for old_name, new_name in shadow_renames.items():
+                    content = content.replace(f"from {old_name}.", f"from {new_name}.")
+                    content = content.replace(f"import {old_name}.", f"import {new_name}.")
+                fixed_blocks.append((fn, content))
+            file_blocks = fixed_blocks
+
+        sftp = client.open_sftp()
+        try:
+            for filename, content in file_blocks:
+                if cwd_norm and not os.path.isabs(filename):
+                    if self.remote_os == "windows":
+                        remote_path = cwd_norm.rstrip("\\") + "\\" + filename.replace("/", "\\")
+                    else:
+                        remote_path = cwd_norm.rstrip("/") + "/" + filename.lstrip("/")
+                else:
+                    remote_path = _norm_remote_path(filename, self.remote_os)
+
+                try:
+                    if self.remote_os == "windows":
+                        parent = str(PureWindowsPath(remote_path).parent)
+                    else:
+                        parent = str(PurePosixPath(remote_path).parent)
+                    self._sftp_makedirs(sftp, parent)
+                    with sftp.open(remote_path, "w") as fh:
+                        fh.write(content)
+                    files_written.append(filename)
+                except Exception as exc:
+                    errors.append(f"{filename}: {exc}")
+        finally:
+            sftp.close()
+
+        return files_written, errors
+
+    def _snapshot_working_tree(
+        self,
+        *,
+        client: paramiko.SSHClient,
+        working_dir: str | None,
+    ) -> dict[str, tuple[int, int]]:
+        if not working_dir:
+            return {}
+        root = _norm_remote_path(working_dir, self.remote_os)
+        snapshot: dict[str, tuple[int, int]] = {}
+        max_entries = 5000
+        max_depth = 10
+        skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv"}
+
+        sftp = client.open_sftp()
+        try:
+            stack: list[tuple[str, int]] = [(root, 0)]
+            while stack and len(snapshot) < max_entries:
+                current, depth = stack.pop()
+                try:
+                    entries = sftp.listdir_attr(current)
+                except OSError:
+                    continue
+                for entry in entries:
+                    if len(snapshot) >= max_entries:
+                        break
+                    name = entry.filename
+                    path = self._norm_join(current, name)
+                    if stat.S_ISDIR(entry.st_mode):
+                        if depth < max_depth and name not in skip_dirs:
+                            stack.append((path, depth + 1))
+                        continue
+                    rel = self._relative_to_working_root(root, path)
+                    if rel:
+                        snapshot[rel] = (int(entry.st_size), int(getattr(entry, "st_mtime", 0) or 0))
+        finally:
+            sftp.close()
+        return snapshot
+
+    def _relative_to_working_root(self, root: str, path: str) -> str:
+        root_norm = _norm_remote_path(root, self.remote_os).replace("\\", "/").rstrip("/")
+        path_norm = _norm_remote_path(path, self.remote_os).replace("\\", "/")
+        if path_norm == root_norm:
+            return ""
+        prefix = root_norm + "/"
+        if path_norm.startswith(prefix):
+            return path_norm[len(prefix):]
+        return path_norm.rsplit("/", 1)[-1]
+
+    @staticmethod
+    def _diff_snapshots(
+        before: dict[str, tuple[int, int]],
+        after: dict[str, tuple[int, int]],
+    ) -> list[str]:
+        changed: list[str] = []
+        for rel_path, meta in after.items():
+            if before.get(rel_path) != meta:
+                changed.append(rel_path)
+        return sorted(changed)
 
     # ------------------------------------------------------------------
     # Ollama coding agent — EC2 calls Ollama on laptop via SSH, all
@@ -1288,32 +1484,64 @@ class SSHTunnelExecutor:
                     ),
                 }
 
-        if agent == "claude":
-            args = [binary]
-            if model:
-                args.extend(["--model", model])
-            args.extend(["-p", prompt])
-            # Claude CLI can block indefinitely on SSH non-PTY channels.
-            return self._run_command(client, args, cwd=cwd, timeout=timeout, use_pty=True)
+        before_snapshot = self._snapshot_working_tree(client=client, working_dir=cwd)
+        run: dict[str, Any]
 
-        args = [binary, *self._coding_prefix[agent], prompt]
-        initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
-        if agent != "cline":
-            return initial
-        if initial["returncode"] == 0:
-            return initial
-        if not self._cline_auto_switch:
-            return initial
-        if not self._is_retryable_cline_failure(initial):
-            return initial
-        return self._run_cline_with_auto_switch(
-            client=client,
-            binary=binary,
-            prompt=prompt,
-            cwd=cwd if isinstance(cwd, str) else None,
-            timeout=timeout,
-            initial_result=initial,
-        )
+        if agent == "claude":
+            args = self._build_claude_command_args(
+                binary=binary,
+                prompt=prompt,
+                model=model,
+            )
+            # Claude CLI can block indefinitely on SSH non-PTY channels.
+            run = self._run_command(client, args, cwd=cwd, timeout=timeout, use_pty=True)
+        else:
+            args = [binary, *self._coding_prefix[agent], prompt]
+            initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
+            if agent != "cline":
+                run = initial
+            elif initial["returncode"] == 0:
+                run = initial
+            elif not self._cline_auto_switch:
+                run = initial
+            elif not self._is_retryable_cline_failure(initial):
+                run = initial
+            else:
+                run = self._run_cline_with_auto_switch(
+                    client=client,
+                    binary=binary,
+                    prompt=prompt,
+                    cwd=cwd if isinstance(cwd, str) else None,
+                    timeout=timeout,
+                    initial_result=initial,
+                )
+
+        if int(run.get("returncode", 1)) != 0:
+            return run
+
+        parsed_written: list[str] = []
+        parse_errors: list[str] = []
+        if agent == "claude":
+            generated = str(run.get("stdout") or "")
+            parsed_written, parse_errors = self._persist_generated_files_from_blocks(
+                client=client,
+                generated=generated,
+                working_dir=cwd,
+            )
+        after_snapshot = self._snapshot_working_tree(client=client, working_dir=cwd)
+        changed_written = self._diff_snapshots(before_snapshot, after_snapshot)
+
+        combined: list[str] = []
+        for path in [*parsed_written, *changed_written]:
+            if path not in combined:
+                combined.append(path)
+        if combined:
+            run["files_written"] = combined
+        if parse_errors:
+            warning = "; ".join(parse_errors)[:1200]
+            current_err = str(run.get("stderr") or "").strip()
+            run["stderr"] = f"{current_err}\nFILE_WRITE_WARNINGS: {warning}".strip()
+        return run
 
     def _run_coding_agent_claude_ollama(
         self,
@@ -1339,6 +1567,7 @@ class SSHTunnelExecutor:
                     ),
                 }
 
+        before_snapshot = self._snapshot_working_tree(client=client, working_dir=cwd)
         check = self._ollama_check_model(client, base_url=base_url, model=model)
         if not check["reachable"]:
             return {
@@ -1381,7 +1610,12 @@ class SSHTunnelExecutor:
                     ),
                 }
 
-        args = [binary, "--model", model, "-p", prompt]
+        enforced_prompt = f"{self._OLLAMA_SYSTEM_PROMPT}\nTask:\n{prompt}"
+        args = self._build_claude_command_args(
+            binary=binary,
+            prompt=enforced_prompt,
+            model=model,
+        )
         env = {
             "ANTHROPIC_AUTH_TOKEN": bot_cfg.CLAUDE_OLLAMA_AUTH_TOKEN or "ollama",
             "ANTHROPIC_API_KEY": "",
@@ -1400,7 +1634,47 @@ class SSHTunnelExecutor:
         if warning:
             current_out = str(run.get("stdout") or "").strip()
             run["stdout"] = f"{warning}\n{current_out}".strip()
+        if int(run.get("returncode", 1)) != 0:
+            return run
+
+        generated = str(run.get("stdout") or "")
+        parsed_written, parse_errors = self._persist_generated_files_from_blocks(
+            client=client,
+            generated=generated,
+            working_dir=cwd,
+        )
+        after_snapshot = self._snapshot_working_tree(client=client, working_dir=cwd)
+        changed_written = self._diff_snapshots(before_snapshot, after_snapshot)
+        combined: list[str] = []
+        for path in [*parsed_written, *changed_written]:
+            if path not in combined:
+                combined.append(path)
+        if combined:
+            run["files_written"] = combined
+        if parse_errors:
+            warning = "; ".join(parse_errors)[:1200]
+            current_err = str(run.get("stderr") or "").strip()
+            run["stderr"] = f"{current_err}\nFILE_WRITE_WARNINGS: {warning}".strip()
         return run
+
+    def _build_claude_command_args(
+        self,
+        *,
+        binary: str,
+        prompt: str,
+        model: str = "",
+    ) -> list[str]:
+        args = [binary]
+        if model:
+            args.extend(["--model", model])
+        if self._claude_permission_mode:
+            args.extend(["--permission-mode", self._claude_permission_mode])
+        if self._claude_disable_slash_commands:
+            args.append("--disable-slash-commands")
+        if self._claude_dangerously_skip_permissions:
+            args.append("--dangerously-skip-permissions")
+        args.extend(["-p", prompt])
+        return args
 
     def _run_command_action(self, client: paramiko.SSHClient, action: str, params: dict[str, Any]) -> dict[str, Any]:
         """
@@ -1436,7 +1710,23 @@ class SSHTunnelExecutor:
             cwd = self._require_str(params, "working_dir")
             runner = params.get("runner", "pytest")
             if runner == "pytest":
-                return self._run_command(client, ["python", "-m", "pytest", "--tb=short", "-q"], cwd=cwd)
+                result = self._run_command(client, ["python", "-m", "pytest", "--tb=short", "-q"], cwd=cwd)
+                if int(result.get("returncode", 1)) != 0 and _python_module_missing(result, "pytest"):
+                    install = self._run_command(
+                        client,
+                        ["python", "-m", "pip", "install", "pytest"],
+                        cwd=cwd,
+                        timeout=300,
+                    )
+                    if int(install.get("returncode", 1)) != 0:
+                        detail = str(install.get("stderr") or install.get("stdout") or "").strip()
+                        base_err = str(result.get("stderr") or "").strip()
+                        result["stderr"] = f"{base_err}\nPYTEST_SETUP_ERROR: {detail}".strip()
+                        return result
+                    retry = self._run_command(client, ["python", "-m", "pytest", "--tb=short", "-q"], cwd=cwd)
+                    retry["stdout"] = f"Auto-installed pytest.\n{retry.get('stdout', '')}".strip()
+                    return retry
+                return result
             if runner == "npm":
                 return self._run_command(client, ["npm", "test"], cwd=cwd)
             return {"returncode": 1, "stdout": "", "stderr": f"Unknown runner: {runner}"}
@@ -1445,7 +1735,23 @@ class SSHTunnelExecutor:
             cwd = self._require_str(params, "working_dir")
             linter = params.get("linter", "ruff")
             if linter == "ruff":
-                return self._run_command(client, ["python", "-m", "ruff", "check", "."], cwd=cwd)
+                result = self._run_command(client, ["python", "-m", "ruff", "check", "."], cwd=cwd)
+                if int(result.get("returncode", 1)) != 0 and _python_module_missing(result, "ruff"):
+                    install = self._run_command(
+                        client,
+                        ["python", "-m", "pip", "install", "ruff"],
+                        cwd=cwd,
+                        timeout=300,
+                    )
+                    if int(install.get("returncode", 1)) != 0:
+                        detail = str(install.get("stderr") or install.get("stdout") or "").strip()
+                        base_err = str(result.get("stderr") or "").strip()
+                        result["stderr"] = f"{base_err}\nRUFF_SETUP_ERROR: {detail}".strip()
+                        return result
+                    retry = self._run_command(client, ["python", "-m", "ruff", "check", "."], cwd=cwd)
+                    retry["stdout"] = f"Auto-installed ruff.\n{retry.get('stdout', '')}".strip()
+                    return retry
+                return result
             if linter == "eslint":
                 return self._run_command(client, ["npx", "eslint", "."], cwd=cwd)
             return {"returncode": 1, "stdout": "", "stderr": f"Unknown linter: {linter}"}
@@ -2145,8 +2451,9 @@ class SSHTunnelExecutor:
             if self.remote_os == "windows":
                 ps = (
                     f"$p={_ps_quote(filepath)}; "
-                    "$c=Get-Content -LiteralPath $p -Raw -Encoding UTF8; "
-                    "if ($c.Length -gt 65536) { $c.Substring(0,65536) + \"`n... (truncated at 64 KB)\" } else { $c }"
+                    "if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { Write-Error \"File not found: $p\"; exit 1 }; "
+                    "$c=[System.IO.File]::ReadAllText($p,[System.Text.Encoding]::UTF8); "
+                    "if ($c.Length -gt 65536) { $c.Substring(0,65536) + [Environment]::NewLine + '... (truncated at 64 KB)' } else { $c }"
                 )
                 return self._run_command(client, ["powershell", "-NoProfile", "-Command", ps], cwd=None)
             return {"returncode": 1, "stdout": "", "stderr": str(exc)}

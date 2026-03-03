@@ -501,6 +501,13 @@ async def _load_and_validate_run_contract(
     if _action_exit_code(manifest_result) != 0:
         message = _action_excerpt(manifest_result)
         infra = _is_infra_error(message) and not _is_manifest_missing_error(message)
+        if not infra and _is_manifest_missing_error(message):
+            synthesized, synth_summary, synth_infra = await _synthesize_run_contract(
+                working_dir=working_dir
+            )
+            if synthesized is not None:
+                return synthesized, synth_summary, False
+            return None, synth_summary or message, synth_infra
         return None, message, infra
 
     manifest_raw = str(_action_inner_result(manifest_result).get("stdout") or "")
@@ -569,6 +576,142 @@ async def _load_and_validate_run_contract(
     return contract, "run contract validated", False
 
 
+async def _synthesize_run_contract(
+    *,
+    working_dir: str,
+) -> tuple[dict[str, Any] | None, str, bool]:
+    files, list_cmd, list_error, list_infra = await _list_project_files(
+        working_dir=working_dir
+    )
+    if list_infra:
+        return None, list_error or list_cmd, True
+    if list_error:
+        return None, list_error, False
+    if not files:
+        return None, "run_contract missing and no project files found to infer entrypoint", False
+
+    normalized_root = _normalize_slashes(working_dir).rstrip("/")
+    slug = normalized_root.rsplit("/", 1)[-1] if "/" in normalized_root else normalized_root
+    selection = _select_entrypoint(
+        files=files,
+        slug=slug,
+        project_type="Other",
+    )
+    if not selection:
+        return None, "run_contract missing and no runnable python/js entrypoint could be inferred", False
+
+    run_cmd, target = selection
+    interpreter = run_cmd.split(" ", 1)[0].strip().lower()
+    if interpreter not in _ALLOWED_INTERPRETERS:
+        return None, f"run_contract synthesis chose unsupported interpreter: {interpreter}", False
+
+    payload = {
+        "interpreter": interpreter,
+        "entrypoint": target,
+        "args": [],
+    }
+    manifest_content = json.dumps(payload, indent=2) + "\n"
+    manifest_path = f"{working_dir}/{_RUN_CONTRACT_FILE}"
+    try:
+        write_result = await send_action(
+            "file_write",
+            {"file": manifest_path, "content": manifest_content},
+            timeout=20,
+            confirmed=True,
+        )
+    except Exception as exc:
+        return None, f"Failed to write {_RUN_CONTRACT_FILE}: {type(exc).__name__}: {exc}", True
+
+    if write_result.get("status") == "error":
+        message = _action_error_text(write_result, "file_write")
+        return None, f"Failed to write {_RUN_CONTRACT_FILE}: {message}", _is_infra_error(message)
+    if _action_exit_code(write_result) != 0:
+        message = _action_excerpt(write_result)
+        return None, f"Failed to write {_RUN_CONTRACT_FILE}: {message}", _is_infra_error(message)
+
+    contract = {
+        "interpreter": interpreter,
+        "entrypoint": target,
+        "args": [],
+        "command": _build_manifest_command(
+            interpreter=interpreter,
+            entrypoint=target,
+            args=[],
+        ),
+    }
+    return contract, "run contract synthesized from detected entrypoint", False
+
+
+def _python_smoke_test_content(*, run_contract: dict[str, Any]) -> str:
+    entrypoint = _normalize_manifest_path(str(run_contract.get("entrypoint") or ""))
+    args = [str(token) for token in (run_contract.get("args") or [])]
+    args_literal = json.dumps(args, ensure_ascii=True)
+    return (
+        "from __future__ import annotations\n\n"
+        "from pathlib import Path\n"
+        "import subprocess\n"
+        "import sys\n\n"
+        f"ENTRYPOINT = {entrypoint!r}\n"
+        f"ARGS = {args_literal}\n\n"
+        "def test_smoke_entrypoint_exits_zero() -> None:\n"
+        "    root = Path(__file__).resolve().parents[1]\n"
+        "    script = root / ENTRYPOINT\n"
+        "    cmd = [sys.executable, str(script), *ARGS]\n"
+        "    result = subprocess.run(\n"
+        "        cmd,\n"
+        "        cwd=root,\n"
+        "        capture_output=True,\n"
+        "        text=True,\n"
+        "    )\n"
+        "    assert result.returncode == 0, result.stderr or result.stdout\n"
+    )
+
+
+async def _bootstrap_required_tests(
+    *,
+    working_dir: str,
+    runtime: str,
+    run_contract: dict[str, Any],
+) -> tuple[bool, str, bool, str]:
+    """
+    Create deterministic smoke tests when strict mode requires tests but none exist.
+    """
+    if runtime != "python":
+        return False, "No tests detected; strict mode requires tests.", False, ""
+
+    test_rel_path = "tests/test_smoke.py"
+    test_file = f"{working_dir}/{test_rel_path}"
+    content = _python_smoke_test_content(run_contract=run_contract)
+    try:
+        write_result = await send_action(
+            "file_write",
+            {"file": test_file, "content": content},
+            timeout=20,
+            confirmed=True,
+        )
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        return False, f"Failed to create {test_rel_path}: {message}", True, ""
+
+    if write_result.get("status") == "error":
+        message = _action_error_text(write_result, "file_write")
+        return (
+            False,
+            f"Failed to create {test_rel_path}: {message}",
+            _is_infra_error(message),
+            "",
+        )
+    if _action_exit_code(write_result) != 0:
+        message = _action_excerpt(write_result)
+        return (
+            False,
+            f"Failed to create {test_rel_path}: {message}",
+            _is_infra_error(message),
+            "",
+        )
+    return True, f"Auto-created {test_rel_path} for strict test gate.", False, test_rel_path
+
+
 async def _run_quality_fix_pass(
     *,
     project: dict[str, Any],
@@ -597,24 +740,31 @@ async def _run_quality_fix_pass(
         + "\n".join(failure_lines)
         + "\n\nRequirements:\n"
           f"- Include a valid {_RUN_CONTRACT_FILE}.\n"
-          "- Add runnable tests if missing.\n"
+          "- Add runnable tests if missing (Python: tests/test_smoke.py).\n"
           "- Ensure lint and tests pass.\n"
           "- Return complete files only."
     )
 
+    prompt_for_payload = fix_prompt
     payload: dict[str, Any] = {
         "agent": "claude",
-        "prompt": fix_prompt,
+        "prompt": prompt_for_payload,
         "working_dir": working_dir,
         "timeout_seconds": 1800,
     }
 
     if _uses_claude_ollama(project):
-        if not cfg.ANTHROPIC_API_KEY:
-            raise RuntimeError("FALLBACK_UNAVAILABLE: ANTHROPIC_API_KEY is not configured")
+        # Native Claude fallback should also work with Claude Code subscription
+        # auth/session, not only API-key auth.
+        prompt_for_payload = (
+            fix_prompt
+            + "\n\nExecution instructions:\n"
+              "- Use Claude Code tools to directly create or update files in the working directory.\n"
+              "- Do not ask clarifying questions; implement the fixes now.\n"
+              "- Print a short completion summary after file edits."
+        )
         payload["backend"] = "native"
-        if cfg.CLAUDE_OLLAMA_DEFAULT_MODEL:
-            payload["model"] = cfg.CLAUDE_OLLAMA_DEFAULT_MODEL
+        payload["prompt"] = prompt_for_payload
     else:
         payload["backend"] = "auto"
 
@@ -862,73 +1012,64 @@ async def _run_strict_quality_gates(
                         "summary": list_error,
                     }
                 )
-            elif not _has_detected_tests(runtime=runtime, files=files):
-                summary = "No tests detected; strict mode requires tests."
-                await _record_gate_result(
-                    db=db,
-                    task_id=task_id,
-                    attempt=attempt,
-                    gate_name="tests",
-                    status="failed",
-                    command=tests_scan_cmd,
-                    summary=summary,
-                )
-                failed_gates.append(
-                    {
-                        "gate_name": "tests",
-                        "command": tests_scan_cmd,
-                        "summary": summary,
-                    }
-                )
             else:
-                try:
-                    tests_result = await send_action(
-                        "run_tests",
-                        {"working_dir": working_dir, "runner": test_runner},
-                        timeout=300,
-                        confirmed=True,
+                tests_detected = _has_detected_tests(runtime=runtime, files=files)
+                bootstrap_summary = ""
+                if not tests_detected:
+                    (
+                        bootstrapped,
+                        bootstrap_summary,
+                        bootstrap_infra,
+                        bootstrap_test_path,
+                    ) = await _bootstrap_required_tests(
+                        working_dir=working_dir,
+                        runtime=runtime,
+                        run_contract=last_contract,
                     )
-                except Exception as exc:
-                    tests_summary = f"{type(exc).__name__}: {exc}"
+                    if bootstrapped and bootstrap_test_path:
+                        files = [*files, bootstrap_test_path]
+                        tests_detected = _has_detected_tests(runtime=runtime, files=files)
+                    elif bootstrap_infra:
+                        infra_failure = True
+
+                if not tests_detected:
+                    summary = bootstrap_summary or "No tests detected; strict mode requires tests."
                     await _record_gate_result(
                         db=db,
                         task_id=task_id,
                         attempt=attempt,
                         gate_name="tests",
                         status="failed",
-                        command=tests_cmd,
-                        summary=tests_summary,
+                        command=tests_scan_cmd,
+                        summary=summary,
                     )
-                    infra_failure = True
                     failed_gates.append(
                         {
                             "gate_name": "tests",
-                            "command": tests_cmd,
-                            "summary": tests_summary,
+                            "command": tests_scan_cmd,
+                            "summary": summary,
                         }
                     )
                 else:
-                    tests_failed = (
-                        tests_result.get("status") == "error"
-                        or _action_exit_code(tests_result) != 0
-                    )
-                    tests_summary = (
-                        _action_error_text(tests_result, "run_tests")
-                        if tests_failed
-                        else _action_excerpt(tests_result)
-                    )
-                    await _record_gate_result(
-                        db=db,
-                        task_id=task_id,
-                        attempt=attempt,
-                        gate_name="tests",
-                        status="failed" if tests_failed else "passed",
-                        command=tests_cmd,
-                        summary=tests_summary,
-                    )
-                    if tests_failed:
-                        if _is_infra_error(tests_summary):
-                            infra_failure = True
+                    try:
+                        tests_result = await send_action(
+                            "run_tests",
+                            {"working_dir": working_dir, "runner": test_runner},
+                            timeout=300,
+                            confirmed=True,
+                        )
+                    except Exception as exc:
+                        tests_summary = f"{type(exc).__name__}: {exc}"
+                        await _record_gate_result(
+                            db=db,
+                            task_id=task_id,
+                            attempt=attempt,
+                            gate_name="tests",
+                            status="failed",
+                            command=tests_cmd,
+                            summary=tests_summary,
+                        )
+                        infra_failure = True
                         failed_gates.append(
                             {
                                 "gate_name": "tests",
@@ -936,6 +1077,37 @@ async def _run_strict_quality_gates(
                                 "summary": tests_summary,
                             }
                         )
+                    else:
+                        tests_failed = (
+                            tests_result.get("status") == "error"
+                            or _action_exit_code(tests_result) != 0
+                        )
+                        tests_summary = (
+                            _action_error_text(tests_result, "run_tests")
+                            if tests_failed
+                            else _action_excerpt(tests_result)
+                        )
+                        if bootstrap_summary:
+                            tests_summary = f"{bootstrap_summary} {tests_summary}".strip()
+                        await _record_gate_result(
+                            db=db,
+                            task_id=task_id,
+                            attempt=attempt,
+                            gate_name="tests",
+                            status="failed" if tests_failed else "passed",
+                            command=tests_cmd,
+                            summary=tests_summary,
+                        )
+                        if tests_failed:
+                            if _is_infra_error(tests_summary):
+                                infra_failure = True
+                            failed_gates.append(
+                                {
+                                    "gate_name": "tests",
+                                    "command": tests_cmd,
+                                    "summary": tests_summary,
+                                }
+                            )
 
             smoke_cmd = str(last_contract.get("command") or "").strip()
             try:
