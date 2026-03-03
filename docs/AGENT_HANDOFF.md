@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-03 10:58
+Last updated (UTC): 2026-03-03 11:50
 
 ## Current Goal
 
@@ -23,6 +23,14 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 - Set safer model/autopull defaults for fallback paths so runtime does not silently drift to large model pulls.
 - Fixed milestone approval race by registering the approval event before sending milestone buttons, preventing fast taps from being dropped as "no active milestone".
 - Added heartbeat progress updates during long `run_coding_agent` calls so users can see coding is still active.
+
+### 2026-03-03 SSH-PTY + Live-Trace Update
+
+- Root-caused long `run_coding_agent` waits on Windows SSH path: Claude CLI blocks on non-PTY Paramiko channels.
+- Updated SSH executor command runner to support optional PTY allocation and enabled PTY specifically for Claude native and Claude+Ollama execution paths.
+- Added ANSI/control-sequence cleanup in PowerShell output sanitization so PTY output remains readable in logs and summaries.
+- Reworked `openclaw-gateway/tests/e2e_live.py` into a structured JSONL live trace runner (`SKYNET_LIVE_TRACE_FILE` override + periodic action wait heartbeats).
+- Expanded `openclaw-gateway/tests/test_e2e_conversation_live.py` with step/action/heartbeat trace logging to make Telegram live E2E stalls diagnosable.
 ## Current Repo State
 
 - Branch: `main`
@@ -71,6 +79,12 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
   - 7 passed
 - python -m pytest openclaw-gateway/tests/test_telegram_chat_simulation.py openclaw-gateway/tests/test_e2e.py -q
   - 24 passed
+- python -m py_compile openclaw-gateway/ssh_tunnel_executor.py openclaw-gateway/tests/e2e_live.py openclaw-gateway/tests/test_e2e_conversation_live.py
+  - pass
+- python -m pytest openclaw-gateway/tests/test_coding_retry.py openclaw-gateway/tests/test_e2e.py -q
+  - 32 passed
+- python -m pytest openclaw-gateway/tests/test_e2e_conversation_live.py -q
+  - 1 skipped (requires `SKYNET_E2E_LIVE=1`)
 ## Trace Evidence
 
 - Live e2e test run via `tests/e2e_live.py` inside container
@@ -83,6 +97,10 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 
 - request_id=telegram-coding-stall-20260303
 - task_id=deploy-env-alignment-and-preflight
+- request_id=ssh-pty-live-trace-20260303
+- task_id=claude-ssh-pty-stall-fix
+- skynet.trace.log
+- openclaw-gateway/tests/.artifacts/live-postfix-20260303-114629.log
 ## Documentation Updates
 
 - `docs/AGENT_HANDOFF.md`
