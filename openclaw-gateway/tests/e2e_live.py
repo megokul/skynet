@@ -1,34 +1,28 @@
 """
-SKYNET Live End-to-End Test
-============================
-Run this ON EC2 (where SSH env vars are set) to verify the full
-coding pipeline actually works against the real laptop.
+SKYNET live end-to-end runner with persistent tracing.
 
-Usage:
+Run this on a host that can SSH to the worker laptop:
+
     cd openclaw-gateway
     python tests/e2e_live.py
 
-What it tests:
-    1. SSH connection to laptop
-    2. Directory creation on laptop (E:\\SKYNET-SANDBOX\\Projects\\e2e-test-<ts>\\)
-    3. Ollama code generation via SSH (run_coding_agent)
-    4. Files written to laptop disk (verify via SFTP)
-    5. Project execution via exec_command (python main.py)
-    6. Cleanup of test directory
-
-Pass criteria:
-    - At least one .py file written to project folder
-    - exec_command returns returncode 0
-    - stdout contains expected output
+The script writes structured JSONL traces to:
+  - SKYNET_LIVE_TRACE_FILE (if set), or
+  - tests/.artifacts/e2e-live-<timestamp>.log
 """
+
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
-# Make sure we can import from the gateway package
+# Make sure we can import from the gateway package.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -42,112 +36,218 @@ PROMPT = (
 SLUG = f"e2e-test-{int(time.time())}"
 
 
-def _check_env() -> None:
-    missing = []
-    for var in ("OPENCLAW_SSH_HOST", "OPENCLAW_SSH_USER"):
-        if not os.environ.get(var):
-            missing.append(var)
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+class LiveTrace:
+    def __init__(self, label: str) -> None:
+        env_path = os.environ.get("SKYNET_LIVE_TRACE_FILE", "").strip()
+        if env_path:
+            path = Path(env_path)
+        else:
+            artifacts = Path(__file__).resolve().parent / ".artifacts"
+            artifacts.mkdir(parents=True, exist_ok=True)
+            path = artifacts / f"{label}-{int(time.time())}.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self._started = time.monotonic()
+        self.log("trace.start", trace_file=str(self.path))
+
+    def log(self, event: str, **fields: Any) -> None:
+        payload: dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "elapsed_s": round(time.monotonic() - self._started, 1),
+            "event": event,
+        }
+        payload.update(fields)
+        line = json.dumps(payload, ensure_ascii=True, default=str)
+        print(line, flush=True)
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+
+
+def _fail(trace: LiveTrace, message: str, *, detail: Any | None = None) -> None:
+    text = str(detail)[:1000] if detail is not None else ""
+    trace.log("run.fail", message=message, detail=text)
+    print(f"[FAIL] {message}")
+    if text:
+        print(text)
+    print(f"[TRACE] {trace.path}")
+    sys.exit(1)
+
+
+def _check_env(trace: LiveTrace) -> None:
+    required = ("OPENCLAW_SSH_HOST", "OPENCLAW_SSH_USER")
+    missing = [var for var in required if not os.environ.get(var)]
+    trace.log(
+        "env.check",
+        required=list(required),
+        missing=missing,
+        has_key_path=bool(os.environ.get("OPENCLAW_SSH_KEY_PATH", "").strip()),
+        has_password=bool(os.environ.get("OPENCLAW_SSH_PASSWORD", "").strip()),
+    )
     if missing:
         print(f"[SKIP] Missing env vars: {', '.join(missing)}")
         print("       Set OPENCLAW_SSH_* vars and retry.")
+        print(f"[TRACE] {trace.path}")
         sys.exit(0)
 
 
-def _separator(title: str) -> None:
-    print(f"\n{'='*60}")
-    print(f"  {title}")
-    print("=" * 60)
+async def _execute_action_with_trace(
+    *,
+    trace: LiveTrace,
+    executor,
+    action: str,
+    params: dict[str, Any],
+    timeout_s: int = 600,
+    confirmed: bool = False,
+) -> dict[str, Any]:
+    trace.log(
+        "action.start",
+        action=action,
+        timeout_s=timeout_s,
+        confirmed=confirmed,
+        param_keys=sorted(params.keys()),
+    )
+    started = time.monotonic()
+    pending = asyncio.create_task(
+        executor.execute_action(action, params, confirmed=confirmed)
+    )
+    try:
+        while True:
+            try:
+                result = await asyncio.wait_for(asyncio.shield(pending), timeout=15)
+                break
+            except asyncio.TimeoutError:
+                trace.log(
+                    "action.waiting",
+                    action=action,
+                    wait_s=round(time.monotonic() - started, 1),
+                )
+                if (time.monotonic() - started) >= timeout_s:
+                    raise TimeoutError(f"Action '{action}' exceeded {timeout_s}s")
+    finally:
+        if not pending.done():
+            pending.cancel()
+            try:
+                await pending
+            except asyncio.CancelledError:
+                pass
+
+    elapsed = round(time.monotonic() - started, 2)
+    inner = result.get("result", result)
+    trace.log(
+        "action.done",
+        action=action,
+        elapsed_s=elapsed,
+        status=result.get("status"),
+        returncode=inner.get("returncode", inner.get("exit_code")),
+        error=str(result.get("error", ""))[:220],
+    )
+    return result
 
 
 async def run() -> None:
     from ssh_tunnel_executor import get_ssh_executor
 
-    _check_env()
+    trace = LiveTrace("e2e-live")
+    trace.log("run.start", python=sys.version.split()[0], cwd=os.getcwd())
+    _check_env(trace)
 
     executor = get_ssh_executor()
     if not executor.is_configured():
-        print("[FAIL] SSH executor is not configured. Check OPENCLAW_SSH_* env vars.")
-        sys.exit(1)
+        _fail(trace, "SSH executor is not configured. Check OPENCLAW_SSH_* env vars.")
 
     base_dir = os.environ.get("OPENCLAW_PROJECT_BASE_DIR", "E:\\SKYNET-SANDBOX\\Projects")
     working_dir = base_dir.rstrip("\\") + "\\" + SLUG
+    trace.log("run.config", base_dir=base_dir, working_dir=working_dir)
 
-    # ── Step 1: Create project directory ────────────────────────────────────────
-    _separator("Step 1 — Create project directory on laptop")
-    result = await executor.execute_action("create_directory", {"directory": working_dir})
-    print(f"  Result: {result}")
+    # Step 1: Create project directory.
+    result = await _execute_action_with_trace(
+        trace=trace,
+        executor=executor,
+        action="create_directory",
+        params={"directory": working_dir},
+        timeout_s=120,
+    )
     if result.get("status") == "error" or result.get("result", {}).get("returncode", 0) != 0:
-        print(f"[FAIL] Could not create directory: {working_dir}")
-        sys.exit(1)
-    print(f"[OK] Directory created: {working_dir}")
+        _fail(trace, f"Could not create directory: {working_dir}", detail=result)
 
-    # ── Step 2: Run coding agent (Ollama generates main.py) ─────────────────────
-    _separator("Step 2 — Run coding agent (Ollama on laptop)")
-    print(f"  Prompt: {PROMPT[:80]}...")
-    print("  This may take up to 60 seconds...")
-    t0 = time.time()
-    result = await executor.execute_action(
-        "run_coding_agent",
-        {"prompt": PROMPT, "working_dir": working_dir},
+    # Step 2: Run coding agent.
+    model = os.environ.get("SKYNET_CLAUDE_OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:7b")
+    backend = os.environ.get("SKYNET_LIVE_E2E_BACKEND", "ollama")
+    agent = os.environ.get("SKYNET_LIVE_E2E_AGENT", "claude")
+    auto_pull = _bool_env("SKYNET_CLAUDE_OLLAMA_AUTO_PULL", True)
+    trace.log(
+        "coding.invoke",
+        agent=agent,
+        backend=backend,
+        model=model,
+        auto_pull_model=auto_pull,
+    )
+    result = await _execute_action_with_trace(
+        trace=trace,
+        executor=executor,
+        action="run_coding_agent",
+        params={
+            "agent": agent,
+            "backend": backend,
+            "model": model,
+            "prompt": PROMPT,
+            "working_dir": working_dir,
+            "timeout_seconds": 1800,
+            "auto_pull_model": auto_pull,
+        },
+        timeout_s=1900,
         confirmed=True,
     )
-    elapsed = time.time() - t0
-    print(f"  Elapsed: {elapsed:.1f}s")
-    print(f"  Result keys: {list(result.keys())}")
-    print(f"  Status: {result.get('status')}")
     inner = result.get("result", result)
-    print(f"  Stdout (first 500 chars):\n{str(inner.get('stdout', ''))[:500]}")
     if result.get("status") == "error":
-        print(f"[FAIL] run_coding_agent failed: {result}")
-        sys.exit(1)
+        _fail(trace, "run_coding_agent failed", detail=result)
     if inner.get("returncode", 0) != 0:
-        print(f"[FAIL] run_coding_agent non-zero returncode: {inner}")
-        sys.exit(1)
-    print("[OK] Coding agent completed.")
+        _fail(trace, "run_coding_agent returned non-zero", detail=inner)
 
-    # ── Step 3: Verify file was written on laptop ────────────────────────────────
-    _separator("Step 3 — Verify main.py exists on laptop")
+    # Step 3: Verify main.py.
     main_py = working_dir.rstrip("\\") + "\\main.py"
-    result = await executor.execute_action("file_read", {"file": main_py})
-    print(f"  Result status: {result.get('status')}")
+    result = await _execute_action_with_trace(
+        trace=trace,
+        executor=executor,
+        action="file_read",
+        params={"file": main_py},
+        timeout_s=90,
+    )
     inner = result.get("result", result)
     content = inner.get("content", inner.get("stdout", ""))
     if result.get("status") == "error" or not content:
-        print(f"[FAIL] main.py not found or empty at {main_py}")
-        print(f"       Result: {result}")
-        sys.exit(1)
-    print(f"  main.py content ({len(content)} chars):\n{content[:400]}")
-    print("[OK] main.py exists on laptop.")
+        _fail(trace, f"main.py not found or empty at {main_py}", detail=result)
+    trace.log("file.main_py", path=main_py, content_len=len(content))
 
-    # ── Step 4: Execute the project ─────────────────────────────────────────────
-    _separator("Step 4 — Execute project (python main.py)")
-    result = await executor.execute_action(
-        "exec_command",
-        {"working_dir": working_dir, "command": "python main.py"},
+    # Step 4: Execute project.
+    result = await _execute_action_with_trace(
+        trace=trace,
+        executor=executor,
+        action="exec_command",
+        params={"working_dir": working_dir, "command": "python main.py"},
+        timeout_s=180,
     )
-    print(f"  Result: {result}")
     inner = result.get("result", result)
-    stdout = inner.get("stdout", "")
-    returncode = inner.get("returncode", -1)
-    print(f"  returncode: {returncode}")
-    print(f"  stdout: {stdout!r}")
+    stdout = str(inner.get("stdout", ""))
+    returncode = int(inner.get("returncode", inner.get("exit_code", -1)))
     if returncode != 0:
-        print(f"[FAIL] exec_command returned non-zero: {returncode}")
-        sys.exit(1)
+        _fail(trace, f"exec_command returned non-zero ({returncode})", detail=inner)
     if "SKYNET_E2E_OK" not in stdout:
-        print(f"[WARN] Expected 'SKYNET_E2E_OK' in stdout but got: {stdout!r}")
+        trace.log("run.warning", message="Expected SKYNET_E2E_OK not found", stdout=stdout[:220])
     else:
-        print("[OK] Output matches expected: SKYNET_E2E_OK")
+        trace.log("run.output_ok", marker="SKYNET_E2E_OK")
 
-    # ── Done ─────────────────────────────────────────────────────────────────────
-    _separator("RESULT")
-    print()
-    print("  ✅  ALL STEPS PASSED")
-    print(f"  Project dir on laptop: {working_dir}")
-    print()
-    print("  Files are NOT cleaned up — inspect them on the laptop.")
-    print("  To delete: rmdir /s /q " + working_dir)
-    print()
+    trace.log("run.success", working_dir=working_dir)
+    print("[OK] Live E2E passed.")
+    print(f"[TRACE] {trace.path}")
+    print(f"[ARTIFACT] working_dir={working_dir}")
 
 
 if __name__ == "__main__":

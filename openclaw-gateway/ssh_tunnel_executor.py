@@ -329,6 +329,10 @@ def _sanitize_powershell_output(text: str) -> str:
     if not text:
         return text
     cleaned = text.replace("_x000D__x000A_", "\n").replace("_x000D_", "\r").replace("_x000A_", "\n")
+    # Strip ANSI escape/control sequences (common when commands require a PTY).
+    cleaned = re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", cleaned)
+    cleaned = re.sub(r"\x1B\][^\x07]*\x07", "", cleaned)
+    cleaned = cleaned.replace("\x1b", "")
     if "<Objs Version=" in cleaned and "</Objs>" in cleaned:
         # Keep only message payloads from CLIXML blocks.
         parts = re.findall(r"<S S=\"(?:Error|Warning|Verbose)\">(.*?)</S>", cleaned, flags=re.DOTALL)
@@ -831,6 +835,7 @@ class SSHTunnelExecutor:
         cwd: str | None = None,
         timeout: int | None = None,
         env: dict[str, str] | None = None,
+        use_pty: bool = False,
     ) -> dict[str, Any]:
         """
         Run command.
@@ -861,6 +866,7 @@ class SSHTunnelExecutor:
         _, stdout, stderr = client.exec_command(
             command,
             timeout=timeout or self.command_timeout,
+            get_pty=use_pty,
         )
         out = stdout.read().decode("utf-8", errors="replace")[:8192]
         err = stderr.read().decode("utf-8", errors="replace")[:4096]
@@ -1287,7 +1293,8 @@ class SSHTunnelExecutor:
             if model:
                 args.extend(["--model", model])
             args.extend(["-p", prompt])
-            return self._run_command(client, args, cwd=cwd, timeout=timeout)
+            # Claude CLI can block indefinitely on SSH non-PTY channels.
+            return self._run_command(client, args, cwd=cwd, timeout=timeout, use_pty=True)
 
         args = [binary, *self._coding_prefix[agent], prompt]
         initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
@@ -1380,7 +1387,15 @@ class SSHTunnelExecutor:
             "ANTHROPIC_API_KEY": "",
             "ANTHROPIC_BASE_URL": base_url,
         }
-        run = self._run_command(client, args, cwd=cwd, timeout=timeout, env=env)
+        # Claude-over-Ollama requires PTY on this SSH path to avoid hangs.
+        run = self._run_command(
+            client,
+            args,
+            cwd=cwd,
+            timeout=timeout,
+            env=env,
+            use_pty=True,
+        )
         warning = self._ollama_context_warning(client, model=model)
         if warning:
             current_out = str(run.get("stdout") or "").strip()
