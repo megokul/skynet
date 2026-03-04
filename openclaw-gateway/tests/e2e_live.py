@@ -8,7 +8,8 @@ Usage:
   python openclaw-gateway/tests/e2e_live.py
 
 Modes:
-  SKYNET_LIVE_E2E_FLOW=conversation  (default)
+  SKYNET_LIVE_E2E_FLOW=conversation   (simulated Telegram transport, real planner/coding/SSH)
+  SKYNET_LIVE_E2E_FLOW=telegram_real  (fully real Telegram-network chat via Telethon user session)
   SKYNET_LIVE_E2E_FLOW=direct        (legacy direct coding smoke)
 """
 
@@ -230,6 +231,66 @@ def _run_conversation_flow(trace: LiveTrace) -> None:
     print(f"[TRACE] {trace.path}")
 
 
+def _run_telegram_real_flow(trace: LiveTrace) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    target = (
+        "openclaw-gateway/tests/test_e2e_telegram_real_live.py::"
+        "test_real_telegram_chat_flow_no_github_repo_creation"
+    )
+    cmd = [sys.executable, "-m", "pytest", target, "-q", "-s"]
+    env = os.environ.copy()
+    env["SKYNET_E2E_LIVE"] = os.environ.get("SKYNET_E2E_LIVE", "1")
+    env["SKYNET_LIVE_TRACE_FILE"] = str(trace.path)
+    env["SKYNET_E2E_FAIL_ON_SKIP"] = os.environ.get("SKYNET_E2E_FAIL_ON_SKIP", "1")
+
+    trace.log(
+        "telegram_real.invoke",
+        repo_root=str(repo_root),
+        cmd=" ".join(cmd),
+    )
+    completed = subprocess.run(
+        cmd,
+        cwd=str(repo_root),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        errors="replace",
+    )
+    if completed.stdout:
+        print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
+    if completed.stderr:
+        print(completed.stderr, file=sys.stderr, end="" if completed.stderr.endswith("\n") else "\n")
+
+    output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+    match_passed = re.search(r"(\d+)\s+passed", output, flags=re.IGNORECASE)
+    match_skipped = re.search(r"(\d+)\s+skipped", output, flags=re.IGNORECASE)
+    passed = int(match_passed.group(1)) if match_passed else 0
+    skipped = int(match_skipped.group(1)) if match_skipped else 0
+    trace.log(
+        "telegram_real.exit",
+        returncode=completed.returncode,
+        pytest_passed=passed,
+        pytest_skipped=skipped,
+    )
+    strict = _bool_env("SKYNET_E2E_FAIL_ON_SKIP", True)
+    if completed.returncode == 0 and skipped > 0 and strict:
+        _fail(
+            trace,
+            "Telegram-real live E2E was skipped under strict mode.",
+            detail=f"pytest skipped={skipped}",
+        )
+    if completed.returncode != 0:
+        _fail(
+            trace,
+            "Telegram-real live E2E failed.",
+            detail=f"pytest exit code: {completed.returncode}",
+        )
+    trace.log("run.success", flow="telegram_real")
+    print("[OK] Telegram-real live E2E passed.")
+    print(f"[TRACE] {trace.path}")
+
+
 async def _execute_action_with_trace(
     *,
     trace: LiveTrace,
@@ -385,6 +446,9 @@ async def run() -> None:
     trace.log("run.mode", flow=flow)
     if flow in {"conversation", "chat"}:
         _run_conversation_flow(trace)
+        return
+    if flow in {"telegram_real", "telegram", "real_telegram"}:
+        _run_telegram_real_flow(trace)
         return
     await _run_direct_flow(trace)
 

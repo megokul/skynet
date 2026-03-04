@@ -1,4 +1,4 @@
-"""Manual live conversation E2E against real planner + SSH worker (no GitHub repo creation)."""
+"""Live handler-path conversation E2E (simulated Telegram transport; real planner + SSH worker)."""
 
 from __future__ import annotations
 
