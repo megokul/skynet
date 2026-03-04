@@ -1,10 +1,19 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-04 18:30
+Last updated (UTC): 2026-03-04 19:05
 
 ## Current Goal
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-04 Real Telegram Live-E2E Mode Update
+
+- Added a fully real Telegram network flow to live E2E:
+  - new selector `SKYNET_LIVE_E2E_FLOW=telegram_real`
+  - new test `openclaw-gateway/tests/test_e2e_telegram_real_live.py::test_real_telegram_chat_flow_no_github_repo_creation`
+- Extended `openclaw-gateway/tests/e2e_live.py` to route to the real Telegram test target when `telegram_real` mode is selected.
+- Kept existing conversation-mode live E2E intact; no mock or fake transport added in the real mode path.
+- Added explicit no-repo-creation assertion in the real Telegram flow so E2E follows the “skip GitHub setup” branch.
 
 ### 2026-03-04 SSH-Primary Reliability Hardening Update
 
