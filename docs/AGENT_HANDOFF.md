@@ -1,10 +1,33 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-04 15:55
+Last updated (UTC): 2026-03-04 17:20
 
 ## Current Goal
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-04 Settings/Secrets Trim Update
+
+- Added non-secret runtime defaults file:
+  - `openclaw-gateway/settings/settings.yaml`
+- Added clean example:
+  - `openclaw-gateway/settings/settings.example.yaml`
+- Refactored `openclaw-gateway/config.py`:
+  - loads non-secret defaults from YAML
+  - secrets remain env-only
+  - added typed accessors `get_str/get_int/get_bool`
+  - removed environment mutation shim
+- Routed direct runtime env reads through config accessors:
+  - `openclaw-gateway/gateway.py`
+  - `openclaw-gateway/api.py`
+  - `openclaw-gateway/ssh_tunnel_executor.py`
+- Trimmed env templates to secret-focused shape:
+  - `.env.example`
+  - `.env.local-e2e.example`
+- Rebuilt GitHub sync utility (`scripts/dev/sync_env_to_github.py`):
+  - secret-like keys only by default in secrets mode
+  - optional stale secret pruning (`--prune-stale`)
+  - workflow-aware keep-set protection while pruning
 
 ### 2026-03-04 Pre-Push Secret Sync Reliability Update
 

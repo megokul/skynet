@@ -80,20 +80,38 @@ docker compose up -d skynet-api openclaw-gateway
 docker compose -f docker-compose.skynet-only.yml up -d
 ```
 
+## Config Split: Settings vs Secrets
+
+- Non-secret defaults live in:
+  - `openclaw-gateway/settings/settings.yaml`
+- Secret values live in environment variables (`.env` or GitHub Actions secrets).
+- Runtime precedence is:
+  - environment variable
+  - settings YAML
+  - code default
+
 ## Sync Local `.env` To GitHub (No Commit)
 
-Use this to push local `.env` values into repository Actions secrets:
+Use this to sync local secret values to repository Actions secrets:
 
 ```bash
 python scripts/dev/sync_env_to_github.py --mode secrets
 ```
 
+Optional stale cleanup (recommended after config trims):
+
+```bash
+python scripts/dev/sync_env_to_github.py --mode secrets --prune-stale
+```
+
 Safety behavior:
+- In `--mode secrets`, only secret-like keys are synced by default.
 - Keys with reserved prefix `GITHUB_` are skipped automatically.
 - Keys with empty values are skipped automatically.
 - Invalid key names are skipped automatically.
 - When repo secret quota is full, new secret names are skipped automatically.
-- Only actual GitHub API write failures return non-zero.
+- `--prune-stale` preserves keys referenced by workflows and deletes non-kept repo secrets.
+- Only actual GitHub API write/delete failures return non-zero.
 
 You can also enable automatic sync on every `git push`:
 

@@ -50,8 +50,8 @@ def _env_bool(name: str, default: bool = False) -> bool:
     - Return value typed as `bool` when available; otherwise side effects only.
     """
 
-    raw = os.environ.get(name)
-    if raw is None:
+    raw = bot_cfg.get_str(name, "")
+    if raw == "":
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
@@ -80,7 +80,7 @@ def _env_int(name: str, default: int) -> int:
     - Return value typed as `int` when available; otherwise side effects only.
     """
 
-    raw = os.environ.get(name)
+    raw = bot_cfg.get_str(name, "")
     if not raw:
         return default
     try:
@@ -444,14 +444,14 @@ class SSHTunnelExecutor:
         - Return value typed as `None` when available; otherwise side effects only.
         """
 
-        mode = os.environ.get("OPENCLAW_EXECUTION_MODE", "").strip().lower()
+        mode = bot_cfg.get_str("OPENCLAW_EXECUTION_MODE", "").strip().lower()
         self.enabled = mode in {"ssh", "ssh_tunnel", "tunnel", "ssh-only"} or _env_bool("OPENCLAW_SSH_FALLBACK_ENABLED", False)
 
-        self.host = os.environ.get("OPENCLAW_SSH_HOST", "127.0.0.1").strip()
+        self.host = bot_cfg.get_str("OPENCLAW_SSH_HOST", "127.0.0.1").strip()
         self.port = _env_int("OPENCLAW_SSH_PORT", 2222)
-        self.username = os.environ.get("OPENCLAW_SSH_USER", "").strip()
-        self.password = os.environ.get("OPENCLAW_SSH_PASSWORD", "")
-        self.key_path = os.environ.get("OPENCLAW_SSH_KEY_PATH", "").strip()
+        self.username = bot_cfg.get_str("OPENCLAW_SSH_USER", "").strip()
+        self.password = bot_cfg.get_str("OPENCLAW_SSH_PASSWORD", "")
+        self.key_path = bot_cfg.get_str("OPENCLAW_SSH_KEY_PATH", "").strip()
         running_in_container = os.path.exists("/.dockerenv")
         if self.key_path.startswith("/app/") and not running_in_container:
             _log.warning(
@@ -460,16 +460,16 @@ class SSHTunnelExecutor:
             )
         self.connect_timeout = _env_int("OPENCLAW_SSH_CONNECT_TIMEOUT", 4)
         self.command_timeout = _env_int("OPENCLAW_SSH_COMMAND_TIMEOUT", 180)
-        self.remote_os = os.environ.get("OPENCLAW_SSH_REMOTE_OS", "windows").strip().lower()
+        self.remote_os = bot_cfg.get_str("OPENCLAW_SSH_REMOTE_OS", "windows").strip().lower()
         self.strict_host_key = _env_bool("OPENCLAW_SSH_STRICT_HOST_KEY", False)
-        roots_raw = os.environ.get("OPENCLAW_SSH_ALLOWED_ROOTS", "")
+        roots_raw = bot_cfg.get_str("OPENCLAW_SSH_ALLOWED_ROOTS", "")
         self.allowed_roots = _parse_roots(roots_raw, self.remote_os)
 
         self._searcher = WebSearcher(bot_cfg.BRAVE_SEARCH_API_KEY)
         self._coding_bins = {
-            "codex": os.environ.get("OPENCLAW_SSH_CODEX_BIN", "codex"),
-            "claude": os.environ.get("OPENCLAW_SSH_CLAUDE_BIN", "claude"),
-            "cline": os.environ.get("OPENCLAW_SSH_CLINE_BIN", "cline"),
+            "codex": bot_cfg.get_str("OPENCLAW_SSH_CODEX_BIN", "codex"),
+            "claude": bot_cfg.get_str("OPENCLAW_SSH_CLAUDE_BIN", "claude"),
+            "cline": bot_cfg.get_str("OPENCLAW_SSH_CLINE_BIN", "cline"),
         }
         self._coding_prefix = {
             "codex": ["exec"],
@@ -511,15 +511,15 @@ class SSHTunnelExecutor:
         self._circuit_open_until = 0.0
         self._cline_auto_switch = _env_bool("OPENCLAW_CLINE_AUTO_SWITCH", True)
         self._cline_provider_priority = _parse_provider_priority(
-            os.environ.get("OPENCLAW_CLINE_PROVIDER_PRIORITY", ""),
+            bot_cfg.get_str("OPENCLAW_CLINE_PROVIDER_PRIORITY", ""),
         )
         self._cline_provider_base_urls = {
-            "gemini": os.environ.get("OPENCLAW_CLINE_GEMINI_BASE_URL", "").strip(),
-            "deepseek": os.environ.get("OPENCLAW_CLINE_DEEPSEEK_BASE_URL", "").strip(),
-            "groq": os.environ.get("OPENCLAW_CLINE_GROQ_BASE_URL", "").strip(),
-            "openrouter": os.environ.get("OPENCLAW_CLINE_OPENROUTER_BASE_URL", "").strip(),
-            "openai": os.environ.get("OPENCLAW_CLINE_OPENAI_BASE_URL", "").strip(),
-            "anthropic": os.environ.get("OPENCLAW_CLINE_ANTHROPIC_BASE_URL", "").strip(),
+            "gemini": bot_cfg.get_str("OPENCLAW_CLINE_GEMINI_BASE_URL", "").strip(),
+            "deepseek": bot_cfg.get_str("OPENCLAW_CLINE_DEEPSEEK_BASE_URL", "").strip(),
+            "groq": bot_cfg.get_str("OPENCLAW_CLINE_GROQ_BASE_URL", "").strip(),
+            "openrouter": bot_cfg.get_str("OPENCLAW_CLINE_OPENROUTER_BASE_URL", "").strip(),
+            "openai": bot_cfg.get_str("OPENCLAW_CLINE_OPENAI_BASE_URL", "").strip(),
+            "anthropic": bot_cfg.get_str("OPENCLAW_CLINE_ANTHROPIC_BASE_URL", "").strip(),
         }
         allowed_permission_modes = {
             "acceptEdits",
@@ -528,7 +528,7 @@ class SSHTunnelExecutor:
             "dontAsk",
             "plan",
         }
-        configured_permission_mode = os.environ.get(
+        configured_permission_mode = bot_cfg.get_str(
             "OPENCLAW_SSH_CLAUDE_PERMISSION_MODE",
             "bypassPermissions",
         ).strip()
@@ -1349,7 +1349,7 @@ class SSHTunnelExecutor:
             f"prompt = base64.b64decode('{b64_prompt}').decode('utf-8')\n"
             f"url    = base64.b64decode('{b64_url}').decode('utf-8') + '/api/generate'\n"
             f"model  = base64.b64decode('{b64_model}').decode('utf-8')\n"
-            f"options = {{'num_ctx': {int(os.environ.get('OLLAMA_NUM_CTX', '8192'))}, 'temperature': 0.2}}\n"
+            f"options = {{'num_ctx': {int(bot_cfg.get_str('OLLAMA_NUM_CTX', '8192'))}, 'temperature': 0.2}}\n"
             "payload = json.dumps({'model': model, 'prompt': prompt, 'stream': False, 'options': options}).encode()\n"
             "req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})\n"
             "try:\n"
@@ -2329,15 +2329,15 @@ class SSHTunnelExecutor:
         """
 
         defaults = {
-            "gemini": os.environ.get("OPENCLAW_CLINE_GEMINI_MODEL", bot_cfg.GEMINI_MODEL or "gemini-2.0-flash"),
-            "deepseek": os.environ.get("OPENCLAW_CLINE_DEEPSEEK_MODEL", "deepseek-chat"),
-            "groq": os.environ.get("OPENCLAW_CLINE_GROQ_MODEL", "llama-3.3-70b-versatile"),
-            "openrouter": os.environ.get(
+            "gemini": bot_cfg.get_str("OPENCLAW_CLINE_GEMINI_MODEL", bot_cfg.GEMINI_MODEL or "gemini-2.0-flash"),
+            "deepseek": bot_cfg.get_str("OPENCLAW_CLINE_DEEPSEEK_MODEL", "deepseek-chat"),
+            "groq": bot_cfg.get_str("OPENCLAW_CLINE_GROQ_MODEL", "llama-3.3-70b-versatile"),
+            "openrouter": bot_cfg.get_str(
                 "OPENCLAW_CLINE_OPENROUTER_MODEL",
                 bot_cfg.OPENROUTER_MODEL or "qwen/qwen3-next-80b-a3b-instruct:free",
             ),
-            "openai": os.environ.get("OPENCLAW_CLINE_OPENAI_MODEL", "gpt-4o-mini"),
-            "anthropic": os.environ.get("OPENCLAW_CLINE_ANTHROPIC_MODEL", "claude-sonnet-4-5"),
+            "openai": bot_cfg.get_str("OPENCLAW_CLINE_OPENAI_MODEL", "gpt-4o-mini"),
+            "anthropic": bot_cfg.get_str("OPENCLAW_CLINE_ANTHROPIC_MODEL", "claude-sonnet-4-5"),
         }
         return str(defaults.get(provider, "") or "").strip()
 

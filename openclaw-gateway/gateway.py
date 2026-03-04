@@ -71,7 +71,7 @@ async def send_action(
     from ssh_tunnel_executor import get_ssh_executor  # lazy — avoids circular import at module load
 
     _ssh_exec = get_ssh_executor()
-    _force_ssh = os.environ.get("OPENCLAW_EXECUTION_MODE", "").lower() in (
+    _force_ssh = cfg.get_str("OPENCLAW_EXECUTION_MODE", "").lower() in (
         "ssh", "ssh_tunnel", "tunnel", "ssh-only",
     )
     _coding_actions = {"run_coding_agent", "check_coding_agents", "configure_coding_agent"}
@@ -94,7 +94,7 @@ async def send_action(
             logger.info(
                 "Routing action via SSH tunnel executor (action=%s execution_mode=%s ssh_configured=%s ssh_selected_reason=%s)",
                 action,
-                os.environ.get("OPENCLAW_EXECUTION_MODE", "").strip().lower(),
+                cfg.get_str("OPENCLAW_EXECUTION_MODE", "").strip().lower(),
                 _ssh_configured,
                 _ssh_selected_reason,
             )

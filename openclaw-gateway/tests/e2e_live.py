@@ -89,7 +89,7 @@ def _fail(trace: LiveTrace, message: str, *, detail: Any | None = None) -> None:
     sys.exit(1)
 
 
-def _check_env(trace: LiveTrace, flow: str) -> None:
+def _check_env(trace: LiveTrace, flow: str = "conversation") -> None:
     telegram_real_flows = {"telegram_real", "telegram", "real_telegram"}
     requires_ssh = flow not in telegram_real_flows
     if requires_ssh:
@@ -197,6 +197,58 @@ def _load_live_env(trace: LiveTrace) -> None:
         loaded.append(str(candidate))
 
     trace.log("env.dotenv", loaded_files=loaded)
+
+
+def _parse_settings_line(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$", stripped)
+    if not match:
+        return None
+    key, value = match.group(1), match.group(2).strip()
+    if value.startswith('"') and value.endswith('"') and len(value) >= 2:
+        value = value[1:-1]
+    if value.startswith("'") and value.endswith("'") and len(value) >= 2:
+        value = value[1:-1].replace("''", "'")
+    return key, value
+
+
+def _load_settings_env(trace: LiveTrace) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    explicit = os.environ.get("SKYNET_SETTINGS_FILE", "").strip()
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit))
+    candidates.extend(
+        [
+            repo_root / "openclaw-gateway" / "settings" / "settings.local.yaml",
+            repo_root / "openclaw-gateway" / "settings" / "settings.yaml",
+        ]
+    )
+
+    selected: Path | None = None
+    for candidate in candidates:
+        if candidate.exists():
+            selected = candidate
+            break
+
+    if selected is None:
+        trace.log("env.settings", loaded=False, reason="settings file not found")
+        return
+
+    loaded = 0
+    for raw in selected.read_text(encoding="utf-8", errors="ignore").splitlines():
+        parsed = _parse_settings_line(raw)
+        if not parsed:
+            continue
+        key, value = parsed
+        if os.environ.get(key):
+            continue
+        os.environ[key] = value
+        loaded += 1
+
+    trace.log("env.settings", loaded=True, file=str(selected), hydrated=loaded)
 
 
 def _run_conversation_flow(trace: LiveTrace) -> None:
@@ -474,6 +526,7 @@ async def run() -> None:
     trace = LiveTrace("e2e-live")
     trace.log("run.start", python=sys.version.split()[0], cwd=os.getcwd())
     _load_live_env(trace)
+    _load_settings_env(trace)
     flow = os.environ.get("SKYNET_LIVE_E2E_FLOW", "conversation").strip().lower()
     _check_env(trace, flow)
     trace.log("run.mode", flow=flow)

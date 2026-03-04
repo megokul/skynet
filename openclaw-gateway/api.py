@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from typing import Any
 
 import aiosqlite
@@ -69,7 +68,7 @@ def _force_ssh_mode(ssh_configured: bool) -> bool:
     """
 
     del ssh_configured
-    mode = os.environ.get("OPENCLAW_EXECUTION_MODE", "").strip().lower()
+    mode = cfg.get_str("OPENCLAW_EXECUTION_MODE", "").strip().lower()
     return mode in _SSH_ONLY_MODES
 
 
@@ -251,7 +250,7 @@ async def handle_status(request: web.Request) -> web.Response:
     ssh_exec = get_ssh_executor()
     ssh_ok, ssh_detail = await ssh_exec.health_check()
     ssh_configured = ssh_exec.is_configured()
-    mode = os.environ.get("OPENCLAW_EXECUTION_MODE", "").strip().lower()
+    mode = cfg.get_str("OPENCLAW_EXECUTION_MODE", "").strip().lower()
     force_ssh = mode in _SSH_ONLY_MODES
     diagnostics = ssh_exec.get_diagnostics()
     execution_mode_effective = "ssh_tunnel" if force_ssh else "agent_preferred"

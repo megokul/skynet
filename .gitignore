@@ -22,6 +22,7 @@ logs/
 !.env.example
 !.env.ec2-gateway.example
 !.env.local-e2e.example
+openclaw-gateway/settings/settings.local.yaml
 venv/
 .venv/
 
