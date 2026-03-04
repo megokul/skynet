@@ -1,10 +1,36 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-04 08:04
+Last updated (UTC): 2026-03-04 14:40
 
 ## Current Goal
 
-Supercharge the CLAW coding agent — smarter model routing, better prompts, auto-retry, and code context between milestones.
+Codex-primary rollout across coding + planner/specialist + milestone extraction, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-04 Codex-Primary Runtime Update
+
+- Switched coding execution to stage-chain orchestration with explicit order support:
+  - `codex -> claude_ollama -> cline` (config-driven via `SKYNET_CODING_FALLBACK_CHAIN`).
+- Added force-all-projects runtime override:
+  - `SKYNET_CODING_FORCE_PRIMARY_FOR_ALL=1` makes effective coding profile `codex_primary` for all projects.
+- Added chain-aware coding preflight:
+  - validates agent availability for configured stages via `check_coding_agents`.
+  - allows fallback continuation when primary is unavailable and downstream stage is available.
+- Added structured coding stage telemetry:
+  - `coding.stage.start`
+  - `coding.stage.fail`
+  - `coding.stage.success`
+- Updated strict quality auto-fix pass to use the same stage-chain routing (not hardcoded claude).
+- Added codex-first milestone extraction with router fallback:
+  - uses `run_coding_agent(agent=codex)` first.
+  - falls back to router planner extraction on action/parse failure.
+  - emits `milestone.primary.failover` logs on fallback.
+- Updated project specialist/planner flow to codex-first with router fallback:
+  - uses a planner sandbox path under project base (`_planner_sessions/<user_id>`).
+  - enforces prompt constraints ("no file writes", "plain chat output only").
+  - emits `planner.primary.failover` logs on fallback.
+- Extended project profile normalization to support `coding_profile=codex_primary`.
+- CI deploy workflow updated to pass new codex-primary/planner env vars.
+
 
 ### 2026-03-02 Deploy-Unblock Update
 
@@ -57,14 +83,14 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 
 ## What Was Completed
 
-### Coding Agent Improvements (Layer 1–4)
+### Coding Agent Improvements (Layer 1-4)
 
-- **Router-based coding**: coding loop tries `router.chat(task_type="coding")` first (Gemini → Groq → Claude), parses fenced code blocks, writes files via SSH. Falls back to Ollama SSH if no cloud provider available.
+- **Router-based coding**: coding loop tries `router.chat(task_type="coding")` first (Gemini -> Groq -> Claude), parses fenced code blocks, writes files via SSH. Falls back to Ollama SSH if no cloud provider available.
 - **Code context between milestones**: milestone N>1 reads previously written files via `file_read` and includes them in the prompt ("build on these, do NOT rewrite unchanged code").
 - **Auto-retry**: Ollama SSH path retries up to 3 times if no files generated or non-zero exit code.
 - **Better prompts**: removed dead `skynet_run.json` manifest prompt; added project-name file naming rule; shared `_CODING_SYSTEM_PROMPT` constant.
 - **Configurable `num_ctx`**: `OLLAMA_NUM_CTX` env var (default 8192, up from hardcoded 4096).
-- **Code block parser**: extracted `_parse_code_blocks()` — handles both filename-tagged and language-tagged fenced blocks with fallback naming.
+- **Code block parser**: extracted `_parse_code_blocks()` - handles both filename-tagged and language-tagged fenced blocks with fallback naming.
 - **Dead code cleanup**: removed `_RUN_MANIFEST_FILENAME`, `_ALLOWED_RUN_INTERPRETERS`, `_find_run_manifest()`, `_resolve_run_manifest()`, `_normalize_interpreter_name()`, `_build_run_command()`, `_is_safe_relative_path()`, `_is_safe_cli_token()`.
 
 ### Previous Fixes
@@ -77,6 +103,16 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 - Hardened CI/CD: env vars, SSH key guard, gateway health check, `.dockerignore`
 
 ## Test Results
+
+- `pytest -q openclaw-gateway/tests/test_coding_retry.py openclaw-gateway/tests/test_telegram_chat_simulation.py openclaw-gateway/tests/test_project_planner_fallback.py`
+  - `16 passed` (Paramiko deprecation warnings only).
+- `python scripts/ci/check_stale_paths.py`
+  - pass
+- `python scripts/ci/check_control_plane_boundary.py`
+  - pass
+- `python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD`
+  - initially failed due missing `docs/AGENT_HANDOFF.md` in change set; resolved after updating handoff doc.
+
 
 - `python -m pytest openclaw-gateway/tests -q`
   - `37 passed`
