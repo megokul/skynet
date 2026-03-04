@@ -119,7 +119,7 @@ else {
     Write-Warning "No ssh.exe process found with reverse port $RemotePort."
 }
 
-$remoteCheck = "sh -lc ""ss -ltn | awk '{print `$4}' | grep -E '[:.]$RemotePort$' >/dev/null && echo LISTEN || echo MISSING"""
+$remoteCheck = "ss -ltn"
 $sshArgs = @(
     "-o", "BatchMode=yes",
     "-o", "StrictHostKeyChecking=no",
@@ -143,8 +143,15 @@ catch {
 $text = ($output | Out-String)
 if ($null -eq $text) { $text = "" }
 $text = $text.Trim()
-$stateLine = [string]($output | Select-Object -First 1)
-$state = $stateLine.Trim().ToUpperInvariant()
+$state = ""
+if ($rc -eq 0) {
+    if ($text -match "(^|[\s:])$RemotePort($|[\s])") {
+        $state = "LISTEN"
+    }
+    else {
+        $state = "MISSING"
+    }
+}
 Write-Host "Remote bind probe: rc=$rc state=$state"
 if ($text) {
     $preview = ($text -split "`r?`n" | Select-Object -First 6) -join " | "
