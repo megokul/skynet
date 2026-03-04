@@ -94,6 +94,10 @@ jobs:
       OPENCLAW_SSH_CONNECT_TIMEOUT: ${{ secrets.OPENCLAW_SSH_CONNECT_TIMEOUT }}
       OPENCLAW_SSH_COMMAND_TIMEOUT: ${{ secrets.OPENCLAW_SSH_COMMAND_TIMEOUT }}
       OPENCLAW_SSH_HEALTH_CACHE_SECONDS: ${{ secrets.OPENCLAW_SSH_HEALTH_CACHE_SECONDS }}
+      OPENCLAW_SSH_MAX_PARALLEL: ${{ secrets.OPENCLAW_SSH_MAX_PARALLEL }}
+      OPENCLAW_SSH_CIRCUIT_BREAKER_SECONDS: ${{ secrets.OPENCLAW_SSH_CIRCUIT_BREAKER_SECONDS }}
+      OPENCLAW_SSH_CAPACITY_BACKOFF_SECONDS: ${{ secrets.OPENCLAW_SSH_CAPACITY_BACKOFF_SECONDS }}
+      OPENCLAW_SSH_HEALTH_PROBE_TIMEOUT: ${{ secrets.OPENCLAW_SSH_HEALTH_PROBE_TIMEOUT }}
       OPENCLAW_SSH_REMOTE_OS: ${{ secrets.OPENCLAW_SSH_REMOTE_OS }}
       OPENCLAW_SSH_ALLOWED_ROOTS: ${{ secrets.OPENCLAW_SSH_ALLOWED_ROOTS }}
       OPENCLAW_SSH_STRICT_HOST_KEY: ${{ secrets.OPENCLAW_SSH_STRICT_HOST_KEY }}
@@ -112,6 +116,7 @@ jobs:
       SKYNET_PLANNER_CODEX_TIMEOUT_SECONDS: ${{ secrets.SKYNET_PLANNER_CODEX_TIMEOUT_SECONDS }}
       SKYNET_MILESTONE_CODEX_TIMEOUT_SECONDS: ${{ secrets.SKYNET_MILESTONE_CODEX_TIMEOUT_SECONDS }}
       SKYNET_CODING_TRANSPORT: ${{ secrets.SKYNET_CODING_TRANSPORT }}
+      SKYNET_E2E_FAIL_ON_SKIP: ${{ secrets.SKYNET_E2E_FAIL_ON_SKIP }}
       SKYNET_CLAUDE_OLLAMA_BASE_URL: ${{ secrets.SKYNET_CLAUDE_OLLAMA_BASE_URL }}
       SKYNET_CLAUDE_OLLAMA_AUTH_TOKEN: ${{ secrets.SKYNET_CLAUDE_OLLAMA_AUTH_TOKEN }}
       SKYNET_CLAUDE_OLLAMA_DEFAULT_MODEL: ${{ secrets.SKYNET_CLAUDE_OLLAMA_DEFAULT_MODEL }}
@@ -241,6 +246,10 @@ jobs:
             printf 'OPENCLAW_SSH_CONNECT_TIMEOUT=%s\n' "${OPENCLAW_SSH_CONNECT_TIMEOUT:-4}"
             printf 'OPENCLAW_SSH_COMMAND_TIMEOUT=%s\n' "${OPENCLAW_SSH_COMMAND_TIMEOUT:-180}"
             printf 'OPENCLAW_SSH_HEALTH_CACHE_SECONDS=%s\n' "${OPENCLAW_SSH_HEALTH_CACHE_SECONDS:-15}"
+            printf 'OPENCLAW_SSH_MAX_PARALLEL=%s\n' "${OPENCLAW_SSH_MAX_PARALLEL:-2}"
+            printf 'OPENCLAW_SSH_CIRCUIT_BREAKER_SECONDS=%s\n' "${OPENCLAW_SSH_CIRCUIT_BREAKER_SECONDS:-60}"
+            printf 'OPENCLAW_SSH_CAPACITY_BACKOFF_SECONDS=%s\n' "${OPENCLAW_SSH_CAPACITY_BACKOFF_SECONDS:-30}"
+            printf 'OPENCLAW_SSH_HEALTH_PROBE_TIMEOUT=%s\n' "${OPENCLAW_SSH_HEALTH_PROBE_TIMEOUT:-6}"
             printf 'OPENCLAW_SSH_REMOTE_OS=%s\n' "${OPENCLAW_SSH_REMOTE_OS:-windows}"
             printf 'OPENCLAW_SSH_ALLOWED_ROOTS=%s\n' "${OPENCLAW_SSH_ALLOWED_ROOTS:-E:\\SKYNET-SANDBOX}"
             printf 'OPENCLAW_SSH_STRICT_HOST_KEY=%s\n' "${OPENCLAW_SSH_STRICT_HOST_KEY:-0}"
@@ -258,6 +267,7 @@ jobs:
             printf 'SKYNET_PLANNER_CODEX_TIMEOUT_SECONDS=%s\n' "${SKYNET_PLANNER_CODEX_TIMEOUT_SECONDS:-120}"
             printf 'SKYNET_MILESTONE_CODEX_TIMEOUT_SECONDS=%s\n' "${SKYNET_MILESTONE_CODEX_TIMEOUT_SECONDS:-120}"
             printf 'SKYNET_CODING_TRANSPORT=%s\n' "${SKYNET_CODING_TRANSPORT:-ssh_first}"
+            printf 'SKYNET_E2E_FAIL_ON_SKIP=%s\n' "${SKYNET_E2E_FAIL_ON_SKIP:-1}"
             printf 'SKYNET_CLAUDE_OLLAMA_BASE_URL=%s\n' "${SKYNET_CLAUDE_OLLAMA_BASE_URL:-${OPENCLAW_OLLAMA_URL:-http://localhost:11434}}"
             printf 'SKYNET_CLAUDE_OLLAMA_AUTH_TOKEN=%s\n' "${SKYNET_CLAUDE_OLLAMA_AUTH_TOKEN:-ollama}"
             printf 'SKYNET_CLAUDE_OLLAMA_DEFAULT_MODEL=%s\n' "${SKYNET_CLAUDE_OLLAMA_DEFAULT_MODEL:-${OPENCLAW_OLLAMA_MODEL:-qwen2.5-coder:7b}}"
@@ -269,6 +279,28 @@ jobs:
             printf 'SKYNET_LOG_S3_ENABLED=%s\n' "${SKYNET_LOG_S3_ENABLED:-1}"
           } > .env.ci
           chmod 600 .env.ci
+
+      - name: Validate SSH-primary deployment settings
+        shell: bash
+        run: |
+          MODE="${OPENCLAW_EXECUTION_MODE:-agent_preferred}"
+          case "$MODE" in
+            ssh|ssh_tunnel|tunnel|ssh-only)
+              : "${OPENCLAW_SSH_HOST:?Missing OPENCLAW_SSH_HOST for SSH mode}"
+              : "${OPENCLAW_SSH_USER:?Missing OPENCLAW_SSH_USER for SSH mode}"
+              if [ -z "${OPENCLAW_SSH_PASSWORD:-}" ] && [ -z "${OPENCLAW_SSH_KEY_PATH:-}" ]; then
+                echo "SSH mode requires OPENCLAW_SSH_PASSWORD or OPENCLAW_SSH_KEY_PATH."
+                exit 1
+              fi
+              if [ -n "${OPENCLAW_SSH_KEY_PATH:-}" ] && [[ "${OPENCLAW_SSH_KEY_PATH}" == /app/* ]] && [ -z "${OPENCLAW_SSH_PRIVATE_KEY_B64:-}" ]; then
+                echo "OPENCLAW_SSH_KEY_PATH points to /app/* but OPENCLAW_SSH_PRIVATE_KEY_B64 is empty."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Execution mode '$MODE' is not SSH-only; skipping strict SSH validation."
+              ;;
+          esac
 
       - name: Remove stale fixed-name containers if present
         shell: bash
@@ -322,6 +354,60 @@ jobs:
             docker compose --env-file .env.ci logs --tail=60 openclaw-gateway
             exit 1
           fi
+
+      - name: SSH banner smoke (container context)
+        shell: bash
+        run: |
+          docker exec openclaw-gateway python - <<'PY'
+          import os
+          import socket
+          import sys
+
+          mode = (os.getenv("OPENCLAW_EXECUTION_MODE") or "").strip().lower()
+          if mode not in {"ssh", "ssh_tunnel", "tunnel", "ssh-only"}:
+              print("skip: not in strict SSH mode")
+              raise SystemExit(0)
+
+          host = (os.getenv("OPENCLAW_SSH_HOST") or "").strip()
+          port_raw = (os.getenv("OPENCLAW_SSH_PORT") or "2222").strip()
+          if not host:
+              raise SystemExit("missing OPENCLAW_SSH_HOST")
+          try:
+              port = int(port_raw)
+          except ValueError as exc:
+              raise SystemExit(f"invalid OPENCLAW_SSH_PORT: {port_raw}") from exc
+
+          with socket.create_connection((host, port), timeout=6) as sock:
+              sock.settimeout(6)
+              banner = sock.recv(256).decode("utf-8", errors="ignore").strip()
+          print(f"ssh_banner={banner}")
+          if "SSH-" not in banner:
+              raise SystemExit(f"invalid SSH banner from {host}:{port}: {banner!r}")
+          PY
+
+      - name: Validate /status diagnostics contract
+        shell: bash
+        run: |
+          docker exec openclaw-gateway python - <<'PY'
+          import json
+          import urllib.request
+
+          payload = json.loads(
+              urllib.request.urlopen("http://localhost:8766/status", timeout=10).read().decode("utf-8")
+          )
+          required = [
+              "execution_mode_effective",
+              "ssh_health_ok",
+              "ssh_error_category",
+              "ssh_failure_streak",
+              "ssh_circuit_open_until",
+              "ssh_endpoint",
+          ]
+          missing = [key for key in required if key not in payload]
+          if missing:
+              raise SystemExit(f"status payload missing fields: {missing}")
+          print("status diagnostics contract ok")
+          PY
 
       - name: Verify OpenClaw provider wiring
         shell: bash

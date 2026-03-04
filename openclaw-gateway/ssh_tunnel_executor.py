@@ -13,6 +13,7 @@ import os
 import re
 import stat
 import base64
+import threading
 import time
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
@@ -88,6 +89,30 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _looks_like_ssh_infra_error(detail: str) -> bool:
+    text = (detail or "").strip().lower()
+    if not text:
+        return False
+    tokens = (
+        "ssh",
+        "timed out",
+        "timeout",
+        "banner",
+        "authentication",
+        "permission denied",
+        "connection refused",
+        "no route to host",
+        "could not resolve",
+        "maxstartups",
+        "concurrency limit reached",
+        "max_parallel",
+        "no existing session",
+        "name or service not known",
+        "network is unreachable",
+    )
+    return any(token in text for token in tokens)
+
+
 def _python_module_missing(result: dict[str, Any], module: str) -> bool:
     text = f"{result.get('stderr', '')}\n{result.get('stdout', '')}".lower()
     return f"no module named {module.lower()}" in text
@@ -120,7 +145,7 @@ def _parse_roots(raw: str, remote_os: str) -> list[str]:
     parts = [p.strip() for p in raw.replace(",", ";").split(";") if p.strip()]
     if parts:
         return parts
-    # No OPENCLAW_SSH_ALLOWED_ROOTS configured — use safe OS-level defaults.
+    # No OPENCLAW_SSH_ALLOWED_ROOTS configured - use safe OS-level defaults.
     # Set OPENCLAW_SSH_ALLOWED_ROOTS to restrict access to specific directories.
     if remote_os == "windows":
         return [r"%USERPROFILE%\Projects", r"%USERPROFILE%\Documents"]
@@ -427,6 +452,12 @@ class SSHTunnelExecutor:
         self.username = os.environ.get("OPENCLAW_SSH_USER", "").strip()
         self.password = os.environ.get("OPENCLAW_SSH_PASSWORD", "")
         self.key_path = os.environ.get("OPENCLAW_SSH_KEY_PATH", "").strip()
+        running_in_container = os.path.exists("/.dockerenv")
+        if self.key_path.startswith("/app/") and not running_in_container:
+            _log.warning(
+                "OPENCLAW_SSH_KEY_PATH=%s looks container-scoped, but process appears host-local.",
+                self.key_path,
+            )
         self.connect_timeout = _env_int("OPENCLAW_SSH_CONNECT_TIMEOUT", 4)
         self.command_timeout = _env_int("OPENCLAW_SSH_COMMAND_TIMEOUT", 180)
         self.remote_os = os.environ.get("OPENCLAW_SSH_REMOTE_OS", "windows").strip().lower()
@@ -460,6 +491,24 @@ class SSHTunnelExecutor:
         self._health_cache_seconds = _env_int("OPENCLAW_SSH_HEALTH_CACHE_SECONDS", 15)
         self._last_health_at = 0.0
         self._last_health: tuple[bool, str] = (False, "SSH health not checked yet")
+        self._max_parallel = max(1, _env_int("OPENCLAW_SSH_MAX_PARALLEL", bot_cfg.SSH_MAX_PARALLEL))
+        self._circuit_breaker_seconds = max(
+            0,
+            _env_int("OPENCLAW_SSH_CIRCUIT_BREAKER_SECONDS", bot_cfg.SSH_CIRCUIT_BREAKER_SECONDS),
+        )
+        self._capacity_backoff_seconds = max(
+            1,
+            _env_int("OPENCLAW_SSH_CAPACITY_BACKOFF_SECONDS", bot_cfg.SSH_CAPACITY_BACKOFF_SECONDS),
+        )
+        self._health_probe_timeout = max(
+            1,
+            _env_int("OPENCLAW_SSH_HEALTH_PROBE_TIMEOUT", bot_cfg.SSH_HEALTH_PROBE_TIMEOUT),
+        )
+        self._parallel_sem = threading.BoundedSemaphore(self._max_parallel)
+        self._diag_lock = threading.Lock()
+        self._failure_streak = 0
+        self._last_error_category = ""
+        self._circuit_open_until = 0.0
         self._cline_auto_switch = _env_bool("OPENCLAW_CLINE_AUTO_SWITCH", True)
         self._cline_provider_priority = _parse_provider_priority(
             os.environ.get("OPENCLAW_CLINE_PROVIDER_PRIORITY", ""),
@@ -524,6 +573,100 @@ class SSHTunnelExecutor:
 
         return self.enabled and bool(self.username and self.host)
 
+    def _classify_ssh_error(self, detail: str) -> str:
+        text = (detail or "").strip().lower()
+        if not text:
+            return "unknown"
+        if (
+            "maxstartups" in text
+            or "exceeded maxstartups" in text
+            or "concurrency limit reached" in text
+            or "max_parallel" in text
+        ):
+            return "capacity"
+        if (
+            "permission denied" in text
+            or "authentication failed" in text
+            or "no authentication methods available" in text
+        ):
+            return "auth"
+        if (
+            "error reading ssh protocol banner" in text
+            or "no existing session" in text
+            or "ssh protocol banner" in text
+        ):
+            return "banner"
+        if "timed out" in text or "timeout" in text:
+            return "timeout"
+        if (
+            "connection refused" in text
+            or "name or service not known" in text
+            or "could not resolve hostname" in text
+            or "network is unreachable" in text
+            or "no route to host" in text
+            or "host unreachable" in text
+            or "unable to connect to port" in text
+        ):
+            return "unreachable"
+        return "unknown"
+
+    def _retry_delay_for_category(self, category: str, attempt: int) -> int:
+        if category == "capacity":
+            return self._capacity_backoff_seconds
+        if category == "banner":
+            return 5 if attempt <= 1 else 10
+        if category in {"timeout", "unreachable"}:
+            return 2 if attempt <= 1 else 4
+        return min(8, max(1, attempt * 2))
+
+    def _record_ssh_success(self) -> None:
+        with self._diag_lock:
+            self._failure_streak = 0
+            self._last_error_category = ""
+            self._circuit_open_until = 0.0
+
+    def _record_ssh_failure(self, category: str) -> None:
+        now = time.time()
+        with self._diag_lock:
+            self._failure_streak += 1
+            self._last_error_category = category or "unknown"
+            if self._circuit_breaker_seconds <= 0:
+                return
+            should_open = False
+            if category == "capacity" and self._failure_streak >= 2:
+                should_open = True
+            elif category in {"banner", "timeout"} and self._failure_streak >= 3:
+                should_open = True
+            if should_open:
+                self._circuit_open_until = max(
+                    self._circuit_open_until,
+                    now + float(self._circuit_breaker_seconds),
+                )
+
+    def _circuit_remaining_seconds(self) -> int:
+        now = time.time()
+        with self._diag_lock:
+            if self._circuit_open_until <= now:
+                self._circuit_open_until = 0.0
+                return 0
+            return int(max(1.0, self._circuit_open_until - now))
+
+    def get_diagnostics(self) -> dict[str, Any]:
+        remaining = self._circuit_remaining_seconds()
+        with self._diag_lock:
+            category = self._last_error_category
+            streak = int(self._failure_streak)
+            open_until = int(self._circuit_open_until) if remaining > 0 else 0
+        configured = self.is_configured()
+        health_ok = bool(configured and self._last_health[0] and remaining <= 0)
+        return {
+            "ssh_health_ok": health_ok,
+            "ssh_error_category": category,
+            "ssh_failure_streak": streak,
+            "ssh_circuit_open_until": open_until,
+            "ssh_endpoint": f"{self.host}:{self.port}",
+        }
+
     async def health_check(self) -> tuple[bool, str]:
         """
         Health check.
@@ -548,16 +691,30 @@ class SSHTunnelExecutor:
         """
 
         if not self.is_configured():
-            return False, "SSH executor not configured"
+            self._last_health = (False, "SSH executor not configured")
+            return self._last_health
+
+        remaining = self._circuit_remaining_seconds()
+        if remaining > 0:
+            detail = f"SSH circuit open ({self.host}:{self.port}), retry after {remaining}s"
+            self._last_health = (False, detail)
+            self._last_health_at = time.time()
+            return self._last_health
+
         now = time.time()
         if now - self._last_health_at < max(self._health_cache_seconds, 1):
             return self._last_health
+
         loop = asyncio.get_running_loop()
         try:
             await loop.run_in_executor(None, self._probe_sync)
+            self._record_ssh_success()
             self._last_health = (True, f"{self.username}@{self.host}:{self.port}")
         except Exception as exc:
-            self._last_health = (False, str(exc))
+            detail = str(exc).strip() or type(exc).__name__
+            category = self._classify_ssh_error(detail)
+            self._record_ssh_failure(category)
+            self._last_health = (False, detail)
         self._last_health_at = now
         return self._last_health
 
@@ -595,6 +752,23 @@ class SSHTunnelExecutor:
         if not self.is_configured():
             return {"status": "error", "action": action, "error": "SSH fallback is not configured."}
 
+        remaining = self._circuit_remaining_seconds()
+        if remaining > 0:
+            diag = self.get_diagnostics()
+            category = str(diag.get("ssh_error_category") or "unknown")
+            endpoint = str(diag.get("ssh_endpoint") or f"{self.host}:{self.port}")
+            return {
+                "status": "error",
+                "action": action,
+                "error_category": category,
+                "retry_after_s": remaining,
+                "error": (
+                    "SSH action failed: "
+                    f"SSH_INFRA_CIRCUIT {endpoint} - circuit open after {category} failures. "
+                    f"Retry after {remaining}s."
+                ),
+            }
+
         params = dict(params or {})
         for key in self._PATH_KEYS:
             if isinstance(params.get(key), str):
@@ -631,6 +805,7 @@ class SSHTunnelExecutor:
         loop = asyncio.get_running_loop()
         try:
             result = await loop.run_in_executor(None, self._execute_sync, action, params)
+            self._record_ssh_success()
             return {"status": "ok", "action": action, "result": result}
         except Exception as exc:
             err_type = type(exc).__name__
@@ -639,8 +814,25 @@ class SSHTunnelExecutor:
                 err_msg = err_type
             else:
                 err_msg = f"{err_type}: {err_msg}"
-            if isinstance(exc, (OSError, TimeoutError, paramiko.SSHException)):
-                err_msg = f"SSH_INFRA {self.host}:{self.port} - {err_msg}"
+            is_infra = isinstance(exc, (OSError, TimeoutError, paramiko.SSHException)) or _looks_like_ssh_infra_error(err_msg)
+            if is_infra:
+                category = self._classify_ssh_error(err_msg)
+                self._record_ssh_failure(category)
+                remaining_after = self._circuit_remaining_seconds()
+                endpoint = f"{self.host}:{self.port}"
+                infra_code = f"SSH_INFRA_{category.upper()}"
+                err_msg = f"{infra_code} {endpoint} - {err_msg}"
+                payload: dict[str, Any] = {
+                    "status": "error",
+                    "action": action,
+                    "error_category": category,
+                    "error": f"SSH action failed: {err_msg}",
+                }
+                if remaining_after > 0:
+                    payload["retry_after_s"] = remaining_after
+                _log.error("SSH infra action '%s' failed (%s): %s", action, category, err_msg, exc_info=True)
+                return payload
+
             _log.error("SSH action '%s' failed: %s", action, err_msg, exc_info=True)
             return {"status": "error", "action": action, "error": f"SSH action failed: {err_msg}"}
 
@@ -667,17 +859,30 @@ class SSHTunnelExecutor:
         - Return value typed as `None` when available; otherwise side effects only.
         """
 
-        client = self._connect()
-        try:
-            probe_args = ["cmd", "/c", "echo", "ok"] if self.remote_os == "windows" else ["sh", "-lc", "echo ok"]
-            command = self._build_command(probe_args, cwd=None)
-            _, stdout, stderr = client.exec_command(command, timeout=self.connect_timeout)
-            _ = stdout.read()
-            _ = stderr.read()
-        finally:
-            client.close()
+        remaining = self._circuit_remaining_seconds()
+        if remaining > 0:
+            raise RuntimeError(f"SSH circuit open, retry after {remaining}s")
 
-    def _connect(self) -> paramiko.SSHClient:
+        slot_timeout = max(1, self._health_probe_timeout)
+        acquired = self._parallel_sem.acquire(timeout=slot_timeout)
+        if not acquired:
+            raise RuntimeError(
+                "SSH health probe skipped: OPENCLAW_SSH_MAX_PARALLEL limit reached."
+            )
+        try:
+            client = self._connect(max_retries=1, timeout_override=self._health_probe_timeout)
+            try:
+                probe_args = ["cmd", "/c", "echo", "ok"] if self.remote_os == "windows" else ["sh", "-lc", "echo ok"]
+                command = self._build_command(probe_args, cwd=None)
+                _, stdout, stderr = client.exec_command(command, timeout=self._health_probe_timeout)
+                _ = stdout.read()
+                _ = stderr.read()
+            finally:
+                client.close()
+        finally:
+            self._parallel_sem.release()
+
+    def _connect(self, *, max_retries: int = 3, timeout_override: int | None = None) -> paramiko.SSHClient:
         """
         Connect.
         
@@ -700,10 +905,11 @@ class SSHTunnelExecutor:
         - Return value typed as `paramiko.SSHClient` when available; otherwise side effects only.
         """
 
-        max_retries = 3
+        retries = max(1, int(max_retries))
         last_exc: Exception | None = None
+        connect_timeout = max(1, int(timeout_override or self.connect_timeout))
 
-        for attempt in range(1, max_retries + 1):
+        for attempt in range(1, retries + 1):
             client = paramiko.SSHClient()
             if self.strict_host_key:
                 client.load_system_host_keys()
@@ -714,9 +920,9 @@ class SSHTunnelExecutor:
                 "hostname": self.host,
                 "port": self.port,
                 "username": self.username,
-                "timeout": self.connect_timeout,
-                "auth_timeout": self.connect_timeout,
-                "banner_timeout": self.connect_timeout,
+                "timeout": connect_timeout,
+                "auth_timeout": connect_timeout,
+                "banner_timeout": connect_timeout,
                 "look_for_keys": True,
                 "allow_agent": True,
             }
@@ -731,17 +937,23 @@ class SSHTunnelExecutor:
                 last_exc = exc
                 client.close()
                 err_detail = str(exc).strip() or type(exc).__name__
-                if attempt < max_retries:
-                    delay = attempt * 2  # 2s, 4s
+                category = self._classify_ssh_error(err_detail)
+                if category == "auth":
+                    _log.error("SSH authentication failed to %s:%s (%s)", self.host, self.port, err_detail)
+                    raise RuntimeError(
+                        f"SSH authentication failed to {self.host}:{self.port}: {err_detail}"
+                    ) from exc
+                if attempt < retries:
+                    delay = self._retry_delay_for_category(category, attempt)
                     _log.warning(
-                        "SSH connect attempt %d/%d failed (%s), retrying in %ds…",
-                        attempt, max_retries, err_detail, delay,
+                        "SSH connect attempt %d/%d failed [%s] (%s), retrying in %ds...",
+                        attempt, retries, category, err_detail, delay,
                     )
                     time.sleep(delay)
                     continue
-                _log.error("SSH connect failed after %d attempts: %s", max_retries, err_detail)
+                _log.error("SSH connect failed after %d attempts [%s]: %s", retries, category, err_detail)
                 raise RuntimeError(
-                    f"SSH connect failed to {self.host}:{self.port} after {max_retries} attempts: {err_detail}"
+                    f"SSH connect failed to {self.host}:{self.port} after {retries} attempts: {err_detail}"
                 ) from exc
 
             # Warm up the transport by opening (then closing) an SFTP session.
@@ -752,7 +964,7 @@ class SSHTunnelExecutor:
                 sftp = client.open_sftp()
                 sftp.close()
             except Exception:
-                pass  # best effort — if SFTP probe fails, proceed anyway
+                pass  # best effort - if SFTP probe fails, proceed anyway
 
             return client
 
@@ -782,19 +994,26 @@ class SSHTunnelExecutor:
         - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
         """
 
-        client = self._connect()
+        slot_timeout = max(1, self.connect_timeout + 1)
+        acquired = self._parallel_sem.acquire(timeout=slot_timeout)
+        if not acquired:
+            raise RuntimeError("SSH concurrency limit reached; try again shortly.")
         try:
-            if action == "file_read":
-                return self._file_read(client, params)
-            if action == "file_write":
-                return self._file_write(client, params)
-            if action == "create_directory":
-                return self._create_directory(client, params)
-            if action == "list_directory":
-                return self._list_directory(client, params)
-            return self._run_command_action(client, action, params)
+            client = self._connect()
+            try:
+                if action == "file_read":
+                    return self._file_read(client, params)
+                if action == "file_write":
+                    return self._file_write(client, params)
+                if action == "create_directory":
+                    return self._create_directory(client, params)
+                if action == "list_directory":
+                    return self._list_directory(client, params)
+                return self._run_command_action(client, action, params)
+            finally:
+                client.close()
         finally:
-            client.close()
+            self._parallel_sem.release()
 
     def _build_command(
         self,
@@ -1073,7 +1292,7 @@ class SSHTunnelExecutor:
         return sorted(changed)
 
     # ------------------------------------------------------------------
-    # Ollama coding agent — EC2 calls Ollama on laptop via SSH, all
+    # Ollama coding agent - EC2 calls Ollama on laptop via SSH, all
     # intelligence (prompt building, code parsing, file writing) stays on EC2.
     # ------------------------------------------------------------------
 
@@ -1090,12 +1309,12 @@ class SSHTunnelExecutor:
         "```\n\n"
         "Rules:\n"
         "- The opening ``` MUST be followed by the actual filename, NEVER a language like python or js.\n"
-        "- Write complete, working code — no placeholders, no '...'.\n"
+        "- Write complete, working code - no placeholders, no '...'.\n"
         "- Include every file needed (source, config, requirements, etc.).\n"
         "- Do NOT add explanations outside code blocks.\n"
         "- Use the working directory as the project root.\n"
         "- NEVER create a subdirectory with the same name as a top-level .py file. "
-        "For example, if you have main.py, do NOT also create main/utils.py — "
+        "For example, if you have main.py, do NOT also create main/utils.py - "
         "use a different directory name like lib/ or helpers/ instead.\n"
         "- Name the main entry-point file after the project name given in the task.\n"
     )
@@ -1111,7 +1330,7 @@ class SSHTunnelExecutor:
     ) -> dict[str, Any]:
         """
         1. Write a one-shot Python script to the laptop via SFTP.
-        2. Run it via SSH exec — it calls the local Ollama API and prints the response.
+        2. Run it via SSH exec - it calls the local Ollama API and prints the response.
         3. Parse the response on EC2 for fenced code blocks with file paths.
         4. Write each file to the laptop via SFTP.
         5. Return a summary.
@@ -1124,7 +1343,7 @@ class SSHTunnelExecutor:
         b64_url     = base64.b64encode(ollama_url.encode("utf-8")).decode("ascii")
         b64_model   = base64.b64encode(model.encode("utf-8")).decode("ascii")
 
-        # One-shot Python script — uses only stdlib (no pip installs needed).
+        # One-shot Python script - uses only stdlib (no pip installs needed).
         script_body = (
             "import base64, json, urllib.request, sys\n"
             f"prompt = base64.b64decode('{b64_prompt}').decode('utf-8')\n"
@@ -1161,8 +1380,8 @@ class SSHTunnelExecutor:
             sftp.close()
             return {"returncode": 1, "stdout": "", "stderr": f"Cannot write temp script: {exc}"}
 
-        # Run it — stdout is the Ollama-generated text.
-        # Close SFTP first — long-running exec can invalidate the session.
+        # Run it - stdout is the Ollama-generated text.
+        # Close SFTP first - long-running exec can invalidate the session.
         sftp.close()
         result = self._run_command(client, ["python", tmp_script], cwd=None, timeout=timeout)
 
@@ -1186,7 +1405,7 @@ class SSHTunnelExecutor:
         files_written: list[str] = []
         errors: list[str] = []
 
-        # Language tag → file extension mapping for fallback naming.
+        # Language tag -> file extension mapping for fallback naming.
         _LANG_EXT = {
             "python": ".py", "py": ".py", "javascript": ".js", "js": ".js",
             "typescript": ".ts", "ts": ".ts", "java": ".java", "c": ".c",
@@ -1217,7 +1436,7 @@ class SSHTunnelExecutor:
                 fallback = f"main{ext}" if idx == 0 else f"file{idx}{ext}"
                 file_blocks.append((fallback, content))
 
-        # ── Fix shadowing: if foo.py and foo/bar.py both exist, rename the
+        # -- Fix shadowing: if foo.py and foo/bar.py both exist, rename the
         # subdirectory to lib/ so Python doesn't treat foo.py as the package.
         top_level_stems = set()
         for fn, _ in file_blocks:
@@ -1225,7 +1444,7 @@ class SSHTunnelExecutor:
             if len(parts) == 1 and parts[0].endswith(".py"):
                 top_level_stems.add(parts[0].rsplit(".", 1)[0])
 
-        # Map of conflicting stems that need renaming (e.g. "blakely" → "lib").
+        # Map of conflicting stems that need renaming (e.g. "blakely" -> "lib").
         shadow_renames: dict[str, str] = {}
         for stem in top_level_stems:
             for fn, _ in file_blocks:
@@ -1241,7 +1460,7 @@ class SSHTunnelExecutor:
                 if len(parts) > 1 and parts[0] in shadow_renames:
                     parts[0] = shadow_renames[parts[0]]
                     fn = "/".join(parts)
-                # Rewrite imports: from <old_pkg>.x import y → from lib.x import y
+                # Rewrite imports: from <old_pkg>.x import y -> from lib.x import y
                 for old_name, new_name in shadow_renames.items():
                     content = content.replace(f"from {old_name}.", f"from {new_name}.")
                     content = content.replace(f"import {old_name}.", f"import {new_name}.")
@@ -2734,3 +2953,4 @@ def get_ssh_executor() -> SSHTunnelExecutor:
     if _SSH_EXECUTOR is None:
         _SSH_EXECUTOR = SSHTunnelExecutor()
     return _SSH_EXECUTOR
+

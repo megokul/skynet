@@ -30,6 +30,35 @@ Interpretation:
 - `agent_connected=true`: WS worker path active.
 - `ssh_fallback_enabled=true` + healthy target: SSH path active or available.
 - `execution_mode=ssh_tunnel`: forced SSH mode.
+- `/status` diagnostics:
+  - `ssh_error_category`: `unreachable|auth|capacity|banner|timeout|unknown`
+  - `ssh_failure_streak`: consecutive infra failures
+  - `ssh_circuit_open_until`: epoch when retries resume
+  - `ssh_endpoint`: active host:port target
+
+SSH infra triage quick checks:
+
+```bash
+# From gateway container context (authoritative for Docker runtime):
+python - <<'PY'
+import json, urllib.request
+print(json.loads(urllib.request.urlopen("http://localhost:8766/status").read().decode()))
+PY
+```
+
+Capacity-specific triage (`MaxStartups`):
+
+1. Check `/status` for `ssh_error_category=capacity`.
+2. Inspect laptop OpenSSH Operational log for `Exceeded MaxStartups`.
+3. Confirm gateway is not opening excessive parallel SSH sessions.
+4. Verify laptop `sshd_config` tuning (`MaxStartups`, `MaxSessions`, `LoginGraceTime`).
+
+Banner failure triage:
+
+1. Confirm reverse tunnel process is single-instance (`OpenClawReverseTunnel` task).
+2. Verify EC2 bind target is reachable from gateway container (`host.docker.internal:2222` for Docker mode).
+3. Run `scripts/check_tunnel_health.ps1` on laptop.
+4. If repeated, inspect packet resets / stale ssh.exe process buildup.
 
 ## Task Lock and Stale Claim Failures
 

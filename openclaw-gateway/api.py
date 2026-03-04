@@ -68,8 +68,9 @@ def _force_ssh_mode(ssh_configured: bool) -> bool:
     - Return value typed as `bool` when available; otherwise side effects only.
     """
 
+    del ssh_configured
     mode = os.environ.get("OPENCLAW_EXECUTION_MODE", "").strip().lower()
-    return ssh_configured and mode in _SSH_ONLY_MODES
+    return mode in _SSH_ONLY_MODES
 
 
 def _action_key(task_id: str | None, idempotency_key: str | None) -> str | None:
@@ -250,13 +251,22 @@ async def handle_status(request: web.Request) -> web.Response:
     ssh_exec = get_ssh_executor()
     ssh_ok, ssh_detail = await ssh_exec.health_check()
     ssh_configured = ssh_exec.is_configured()
-    force_ssh = _force_ssh_mode(ssh_configured)
+    mode = os.environ.get("OPENCLAW_EXECUTION_MODE", "").strip().lower()
+    force_ssh = mode in _SSH_ONLY_MODES
+    diagnostics = ssh_exec.get_diagnostics()
+    execution_mode_effective = "ssh_tunnel" if force_ssh else "agent_preferred"
     return web.json_response({
         "agent_connected": is_agent_connected(),
         "ssh_fallback_enabled": ssh_configured,
         "ssh_fallback_healthy": ssh_ok,
         "ssh_fallback_target": ssh_detail,
-        "execution_mode": "ssh_tunnel" if force_ssh else "agent_preferred",
+        "execution_mode": execution_mode_effective,
+        "execution_mode_effective": execution_mode_effective,
+        "ssh_health_ok": bool(diagnostics.get("ssh_health_ok", ssh_ok)),
+        "ssh_error_category": str(diagnostics.get("ssh_error_category", "")),
+        "ssh_failure_streak": int(diagnostics.get("ssh_failure_streak", 0)),
+        "ssh_circuit_open_until": int(diagnostics.get("ssh_circuit_open_until", 0)),
+        "ssh_endpoint": str(diagnostics.get("ssh_endpoint", f"{ssh_exec.host}:{ssh_exec.port}")),
     })
 
 

@@ -1,10 +1,43 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-04 14:40
+Last updated (UTC): 2026-03-04 18:30
 
 ## Current Goal
 
-Codex-primary rollout across coding + planner/specialist + milestone extraction, while preserving strict quality gates and deterministic run behavior.
+SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-04 SSH-Primary Reliability Hardening Update
+
+- Implemented SSH executor resilience controls in `openclaw-gateway/ssh_tunnel_executor.py`:
+  - error categorization (`unreachable|auth|capacity|banner|timeout|unknown`)
+  - `OPENCLAW_SSH_MAX_PARALLEL` bounded concurrency gate
+  - category-aware retry backoff
+  - circuit breaker with failure streak tracking
+  - diagnostics API (`get_diagnostics`) exposing health/category/streak/circuit/endpoint
+- Hardened forced SSH behavior:
+  - `gateway.send_action` now fails fast when `OPENCLAW_EXECUTION_MODE=ssh_tunnel` but SSH is not configured.
+  - Added route decision telemetry (`action`, `execution_mode`, `ssh_selected_reason`).
+- Extended `/status` contract in `openclaw-gateway/api.py`:
+  - `execution_mode_effective`
+  - `ssh_health_ok`
+  - `ssh_error_category`
+  - `ssh_failure_streak`
+  - `ssh_circuit_open_until`
+  - `ssh_endpoint`
+- Removed live-E2E false-green conditions:
+  - `test_e2e_conversation_live.py` now uses `_skip_or_fail_live(...)` and fails when `SKYNET_E2E_FAIL_ON_SKIP=1`.
+  - `tests/e2e_live.py` now forwards `SKYNET_E2E_FAIL_ON_SKIP`, emits `pytest_passed/pytest_skipped/infra_category`, and fails strict skip runs.
+- Added SSH profile templates:
+  - `.env.ec2-gateway.example`
+  - `.env.local-e2e.example`
+- Standardized tunnel lifecycle scripts:
+  - rewrote `scripts/keep_tunnel_alive.ps1` with single-instance mutex, `ConnectTimeout`, log rotation, and heartbeat bind checks
+  - added `scripts/register_tunnel_task.ps1`
+  - added `scripts/check_tunnel_health.ps1`
+- Added CI/CD SSH guardrails in `.github/workflows/deploy-ec2-skynet.yml`:
+  - SSH config validation step
+  - container-context SSH banner smoke
+  - `/status` diagnostics contract assertion
 
 ### 2026-03-04 Codex-Primary Runtime Update
 
@@ -104,6 +137,20 @@ Codex-primary rollout across coding + planner/specialist + milestone extraction,
 
 ## Test Results
 
+- `python -m py_compile openclaw-gateway/ssh_tunnel_executor.py openclaw-gateway/api.py openclaw-gateway/gateway.py openclaw-gateway/tests/e2e_live.py openclaw-gateway/tests/test_e2e_conversation_live.py openclaw-gateway/tests/test_ssh_executor_resilience.py openclaw-gateway/tests/test_api_status_diagnostics.py openclaw-gateway/tests/test_gateway_ssh_mode.py openclaw-gateway/tests/test_live_e2e_runner_policy.py`
+  - pass
+- `python -m pytest -q openclaw-gateway/tests/test_ssh_executor_resilience.py openclaw-gateway/tests/test_api_status_diagnostics.py openclaw-gateway/tests/test_gateway_ssh_mode.py openclaw-gateway/tests/test_live_e2e_runner_policy.py`
+  - `14 passed`
+- `python -m pytest -q openclaw-gateway/tests/test_e2e.py openclaw-gateway/tests/test_telegram_chat_simulation.py openclaw-gateway/tests/test_project_planner_fallback.py`
+  - `26 passed`
+- `python -m pytest -q openclaw-gateway/tests/test_e2e.py openclaw-gateway/tests/test_telegram_chat_simulation.py openclaw-gateway/tests/test_project_planner_fallback.py openclaw-gateway/tests/test_ssh_executor_resilience.py openclaw-gateway/tests/test_api_status_diagnostics.py openclaw-gateway/tests/test_gateway_ssh_mode.py openclaw-gateway/tests/test_live_e2e_runner_policy.py`
+  - `40 passed`
+- `python scripts/ci/check_stale_paths.py`
+  - pass
+- `python scripts/ci/check_control_plane_boundary.py`
+  - pass
+- `python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD`
+  - pass
 - `pytest -q openclaw-gateway/tests/test_coding_retry.py openclaw-gateway/tests/test_telegram_chat_simulation.py openclaw-gateway/tests/test_project_planner_fallback.py`
   - `16 passed` (Paramiko deprecation warnings only).
 - `python scripts/ci/check_stale_paths.py`
@@ -169,9 +216,19 @@ Codex-primary rollout across coding + planner/specialist + milestone extraction,
 - request_id=live-e2e-strict-recovery-20260304
 - task_id=conversation-flow-no-mocks
 - openclaw-gateway/tests/.artifacts/e2e-live-1772610595.log
+- request_id=ssh-primary-reliability-hardening-20260304
+- task_id=ssh-tunnel-resilience-and-status-contract
+- /v1/events
 ## Documentation Updates
 
 - `docs/AGENT_HANDOFF.md`
+- `README.md`
+- `docs/DEBUG_PLAYBOOK.md`
+- `docs/IMPLEMENTATION_GUIDE.md`
+- `.gitignore`
+- `.env.example`
+- `.env.ec2-gateway.example`
+- `.env.local-e2e.example`
 
 ## Blockers
 

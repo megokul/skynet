@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -98,10 +99,36 @@ def _check_env(trace: LiveTrace) -> None:
         has_password=bool(os.environ.get("OPENCLAW_SSH_PASSWORD", "").strip()),
     )
     if missing:
-        print(f"[SKIP] Missing env vars: {', '.join(missing)}")
+        strict = _bool_env("SKYNET_E2E_FAIL_ON_SKIP", True)
+        detail = f"Missing env vars: {', '.join(missing)}"
+        if strict:
+            _fail(trace, "Live E2E environment validation failed.", detail=detail)
+        print(f"[SKIP] {detail}")
         print("       Set OPENCLAW_SSH_* vars and retry.")
         print(f"[TRACE] {trace.path}")
         sys.exit(0)
+
+
+def _infer_infra_category(output: str) -> str:
+    text = (output or "").lower()
+    if "maxstartups" in text or "exceeded maxstartups" in text:
+        return "capacity"
+    if "permission denied" in text or "authentication failed" in text:
+        return "auth"
+    if "protocol banner" in text or "no existing session" in text:
+        return "banner"
+    if "timed out" in text or "timeout" in text:
+        return "timeout"
+    if (
+        "connection refused" in text
+        or "could not resolve hostname" in text
+        or "name or service not known" in text
+        or "network is unreachable" in text
+        or "no route to host" in text
+        or "ssh executor unreachable" in text
+    ):
+        return "unreachable"
+    return ""
 
 
 def _load_live_env(trace: LiveTrace) -> None:
@@ -141,22 +168,63 @@ def _run_conversation_flow(trace: LiveTrace) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     target = (
         "openclaw-gateway/tests/test_e2e_conversation_live.py::"
-        "test_live_conversation_real_planner_codegen_and_github_push"
+        "test_live_conversation_real_planner_codegen_no_github_push"
     )
     cmd = [sys.executable, "-m", "pytest", target, "-q", "-s"]
     env = os.environ.copy()
     env["SKYNET_E2E_LIVE"] = os.environ.get("SKYNET_E2E_LIVE", "1")
     env["SKYNET_LIVE_TRACE_FILE"] = str(trace.path)
+    env["SKYNET_E2E_FAIL_ON_SKIP"] = os.environ.get("SKYNET_E2E_FAIL_ON_SKIP", "1")
 
     trace.log(
         "conversation.invoke",
         repo_root=str(repo_root),
         cmd=" ".join(cmd),
     )
-    rc = subprocess.call(cmd, cwd=str(repo_root), env=env)
-    trace.log("conversation.exit", returncode=rc)
-    if rc != 0:
-        _fail(trace, "Conversation live E2E failed.", detail=f"pytest exit code: {rc}")
+    completed = subprocess.run(
+        cmd,
+        cwd=str(repo_root),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        errors="replace",
+    )
+    if completed.stdout:
+        print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
+    if completed.stderr:
+        print(completed.stderr, file=sys.stderr, end="" if completed.stderr.endswith("\n") else "\n")
+
+    output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+    match_passed = re.search(r"(\d+)\s+passed", output, flags=re.IGNORECASE)
+    match_skipped = re.search(r"(\d+)\s+skipped", output, flags=re.IGNORECASE)
+    passed = int(match_passed.group(1)) if match_passed else 0
+    skipped = int(match_skipped.group(1)) if match_skipped else 0
+    infra_category = _infer_infra_category(output)
+    trace.log(
+        "conversation.exit",
+        returncode=completed.returncode,
+        pytest_passed=passed,
+        pytest_skipped=skipped,
+        infra_category=infra_category,
+    )
+    strict = _bool_env("SKYNET_E2E_FAIL_ON_SKIP", True)
+    if completed.returncode == 0 and skipped > 0 and strict:
+        if infra_category:
+            print(f"[INFRA] Live E2E skip category: {infra_category}")
+        _fail(
+            trace,
+            "Conversation live E2E was skipped under strict mode.",
+            detail=f"pytest skipped={skipped}",
+        )
+    if completed.returncode != 0:
+        if infra_category:
+            print(f"[INFRA] Conversation live E2E infra category: {infra_category}")
+        _fail(
+            trace,
+            "Conversation live E2E failed.",
+            detail=f"pytest exit code: {completed.returncode}",
+        )
     trace.log("run.success", flow="conversation")
     print("[OK] Conversation live E2E passed.")
     print(f"[TRACE] {trace.path}")

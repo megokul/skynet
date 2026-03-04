@@ -19,6 +19,9 @@ logs/
 # Environment
 .env
 .env.*
+!.env.example
+!.env.ec2-gateway.example
+!.env.local-e2e.example
 venv/
 .venv/
 

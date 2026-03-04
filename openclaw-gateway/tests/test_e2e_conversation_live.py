@@ -1,4 +1,4 @@
-"""Manual live conversation E2E against real planner + SSH worker + GitHub."""
+"""Manual live conversation E2E against real planner + SSH worker (no GitHub repo creation)."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ from bot.handlers.project import (
     requirements_done_handler,
 )
 from bot.keyboards import (
-    CB_CODING_GITHUB_YES,
+    CB_CODING_GITHUB_SKIP,
     CB_PLAN_APPROVE,
     CB_REQUIREMENTS_DONE,
     CB_RUN_PROJECT,
@@ -86,6 +86,20 @@ def _load_live_env_from_dotenv() -> None:
 
 
 _load_live_env_from_dotenv()
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _skip_or_fail_live(reason: str, detail: str | None = None) -> None:
+    message = reason if not detail else f"{reason}: {detail}"
+    if _bool_env("SKYNET_E2E_FAIL_ON_SKIP", True):
+        raise AssertionError(message)
+    pytest.skip(message)
 
 
 def _make_live_trace_logger(test_name: str):
@@ -240,7 +254,7 @@ def _restore_env(previous: dict[str, str | None]) -> None:
 @pytest.mark.e2e
 @pytest.mark.live
 @pytest.mark.asyncio
-async def test_live_conversation_real_planner_codegen_and_github_push():
+async def test_live_conversation_real_planner_codegen_no_github_push():
     trace_path, trace = _make_live_trace_logger("live-conversation-e2e")
     if os.environ.get("SKYNET_E2E_LIVE") != "1":
         trace("test.skip", reason="SKYNET_E2E_LIVE is not 1")
@@ -252,7 +266,7 @@ async def test_live_conversation_real_planner_codegen_and_github_push():
     ]
     if missing:
         trace("test.skip", reason="Missing SSH env vars", missing=missing)
-        pytest.skip(f"Missing live E2E SSH env vars: {', '.join(missing)}")
+        _skip_or_fail_live("Missing live E2E SSH env vars", ", ".join(missing))
 
     previous_env, _ = _with_env(
         {
@@ -265,11 +279,11 @@ async def test_live_conversation_real_planner_codegen_and_github_push():
         executor = get_ssh_executor()
         if not executor.is_configured():
             trace("test.skip", reason="SSH executor is not configured")
-            pytest.skip("SSH executor is not configured for live E2E.")
+            _skip_or_fail_live("SSH executor is not configured for live E2E.")
         healthy, detail = await executor.health_check()
         if not healthy:
             trace("test.skip", reason="SSH executor unreachable", detail=detail)
-            pytest.skip(f"SSH executor unreachable: {detail}")
+            _skip_or_fail_live("SSH executor unreachable", detail)
 
         trace(
             "test.start",
@@ -410,7 +424,7 @@ async def test_live_conversation_real_planner_codegen_and_github_push():
             raise AssertionError("Timed out auto-approving live milestones.")
 
         approve_task = asyncio.create_task(auto_approve_until_complete())
-        upd = _make_callback_update(CB_CODING_GITHUB_YES, user_id=user_id, chat_id=chat_id)
+        upd = _make_callback_update(CB_CODING_GITHUB_SKIP, user_id=user_id, chat_id=chat_id)
         ctx = make_ctx(extra_user_data={_CODING_PID_KEY: project_id})
 
         trace("step.start", step=9, name="coding_loop")
@@ -431,8 +445,8 @@ async def test_live_conversation_real_planner_codegen_and_github_push():
         assert any(t["status"] == "done" for t in tasks), "No milestone completed successfully."
 
         all_bot_text = " ".join(str(item.get("text", "")) for item in app.bot.sent_messages)
-        assert "GitHub repo created and pushed" in all_bot_text, (
-            "Real GitHub repo creation message not observed in bot output."
+        assert "GitHub repo created and pushed" not in all_bot_text, (
+            "Live conversation E2E should skip GitHub repo creation."
         )
 
         trace("step.start", step=10, name="run_project")

@@ -80,11 +80,27 @@ async def send_action(
         and action in _coding_actions
         and _ssh_exec.is_configured()
     )
+    _ssh_selected_reason = ""
+    if _force_ssh:
+        _ssh_selected_reason = "execution_mode_ssh_tunnel"
+    elif _prefer_ssh_for_coding:
+        _ssh_selected_reason = "coding_transport_ssh_first"
+    elif _agent_ws is None:
+        _ssh_selected_reason = "no_worker_connected"
 
-    if _force_ssh or _prefer_ssh_for_coding or _agent_ws is None:
-        if _ssh_exec.is_configured():
-            logger.info("Routing action '%s' via SSH tunnel executor.", action)
+    if _ssh_selected_reason:
+        _ssh_configured = _ssh_exec.is_configured()
+        if _ssh_configured:
+            logger.info(
+                "Routing action via SSH tunnel executor (action=%s execution_mode=%s ssh_configured=%s ssh_selected_reason=%s)",
+                action,
+                os.environ.get("OPENCLAW_EXECUTION_MODE", "").strip().lower(),
+                _ssh_configured,
+                _ssh_selected_reason,
+            )
             return await _ssh_exec.execute_action(action, params or {}, confirmed=confirmed)
+        if _force_ssh:
+            raise RuntimeError("OPENCLAW_EXECUTION_MODE forces SSH, but SSH tunnel executor is not configured.")
         if _agent_ws is None:
             raise RuntimeError("No agent connected.")
 

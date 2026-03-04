@@ -779,7 +779,7 @@ class TestCodingLoopErrorSurfacing:
         approve_task = asyncio.create_task(_approve())
 
         async def _send_action(action, params, **kwargs):
-            del params, kwargs
+            del kwargs
             if action in {"create_directory", "check_coding_agents"}:
                 return {
                     "status": "success",
@@ -789,6 +789,19 @@ class TestCodingLoopErrorSurfacing:
                         "stderr": "",
                     },
                 }
+            if action == "run_coding_agent":
+                payload = dict(send_action_return)
+                inner = payload.get("result")
+                if not isinstance(inner, dict):
+                    inner = payload
+                if (
+                    isinstance(inner, dict)
+                    and int(inner.get("returncode", inner.get("exit_code", 1))) == 0
+                    and not inner.get("files_written")
+                ):
+                    project_name = str(self.PROJECT.get("name") or "project").strip().lower()
+                    inner["files_written"] = [f"{project_name}.py"]
+                return payload
             return send_action_return
 
         with (

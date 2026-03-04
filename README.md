@@ -233,3 +233,38 @@ Use `/agent_status` in Telegram:
 
 - `Worker Connected` = normal OpenClaw worker mode
 - `SSH Tunnel Ready` = tunnel fallback mode active and healthy
+
+### SSH-Primary Profile Split
+
+Use the correct env profile for the runtime context:
+
+- EC2 Dockerized gateway: `.env.ec2-gateway.example`
+- Local host-run live E2E: `.env.local-e2e.example`
+
+Always run live E2E with an explicit env file:
+
+```powershell
+$env:SKYNET_ENV_FILE = ".env.local-e2e"
+python openclaw-gateway/tests/e2e_live.py
+```
+
+### SSH Reliability Controls
+
+These env vars are enabled for SSH-primary hardening:
+
+- `OPENCLAW_SSH_MAX_PARALLEL` (default `2`)
+- `OPENCLAW_SSH_CIRCUIT_BREAKER_SECONDS` (default `60`)
+- `OPENCLAW_SSH_CAPACITY_BACKOFF_SECONDS` (default `30`)
+- `OPENCLAW_SSH_HEALTH_PROBE_TIMEOUT` (default `6`)
+- `SKYNET_E2E_FAIL_ON_SKIP` (default `1`, prevents false-green live E2E)
+
+### Canonical Tunnel Task Workflow (Windows laptop)
+
+Use the built-in scripts under `scripts/`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\register_tunnel_task.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\check_tunnel_health.ps1
+```
+
+Canonical scheduled task name: `OpenClawReverseTunnel`.

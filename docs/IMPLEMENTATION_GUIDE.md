@@ -77,8 +77,31 @@ Gateway:
 
 - `OPENCLAW_EXECUTION_MODE` (`ssh`, `ssh_tunnel`, etc.) can force SSH mode.
 - `OPENCLAW_SSH_*` controls fallback target, auth, path jail roots, and timeouts.
+- SSH-primary resilience controls:
+  - `OPENCLAW_SSH_MAX_PARALLEL`
+  - `OPENCLAW_SSH_CIRCUIT_BREAKER_SECONDS`
+  - `OPENCLAW_SSH_CAPACITY_BACKOFF_SECONDS`
+  - `OPENCLAW_SSH_HEALTH_PROBE_TIMEOUT`
+- Live E2E strictness: `SKYNET_E2E_FAIL_ON_SKIP=1` (skip is treated as failure).
 - `AI_PROVIDER_PRIORITY`, provider API keys, and model flags drive routing.
 - `SKYNET_TRACE_MIRROR_LOG_DIR`, `SKYNET_LOG_ENABLE_SSH_MIRROR` affect trace sink behavior.
+
+## Tunnel Lifecycle SOP
+
+Canonical scripts under `scripts/`:
+
+- `keep_tunnel_alive.ps1`: single-instance reverse tunnel keepalive with heartbeat logging
+- `register_tunnel_task.ps1`: registers canonical task `OpenClawReverseTunnel`
+- `check_tunnel_health.ps1`: operator diagnostic (task state + ssh process + remote bind)
+
+Recommended operator commands:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\register_tunnel_task.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\check_tunnel_health.ps1
+Get-ScheduledTask -TaskName OpenClawReverseTunnel
+Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" | Select-Object ProcessId, CommandLine
+```
 
 Agent:
 
