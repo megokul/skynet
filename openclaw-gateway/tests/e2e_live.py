@@ -89,23 +89,57 @@ def _fail(trace: LiveTrace, message: str, *, detail: Any | None = None) -> None:
     sys.exit(1)
 
 
-def _check_env(trace: LiveTrace) -> None:
-    required = ("OPENCLAW_SSH_HOST", "OPENCLAW_SSH_USER")
+def _check_env(trace: LiveTrace, flow: str) -> None:
+    telegram_real_flows = {"telegram_real", "telegram", "real_telegram"}
+    requires_ssh = flow not in telegram_real_flows
+    if requires_ssh:
+        required = ("OPENCLAW_SSH_HOST", "OPENCLAW_SSH_USER")
+    else:
+        required = (
+            "SKYNET_E2E_TELEGRAM_API_ID",
+            "SKYNET_E2E_TELEGRAM_API_HASH",
+            "SKYNET_E2E_TELEGRAM_SESSION",
+            "SKYNET_E2E_TELEGRAM_BOT_USERNAME",
+        )
+
     missing = [var for var in required if not os.environ.get(var)]
+    ssh_host = os.environ.get("OPENCLAW_SSH_HOST", "").strip()
+    in_container = Path("/.dockerenv").exists()
+    strict = _bool_env("SKYNET_E2E_FAIL_ON_SKIP", True)
     trace.log(
         "env.check",
+        flow=flow,
         required=list(required),
         missing=missing,
+        ssh_host=ssh_host,
+        in_container=in_container,
         has_key_path=bool(os.environ.get("OPENCLAW_SSH_KEY_PATH", "").strip()),
         has_password=bool(os.environ.get("OPENCLAW_SSH_PASSWORD", "").strip()),
     )
     if missing:
-        strict = _bool_env("SKYNET_E2E_FAIL_ON_SKIP", True)
         detail = f"Missing env vars: {', '.join(missing)}"
         if strict:
             _fail(trace, "Live E2E environment validation failed.", detail=detail)
         print(f"[SKIP] {detail}")
-        print("       Set OPENCLAW_SSH_* vars and retry.")
+        if requires_ssh:
+            print("       Set OPENCLAW_SSH_* vars and retry.")
+        else:
+            print("       Set SKYNET_E2E_TELEGRAM_* vars and retry.")
+        print(f"[TRACE] {trace.path}")
+        sys.exit(0)
+
+    # host.docker.internal is valid for a Dockerized gateway on EC2 host.
+    # It is not reachable when running this script directly on the worker laptop host.
+    if requires_ssh and ssh_host.lower() == "host.docker.internal" and not in_container:
+        detail = (
+            "OPENCLAW_SSH_HOST=host.docker.internal is for Dockerized gateway runtime. "
+            "This run is host-side. Use SKYNET_ENV_FILE=.env.local-e2e "
+            "(OPENCLAW_SSH_HOST=127.0.0.1, OPENCLAW_SSH_PORT=22) or run e2e_live.py inside the EC2 gateway container."
+        )
+        trace.log("env.mismatch", reason="docker_host_alias_from_non_container", detail=detail)
+        if strict:
+            _fail(trace, "Live E2E environment validation failed.", detail=detail)
+        print(f"[SKIP] {detail}")
         print(f"[TRACE] {trace.path}")
         sys.exit(0)
 
@@ -440,9 +474,8 @@ async def run() -> None:
     trace = LiveTrace("e2e-live")
     trace.log("run.start", python=sys.version.split()[0], cwd=os.getcwd())
     _load_live_env(trace)
-    _check_env(trace)
-
     flow = os.environ.get("SKYNET_LIVE_E2E_FLOW", "conversation").strip().lower()
+    _check_env(trace, flow)
     trace.log("run.mode", flow=flow)
     if flow in {"conversation", "chat"}:
         _run_conversation_flow(trace)

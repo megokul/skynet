@@ -248,6 +248,29 @@ $env:SKYNET_ENV_FILE = ".env.local-e2e"
 python openclaw-gateway/tests/e2e_live.py
 ```
 
+Live E2E flow modes:
+
+- `SKYNET_LIVE_E2E_FLOW=conversation`
+  - Handler-path conversation simulation (`hi -> plan -> coding -> run`) with real planner/coding/SSH execution.
+- `SKYNET_LIVE_E2E_FLOW=telegram_real`
+  - Fully real Telegram-network conversation using a Telethon user session (real messages + inline button clicks).
+
+For real Telegram-network E2E, set:
+
+- `SKYNET_E2E_TELEGRAM_API_ID`
+- `SKYNET_E2E_TELEGRAM_API_HASH`
+- `SKYNET_E2E_TELEGRAM_SESSION`
+- `SKYNET_E2E_TELEGRAM_BOT_USERNAME`
+
+And run:
+
+```powershell
+pip install telethon
+$env:SKYNET_ENV_FILE = ".env.local-e2e"
+$env:SKYNET_LIVE_E2E_FLOW = "telegram_real"
+python openclaw-gateway/tests/e2e_live.py
+```
+
 ### SSH Reliability Controls
 
 These env vars are enabled for SSH-primary hardening:
@@ -268,3 +291,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check_tunnel_health.ps1
 ```
 
 Canonical scheduled task name: `OpenClawReverseTunnel`.
+
+Tunnel owner policy:
+
+- Only `OpenClawReverseTunnel` pointing to `scripts/keep_tunnel_alive.ps1` is supported.
+- Legacy launchers (for example `E:\MyProjects\openclaw-tunnel.ps1`) are treated as owner mismatch and must be disabled.
+
+One-command repair:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\repair_tunnel_owner.ps1
+```

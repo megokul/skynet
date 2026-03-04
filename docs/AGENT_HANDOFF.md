@@ -1,10 +1,41 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-04 19:05
+Last updated (UTC): 2026-03-04 15:05
 
 ## Current Goal
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-04 EC2->Worker Control Path Stabilization Update
+
+- Refactored `openclaw-gateway/tests/e2e_live.py` preflight to be flow-aware:
+  - `telegram_real` now validates only `SKYNET_E2E_TELEGRAM_*` vars.
+  - `conversation`/`direct` continue validating `OPENCLAW_SSH_*`.
+  - `host.docker.internal` context guard now applies only to SSH-dependent flows.
+- Added explicit missing-env trace event in real Telegram test:
+  - `telegram_real.env.missing` in `test_e2e_telegram_real_live.py`.
+- Hardened tunnel ownership and diagnostics scripts:
+  - `register_tunnel_task.ps1` now enforces canonical script ownership (`scripts/keep_tunnel_alive.ps1`) and starts the task by default (`-StartNow`).
+  - `check_tunnel_health.ps1` now reports structured health categories:
+    - `healthy`, `auth`, `port_conflict`, `owner_mismatch`, `ec2_unreachable`, `remote_bind_missing`.
+  - Added `scripts/repair_tunnel_owner.ps1` one-command remediation wrapper.
+- Updated docs/templates with explicit runtime matrix and tunnel-owner policy:
+  - `.env.example`, `.env.local-e2e.example`, and `README.md`.
+
+### 2026-03-04 Live-E2E Context Guard + Telegram Trace Update
+
+- Added explicit runtime-context guard in `openclaw-gateway/tests/e2e_live.py`:
+  - fails fast when `OPENCLAW_SSH_HOST=host.docker.internal` is used from non-container host-side runs.
+  - prints actionable guidance:
+    - use `SKYNET_ENV_FILE=.env.local-e2e` (`127.0.0.1:22`) on worker laptop host runs, or
+    - run `e2e_live.py` inside EC2 Dockerized gateway runtime.
+- Upgraded `openclaw-gateway/tests/test_e2e_telegram_real_live.py` tracing:
+  - step-level JSON trace events for send/wait/match/button-click/timeouts.
+  - coding-loop message tracing with `complete=/failed=` extraction.
+  - explicit run-phase success assertion (`Run Project` and exit-0 output).
+- Updated live-E2E env templates and docs:
+  - `.env.example` and `.env.local-e2e.example` now document `SKYNET_LIVE_E2E_FLOW` plus real Telegram credentials (`SKYNET_E2E_TELEGRAM_*`).
+  - `README.md` now includes conversation vs `telegram_real` flow instructions and run commands.
 
 ### 2026-03-04 Real Telegram Live-E2E Mode Update
 
@@ -13,7 +44,7 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
   - new test `openclaw-gateway/tests/test_e2e_telegram_real_live.py::test_real_telegram_chat_flow_no_github_repo_creation`
 - Extended `openclaw-gateway/tests/e2e_live.py` to route to the real Telegram test target when `telegram_real` mode is selected.
 - Kept existing conversation-mode live E2E intact; no mock or fake transport added in the real mode path.
-- Added explicit no-repo-creation assertion in the real Telegram flow so E2E follows the “skip GitHub setup” branch.
+- Added explicit no-repo-creation assertion in the real Telegram flow so E2E follows the "skip GitHub setup" branch.
 
 ### 2026-03-04 SSH-Primary Reliability Hardening Update
 
