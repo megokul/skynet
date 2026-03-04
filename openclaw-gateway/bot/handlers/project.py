@@ -13,6 +13,7 @@ Cancel:      /cancel or /start at any point.
 """
 from __future__ import annotations
 
+import json
 import logging
 
 import config as cfg
@@ -43,6 +44,7 @@ from bot.keyboards import (
 from bot.project_templates import get_template
 from bot.state import KEY_DB, KEY_ROUTER
 from db.store import create_project, ensure_user
+from gateway import is_worker_available, send_action
 
 logger = logging.getLogger("skynet.bot.project")
 
@@ -123,6 +125,83 @@ def _build_project_description(plan: str, history: list[dict]) -> str:
     req_block = "\n".join(f"- {line}" for line in requirements[-20:])
     pieces = [approved_plan, f"Original user requirements:\n{req_block}"]
     return "\n\n".join(part for part in pieces if part).strip()
+
+
+def _planner_sandbox_dir(user_id: int) -> str:
+    return f"{cfg.WORKER_PROJECTS_DIR}/_planner_sessions/{user_id}"
+
+
+def _planner_action_text(result: dict) -> str:
+    inner = result.get("result", result)
+    text = str(inner.get("stdout") or "").strip()
+    return text
+
+
+async def _planner_via_codex_then_router(
+    *,
+    router,
+    messages: list[dict],
+    system: str,
+    max_tokens: int,
+    task_type: str,
+    user_id: int,
+) -> str:
+    use_codex = str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "codex")).strip().lower() == "codex"
+    if use_codex and is_worker_available():
+        sandbox_dir = _planner_sandbox_dir(user_id)
+        planner_prompt = (
+            "You are the planner assistant for a Telegram product workflow.\n"
+            "Follow the provided system instructions and conversation history.\n"
+            "Do not create or modify files.\n"
+            "Return plain chat text only.\n\n"
+            f"System instructions:\n{system}\n\n"
+            f"Conversation history JSON:\n{json.dumps(messages, ensure_ascii=True)}\n"
+        )
+        timeout = max(30, int(getattr(cfg, "PLANNER_CODEX_TIMEOUT_SECONDS", 120) or 120))
+        try:
+            await send_action(
+                "create_directory",
+                {"directory": sandbox_dir},
+                timeout=20,
+                confirmed=True,
+            )
+            result = await send_action(
+                "run_coding_agent",
+                {
+                    "agent": "codex",
+                    "backend": "auto",
+                    "prompt": planner_prompt,
+                    "working_dir": sandbox_dir,
+                    "timeout_seconds": timeout,
+                },
+                timeout=timeout,
+                confirmed=True,
+            )
+            if result.get("status") == "error":
+                raise RuntimeError(str(result.get("error") or "run_coding_agent failed"))
+            inner = result.get("result", result)
+            return_code = int(inner.get("returncode", inner.get("exit_code", 0)) or 0)
+            if return_code != 0:
+                detail = str(inner.get("stderr") or inner.get("stdout") or "planner codex failed")
+                raise RuntimeError(detail)
+            text = _planner_action_text(result)
+            if not text:
+                raise RuntimeError("planner codex returned empty output")
+            return text
+        except Exception as exc:
+            logger.warning(
+                "planner.primary.failover user_id=%s stage=codex error=%s",
+                user_id,
+                str(exc)[:220],
+            )
+
+    response = await router.chat(
+        messages=messages,
+        system=system,
+        max_tokens=max_tokens,
+        task_type=task_type,
+    )
+    return (response.text or "").strip() or "…"
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -213,15 +292,17 @@ async def handle_requirements_message(
 
     history.append({"role": "user", "content": user_text})
     history = _trim_history(history)
+    system_prompt = _specialist_prompt(name, type_label, template)
 
     try:
-        response = await router.chat(
+        reply = await _planner_via_codex_then_router(
+            router=router,
             messages=history,
-            system=_specialist_prompt(name, type_label, template),
+            system=system_prompt,
             max_tokens=1024,
             task_type="planning",
+            user_id=update.effective_user.id,
         )
-        reply = (response.text or "").strip() or "…"
     except Exception:
         logger.exception("Requirements AI call failed")
         await update.message.reply_text(
@@ -271,6 +352,7 @@ async def _do_generate_plan(
     type_label = context.user_data.get(_TYPE_KEY, "Other")
     template   = get_template(type_label)
     history: list[dict] = context.user_data.get(_REQS_HISTORY, [])
+    system_prompt = _specialist_prompt(name, type_label, template)
 
     history.append({
         "role": "user",
@@ -278,13 +360,15 @@ async def _do_generate_plan(
     })
 
     try:
-        response = await router.chat(
+        plan = await _planner_via_codex_then_router(
+            router=router,
             messages=history,
-            system=_specialist_prompt(name, type_label, template),
+            system=system_prompt,
             max_tokens=2048,
             task_type="planning",
+            user_id=message.chat.id,
         )
-        plan = (response.text or "").strip() or "Could not generate plan."
+        plan = plan.strip() or "Could not generate plan."
     except Exception:
         logger.exception("Plan generation AI call failed")
         await message.reply_text("Could not generate the plan. Please try /plan again.")
@@ -304,13 +388,15 @@ async def _do_generate_plan(
         )
         history.append({"role": "user", "content": retry_msg})
         try:
-            response = await router.chat(
+            retry_plan = await _planner_via_codex_then_router(
+                router=router,
                 messages=history,
-                system=_specialist_prompt(name, type_label, template),
+                system=system_prompt,
                 max_tokens=2048,
                 task_type="planning",
+                user_id=message.chat.id,
             )
-            retry_plan = (response.text or "").strip()
+            retry_plan = retry_plan.strip()
             if retry_plan and len(retry_plan) > 100:
                 plan = retry_plan
         except Exception:
@@ -341,7 +427,7 @@ async def approve_plan(
 
     try:
         coding_default = str(cfg.CODING_DEFAULT_PROFILE or "legacy").strip().lower()
-        if coding_default not in {"legacy", "claude_ollama"}:
+        if coding_default not in {"legacy", "claude_ollama", "codex_primary"}:
             coding_default = "legacy"
 
         default_profile = cfg.STRICT_QUALITY_GATES_DEFAULT_PROFILE

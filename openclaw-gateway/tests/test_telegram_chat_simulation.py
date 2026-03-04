@@ -163,6 +163,11 @@ async def test_telegram_chat_simulates_claude_missing_preflight():
     assert await approve_plan(upd, ctx) == ConversationHandler.END
     user_data.update(ctx.user_data)
     project_id = user_data["last_project_id"]
+    await db.execute(
+        "UPDATE projects SET coding_profile = ? WHERE id = ?",
+        ("claude_ollama", project_id),
+    )
+    await db.commit()
 
     # 8) start coding
     upd = make_callback_update(CB_START_CODING, user_id=user_id, chat_id=chat_id)
@@ -179,6 +184,7 @@ async def test_telegram_chat_simulates_claude_missing_preflight():
         patch("bot.handlers.coding._extract_milestones", new=AsyncMock(return_value=["m1", "m2"])),
         patch("bot.handlers.coding.is_worker_available", return_value=True),
         patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=fake_send_action)),
+        patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", False),
     ):
         await coding_github_choice_handler(upd, ctx)
         loop_task = bot_data.get(loop_key)

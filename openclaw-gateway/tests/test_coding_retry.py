@@ -15,6 +15,10 @@ from bot.handlers.coding import (
     _MS_DECISION_KEY,
     _MS_EVENT_KEY,
     _PROJECT_ID_KEY,
+    _build_coding_stage_chain,
+    _effective_coding_profile,
+    _parse_coding_fallback_chain,
+    _preflight_coding_environment,
     _coding_loop,
     _stop_request_key,
     retry_coding_handler,
@@ -32,6 +36,83 @@ from bot.state import KEY_DB
 
 def _callbacks(markup) -> list[list[str]]:
     return [[btn.callback_data for btn in row] for row in markup.inline_keyboard]
+
+
+def test_parse_coding_fallback_chain_filters_invalid_values():
+    chain = _parse_coding_fallback_chain(" codex ,invalid,claude_ollama, codex ,cline ")
+    assert chain == ["codex", "claude_ollama", "cline"]
+
+    default_chain = _parse_coding_fallback_chain(",,,bad,,")
+    assert default_chain == ["codex", "claude_ollama", "cline"]
+
+
+def test_effective_coding_profile_force_all_override():
+    project = {"coding_profile": "legacy"}
+    with patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", True):
+        assert _effective_coding_profile(project) == "codex_primary"
+    with patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", False):
+        assert _effective_coding_profile(project) == "legacy"
+        assert _build_coding_stage_chain(project) == []
+
+
+@pytest.mark.asyncio
+async def test_preflight_all_chain_agents_unavailable_fails():
+    project = {"id": "proj_pf_all_down", "coding_profile": "codex_primary"}
+
+    async def _send_action_side_effect(action, params, **kwargs):
+        del params, kwargs
+        assert action == "check_coding_agents"
+        return {
+            "status": "success",
+            "result": {
+                "returncode": 0,
+                "stdout": (
+                    "codex: unavailable (expected binary: codex)\n"
+                    "claude: unavailable (expected binary: claude)\n"
+                    "cline: unavailable (expected binary: cline)"
+                ),
+                "stderr": "",
+            },
+        }
+
+    with (
+        patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", True),
+        patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)),
+    ):
+        ok, message = await _preflight_coding_environment(project=project)
+
+    assert ok is False
+    assert "No coding agents available for chain" in message
+
+
+@pytest.mark.asyncio
+async def test_preflight_primary_unavailable_uses_fallback():
+    project = {"id": "proj_pf_fallback", "coding_profile": "codex_primary"}
+
+    async def _send_action_side_effect(action, params, **kwargs):
+        del params, kwargs
+        assert action == "check_coding_agents"
+        return {
+            "status": "success",
+            "result": {
+                "returncode": 0,
+                "stdout": (
+                    "codex: unavailable (expected binary: codex)\n"
+                    "claude: available (claude)\n"
+                    "cline: unavailable (expected binary: cline)"
+                ),
+                "stderr": "",
+            },
+        }
+
+    with (
+        patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", True),
+        patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)),
+    ):
+        ok, message = await _preflight_coding_environment(project=project)
+
+    assert ok is True
+    assert "fallback" in message.lower()
 
 
 @pytest.mark.asyncio
@@ -148,6 +229,7 @@ async def test_coding_preflight_blocks_when_claude_cli_missing():
         patch("bot.handlers.coding._extract_milestones", new=AsyncMock(return_value=["Should not run"])) as mock_extract,
         patch("bot.handlers.coding.is_worker_available", return_value=True),
         patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)),
+        patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", False),
         patch("bot.handlers.coding.create_task", new=AsyncMock()) as mock_create_task,
         patch("bot.handlers.coding.update_task_status", new=AsyncMock()) as mock_update_status,
     ):
@@ -286,7 +368,7 @@ async def test_coding_loop_emits_progress_heartbeat_for_slow_agent():
     await approve_task
 
     all_text = "\n".join(sent_text)
-    assert "Still working on coding agent attempt" in all_text, (
+    assert "Still working on coding generation" in all_text, (
         f"Expected progress heartbeat while run_coding_agent is slow; messages: {sent_text}"
     )
 

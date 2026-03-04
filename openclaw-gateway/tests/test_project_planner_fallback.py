@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from bot.handlers.project import _planner_via_codex_then_router
+
+
+@pytest.mark.asyncio
+async def test_planner_codex_success_skips_router_fallback():
+    router = MagicMock()
+    router.chat = AsyncMock()
+
+    async def _send_action(action, params, **kwargs):
+        del params, kwargs
+        if action == "create_directory":
+            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
+        if action == "run_coding_agent":
+            return {
+                "status": "success",
+                "result": {"returncode": 0, "stdout": "Codex planner reply", "stderr": ""},
+            }
+        raise AssertionError(f"Unexpected action: {action}")
+
+    with (
+        patch("bot.handlers.project.cfg.PLANNER_PRIMARY_AGENT", "codex"),
+        patch("bot.handlers.project.is_worker_available", return_value=True),
+        patch("bot.handlers.project.send_action", new=AsyncMock(side_effect=_send_action)),
+    ):
+        reply = await _planner_via_codex_then_router(
+            router=router,
+            messages=[{"role": "user", "content": "plan this"}],
+            system="planner system",
+            max_tokens=512,
+            task_type="planning",
+            user_id=42,
+        )
+
+    assert reply == "Codex planner reply"
+    router.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_planner_codex_failure_falls_back_to_router():
+    router = MagicMock()
+    router.chat = AsyncMock(return_value=MagicMock(text="Router fallback reply"))
+
+    async def _send_action(action, params, **kwargs):
+        del params, kwargs
+        if action == "create_directory":
+            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
+        if action == "run_coding_agent":
+            return {"status": "error", "error": "codex unavailable"}
+        raise AssertionError(f"Unexpected action: {action}")
+
+    with (
+        patch("bot.handlers.project.cfg.PLANNER_PRIMARY_AGENT", "codex"),
+        patch("bot.handlers.project.is_worker_available", return_value=True),
+        patch("bot.handlers.project.send_action", new=AsyncMock(side_effect=_send_action)),
+    ):
+        reply = await _planner_via_codex_then_router(
+            router=router,
+            messages=[{"role": "user", "content": "plan this"}],
+            system="planner system",
+            max_tokens=512,
+            task_type="planning",
+            user_id=42,
+        )
+
+    assert reply == "Router fallback reply"
+    router.chat.assert_awaited_once()

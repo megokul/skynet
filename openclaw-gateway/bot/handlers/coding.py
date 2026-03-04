@@ -84,8 +84,21 @@ _QUALITY_PROFILE_LEGACY = "legacy"
 _QUALITY_PROFILE_STRICT = "strict"
 _CODING_PROFILE_LEGACY = "legacy"
 _CODING_PROFILE_CLAUDE_OLLAMA = "claude_ollama"
+_CODING_PROFILE_CODEX_PRIMARY = "codex_primary"
 _RUN_CONTRACT_FILE = "skynet_run.json"
 _ALLOWED_INTERPRETERS = {"python", "python3", "node"}
+_DEFAULT_CODING_CHAIN = ("codex", "claude_ollama", "cline")
+_VALID_CODING_STAGES = set(_DEFAULT_CODING_CHAIN)
+_STAGE_AGENT_NAME = {
+    "codex": "codex",
+    "claude_ollama": "claude",
+    "cline": "cline",
+}
+_STAGE_ENV_HINT = {
+    "codex": "OPENCLAW_SSH_CODEX_BIN",
+    "claude_ollama": "OPENCLAW_SSH_CLAUDE_BIN",
+    "cline": "OPENCLAW_SSH_CLINE_BIN",
+}
 
 
 def _parse_code_blocks(text: str) -> list[tuple[str, str]]:
@@ -148,13 +161,94 @@ def _coding_profile(project: dict[str, Any] | None) -> str:
         or cfg.CODING_DEFAULT_PROFILE
         or _CODING_PROFILE_LEGACY
     ).strip().lower()
-    if raw not in {_CODING_PROFILE_LEGACY, _CODING_PROFILE_CLAUDE_OLLAMA}:
+    if raw not in {
+        _CODING_PROFILE_LEGACY,
+        _CODING_PROFILE_CLAUDE_OLLAMA,
+        _CODING_PROFILE_CODEX_PRIMARY,
+    }:
         return _CODING_PROFILE_LEGACY
     return raw
 
 
+def _effective_coding_profile(project: dict[str, Any] | None) -> str:
+    if bool(getattr(cfg, "CODING_FORCE_PRIMARY_FOR_ALL", False)):
+        return _CODING_PROFILE_CODEX_PRIMARY
+    return _coding_profile(project)
+
+
 def _uses_claude_ollama(project: dict[str, Any] | None) -> bool:
-    return _coding_profile(project) == _CODING_PROFILE_CLAUDE_OLLAMA
+    return _effective_coding_profile(project) == _CODING_PROFILE_CLAUDE_OLLAMA
+
+
+def _parse_coding_fallback_chain(raw: str) -> list[str]:
+    seen: set[str] = set()
+    parsed: list[str] = []
+    for token in str(raw or "").split(","):
+        stage = token.strip().lower()
+        if not stage or stage in seen or stage not in _VALID_CODING_STAGES:
+            continue
+        seen.add(stage)
+        parsed.append(stage)
+    if parsed:
+        return parsed
+    return list(_DEFAULT_CODING_CHAIN)
+
+
+def _build_coding_stage_chain(
+    project: dict[str, Any] | None,
+    *,
+    include_legacy: bool = False,
+) -> list[str]:
+    effective = _effective_coding_profile(project)
+    if effective == _CODING_PROFILE_CODEX_PRIMARY:
+        return _parse_coding_fallback_chain(cfg.CODING_FALLBACK_CHAIN)
+    if effective == _CODING_PROFILE_CLAUDE_OLLAMA:
+        return ["claude_ollama"]
+    if include_legacy:
+        return ["claude_ollama"]
+    return []
+
+
+def _parse_agent_availability(report: str) -> dict[str, bool]:
+    availability: dict[str, bool] = {}
+    for stage, agent in _STAGE_AGENT_NAME.items():
+        line = _agent_status_line(report, agent)
+        if not line:
+            continue
+        lowered = line.lower()
+        if "unavailable" in lowered:
+            availability[stage] = False
+        elif "available" in lowered:
+            availability[stage] = True
+    return availability
+
+
+def _stage_payload(
+    *,
+    stage_name: str,
+    prompt: str,
+    working_dir: str,
+    timeout_seconds: int = 1800,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "prompt": prompt,
+        "working_dir": working_dir,
+        "timeout_seconds": timeout_seconds,
+    }
+    if stage_name == "codex":
+        payload["agent"] = "codex"
+        payload["backend"] = "auto"
+    elif stage_name == "claude_ollama":
+        payload["agent"] = "claude"
+        payload["backend"] = "ollama"
+        payload["model"] = cfg.CLAUDE_OLLAMA_DEFAULT_MODEL
+        payload["auto_pull_model"] = cfg.CLAUDE_OLLAMA_AUTO_PULL
+    elif stage_name == "cline":
+        payload["agent"] = "cline"
+        payload["backend"] = "auto"
+    else:
+        raise ValueError(f"Unsupported coding stage: {stage_name}")
+    return payload
 
 
 def _is_strict_project(project: dict[str, Any] | None) -> bool:
@@ -371,11 +465,11 @@ async def _preflight_coding_environment(
     """
     Validate coding prerequisites before milestone execution.
 
-    For claude_ollama projects we require the worker to report Claude CLI
-    availability. If telemetry is absent, do not hard-fail to keep backward
-    compatibility with older workers/tests.
+    For codex-primary/claude_ollama profiles, inspect coding agent telemetry and
+    ensure at least one stage from the configured chain is available.
     """
-    if not _uses_claude_ollama(project):
+    stage_chain = _build_coding_stage_chain(project)
+    if not stage_chain:
         return True, ""
 
     try:
@@ -392,12 +486,39 @@ async def _preflight_coding_environment(
         return False, _action_error_text(result, "check_coding_agents")
 
     report = str(_action_inner_result(result).get("stdout") or "")
-    if _agent_is_explicitly_unavailable(report, "claude"):
-        detail = _agent_status_line(report, "claude") or "claude: unavailable"
+    if not report.strip():
+        return True, "Agent telemetry unavailable; proceeding without preflight enforcement."
+
+    availability = _parse_agent_availability(report)
+    any_known = bool(availability)
+    any_available = any(availability.get(stage) is True for stage in stage_chain)
+    first_stage = stage_chain[0]
+    first_known = availability.get(first_stage)
+
+    if any_known and not any_available:
+        detail_parts: list[str] = []
+        for stage in stage_chain:
+            agent = _STAGE_AGENT_NAME.get(stage, stage)
+            line = _agent_status_line(report, agent) or f"{agent}: unavailable"
+            env_hint = _STAGE_ENV_HINT.get(stage, "")
+            hint = f" ({env_hint})" if env_hint else ""
+            detail_parts.append(f"{line}{hint}")
+        detail = "; ".join(detail_parts)[:320]
         return (
             False,
-            f"{detail}. Install Claude Code or set OPENCLAW_SSH_CLAUDE_BIN.",
+            f"No coding agents available for chain {','.join(stage_chain)}. {detail}",
         )
+
+    if first_known is False and any_available:
+        fallback_stage = next(
+            (stage for stage in stage_chain[1:] if availability.get(stage) is True),
+            "",
+        )
+        if fallback_stage:
+            return (
+                True,
+                f"Primary stage {first_stage} unavailable; continuing with fallback {fallback_stage}.",
+            )
 
     return True, ""
 
@@ -712,6 +833,143 @@ async def _bootstrap_required_tests(
     return True, f"Auto-created {test_rel_path} for strict test gate.", False, test_rel_path
 
 
+def _normalize_written_files(raw_files: Any) -> list[str]:
+    if not isinstance(raw_files, list):
+        return []
+    clean: list[str] = []
+    for path in raw_files:
+        value = str(path).strip()
+        if value:
+            clean.append(value)
+    return clean
+
+
+async def _run_stage_chain_for_generation(
+    *,
+    app,
+    chat_id: int,
+    user_id: int | None,
+    project: dict[str, Any],
+    task_id: int | None,
+    prompt: str,
+    working_dir: str,
+    stage_chain: list[str],
+    label_prefix: str,
+    timeout_seconds: int = 1800,
+    require_runnable_files: bool = True,
+    notify_stage_switch: bool = True,
+) -> dict[str, Any]:
+    attempted_stages: list[str] = []
+    stage_failures: list[dict[str, str]] = []
+
+    if not stage_chain:
+        return {
+            "ok": False,
+            "inner": {},
+            "stage_name": "",
+            "attempted_stages": attempted_stages,
+            "stage_failures": stage_failures,
+        }
+
+    for idx, stage_name in enumerate(stage_chain, start=1):
+        attempted_stages.append(stage_name)
+        payload = _stage_payload(
+            stage_name=stage_name,
+            prompt=prompt,
+            working_dir=working_dir,
+            timeout_seconds=timeout_seconds,
+        )
+        logger.info(
+            "coding.stage.start project_id=%s task_id=%s stage=%s",
+            project.get("id"),
+            task_id,
+            stage_name,
+        )
+
+        failure_reason = ""
+        result: dict[str, Any] | None = None
+        inner: dict[str, Any] = {}
+        return_code = 1
+        written: list[str] = []
+        try:
+            result = await _send_action_with_heartbeat(
+                app=app,
+                chat_id=chat_id,
+                user_id=user_id,
+                action="run_coding_agent",
+                params=payload,
+                timeout=timeout_seconds,
+                label=f"{label_prefix} via {stage_name} ({idx}/{len(stage_chain)})",
+                max_wait_seconds=max(
+                    1,
+                    int(getattr(cfg, "CODING_AGENT_MAX_WAIT_SECONDS", 900) or 900),
+                ),
+            )
+        except Exception as exc:
+            reason = str(exc).strip()
+            if reason.startswith("STOP_REQUESTED:") or reason.startswith("WAIT_TIMEOUT:"):
+                raise
+            failure_reason = f"{type(exc).__name__}: {exc}"
+        else:
+            inner = _action_inner_result(result)
+            return_code = int(inner.get("returncode", inner.get("exit_code", 0)) or 0)
+            written = _normalize_written_files(inner.get("files_written"))
+            if result.get("status") == "error":
+                failure_reason = _action_error_text(result, "run_coding_agent")
+            elif return_code != 0:
+                failure_reason = _action_excerpt(result)
+            elif require_runnable_files and not _has_runnable_written_files(written):
+                failure_reason = "no runnable files generated"
+
+        if not failure_reason:
+            logger.info(
+                "coding.stage.success project_id=%s task_id=%s stage=%s returncode=%s files=%s",
+                project.get("id"),
+                task_id,
+                stage_name,
+                return_code,
+                len(written),
+            )
+            return {
+                "ok": True,
+                "inner": inner,
+                "stage_name": stage_name,
+                "attempted_stages": attempted_stages,
+                "stage_failures": stage_failures,
+            }
+
+        failure_excerpt = str(failure_reason).strip()[:220] or "unknown stage failure"
+        logger.warning(
+            "coding.stage.fail project_id=%s task_id=%s stage=%s returncode=%s error_excerpt=%s",
+            project.get("id"),
+            task_id,
+            stage_name,
+            return_code,
+            failure_excerpt,
+        )
+        stage_failures.append(
+            {
+                "stage": stage_name,
+                "returncode": str(return_code),
+                "error_excerpt": failure_excerpt,
+            }
+        )
+        if notify_stage_switch and idx < len(stage_chain):
+            next_stage = stage_chain[idx]
+            await app.bot.send_message(
+                chat_id,
+                f"\u26A0\uFE0F Stage {stage_name} failed ({failure_excerpt}). Trying {next_stage}...",
+            )
+
+    return {
+        "ok": False,
+        "inner": {},
+        "stage_name": "",
+        "attempted_stages": attempted_stages,
+        "stage_failures": stage_failures,
+    }
+
+
 async def _run_quality_fix_pass(
     *,
     project: dict[str, Any],
@@ -745,48 +1003,66 @@ async def _run_quality_fix_pass(
           "- Return complete files only."
     )
 
-    prompt_for_payload = fix_prompt
-    payload: dict[str, Any] = {
-        "agent": "claude",
-        "prompt": prompt_for_payload,
-        "working_dir": working_dir,
-        "timeout_seconds": 1800,
-    }
-
-    if _uses_claude_ollama(project):
-        # Native Claude fallback should also work with Claude Code subscription
-        # auth/session, not only API-key auth.
-        prompt_for_payload = (
-            fix_prompt
-            + "\n\nExecution instructions:\n"
-              "- Use Claude Code tools to directly create or update files in the working directory.\n"
-              "- Do not ask clarifying questions; implement the fixes now.\n"
-              "- Print a short completion summary after file edits."
-        )
-        payload["backend"] = "native"
-        payload["prompt"] = prompt_for_payload
-    else:
-        payload["backend"] = "auto"
-
-    result = await send_action(
-        "run_coding_agent",
-        payload,
-        timeout=1800,
-        confirmed=True,
+    prompt_for_payload = (
+        fix_prompt
+        + "\n\nExecution instructions:\n"
+          "- Use coding tools to directly create or update files in the working directory.\n"
+          "- Do not ask clarifying questions; implement the fixes now.\n"
+          "- Print a short completion summary after file edits."
     )
-    if result.get("status") == "error":
-        message = _action_error_text(result, "run_coding_agent")
-        raise RuntimeError(message)
+    stage_chain = _build_coding_stage_chain(project, include_legacy=True)
+    stage_failures: list[str] = []
+    for stage_name in stage_chain:
+        payload = _stage_payload(
+            stage_name=stage_name,
+            prompt=prompt_for_payload,
+            working_dir=working_dir,
+            timeout_seconds=1800,
+        )
+        result = await send_action(
+            "run_coding_agent",
+            payload,
+            timeout=1800,
+            confirmed=True,
+        )
+        if result.get("status") == "error":
+            stage_failures.append(stage_name)
+            logger.warning(
+                "coding.stage.fail project_id=%s task_id=%s stage=%s returncode=1 error_excerpt=%s",
+                project.get("id"),
+                None,
+                stage_name,
+                _action_error_text(result, "run_coding_agent")[:200],
+            )
+            continue
 
-    inner = _action_inner_result(result)
-    return_code = int(inner.get("returncode", inner.get("exit_code", 0)))
-    if return_code != 0:
-        raise RuntimeError(_action_excerpt(result))
+        inner = _action_inner_result(result)
+        return_code = int(inner.get("returncode", inner.get("exit_code", 0)) or 0)
+        if return_code != 0:
+            stage_failures.append(stage_name)
+            logger.warning(
+                "coding.stage.fail project_id=%s task_id=%s stage=%s returncode=%s error_excerpt=%s",
+                project.get("id"),
+                None,
+                stage_name,
+                return_code,
+                _action_excerpt(result)[:200],
+            )
+            continue
 
-    files_written = inner.get("files_written") or []
-    if isinstance(files_written, list):
-        return [str(path).strip() for path in files_written if str(path).strip()]
-    return []
+        files_written = _normalize_written_files(inner.get("files_written"))
+        logger.info(
+            "coding.stage.success project_id=%s task_id=%s stage=%s returncode=%s files=%s",
+            project.get("id"),
+            None,
+            stage_name,
+            return_code,
+            len(files_written),
+        )
+        return files_written
+
+    tried = ",".join(stage_failures or stage_chain)
+    raise RuntimeError(f"GENERATION_FAILED: {tried or 'none'}")
 
 
 def _extract_expected_stdout_marker(text: str) -> str:
@@ -1769,6 +2045,11 @@ async def _coding_loop(
                 reply_markup=retry_coding(project["id"]),
             )
             return
+        if preflight_error:
+            await app.bot.send_message(
+                chat_id,
+                f"\u26A0\uFE0F Coding preflight warning: {preflight_error[:260]}",
+            )
 
         if do_github:
             await app.bot.send_message(chat_id, "ðŸ”§ Setting up GitHub repo and project folderâ€¦")
@@ -1845,6 +2126,7 @@ async def _coding_loop(
             milestones = await _extract_milestones_with_heartbeat(
                 router=router,
                 project=project,
+                working_dir=working_dir,
                 app=app,
                 chat_id=chat_id,
                 stop_request_cache_key=stop_request_cache_key,
@@ -2002,12 +2284,33 @@ async def _coding_loop(
                     )
 
             try:
-                # â”€â”€ Try router-based coding first (Gemini/Groq/Claude) â”€â”€â”€â”€
-                claude_ollama_mode = _uses_claude_ollama(project)
+                # Non-legacy profiles use explicit stage-chain generation.
+                effective_profile = _effective_coding_profile(project)
+                claude_ollama_mode = (
+                    effective_profile != _CODING_PROFILE_LEGACY
+                    or bool(getattr(cfg, "CODING_FORCE_PRIMARY_FOR_ALL", False))
+                )
 
                 if claude_ollama_mode:
+                    generation_result = await _run_stage_chain_for_generation(
+                        app=app,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        project=project,
+                        task_id=task_rec["id"],
+                        prompt=prompt,
+                        working_dir=working_dir,
+                        stage_chain=_build_coding_stage_chain(project),
+                        label_prefix="coding generation",
+                        require_runnable_files=True,
+                        notify_stage_switch=True,
+                    )
+                    if not generation_result.get("ok"):
+                        attempted = generation_result.get("attempted_stages") or []
+                        raise RuntimeError(f"GENERATION_FAILED: {','.join(attempted) or 'none'}")
+                    inner = generation_result.get("inner", {})
                     # New profile: always use Claude CLI against Ollama in attempt 1.
-                    max_attempts = 3
+                    max_attempts = 0
                     for attempt in range(1, max_attempts + 1):
                         result = await _send_action_with_heartbeat(
                             app=app,
@@ -2143,7 +2446,7 @@ async def _coding_loop(
                 # Last-resort strict rescue: if coding agent exits 0 but writes nothing,
                 # force one explicit generation pass with required file artifacts.
                 return_code = int(inner.get("returncode", inner.get("exit_code", 0)) or 0)
-                written = inner.get("files_written") or []
+                written = _normalize_written_files(inner.get("files_written"))
                 if (
                     strict_mode
                     and successful_milestones == 0
@@ -2170,30 +2473,30 @@ async def _coding_loop(
                         chat_id,
                         "⚠️ No files produced yet. Running strict recovery generation…",
                     )
-                    rescue_params: dict[str, Any] = {
-                        "agent": "claude",
-                        "prompt": rescue_prompt,
-                        "working_dir": working_dir,
-                        "timeout_seconds": 1800,
-                    }
-                    if claude_ollama_mode:
-                        rescue_params["backend"] = "native"
-                    else:
-                        rescue_params["backend"] = "auto"
-
-                    rescue_result = await _send_action_with_heartbeat(
+                    rescue_stage_result = await _run_stage_chain_for_generation(
                         app=app,
                         chat_id=chat_id,
                         user_id=user_id,
-                        action="run_coding_agent",
-                        params=rescue_params,
-                        timeout=1800,
-                        label="strict recovery generation",
-                        max_wait_seconds=max(
-                            1,
-                            int(getattr(cfg, "CODING_AGENT_MAX_WAIT_SECONDS", 900) or 900),
-                        ),
+                        project=project,
+                        task_id=task_rec["id"],
+                        prompt=rescue_prompt,
+                        working_dir=working_dir,
+                        stage_chain=_build_coding_stage_chain(project, include_legacy=True),
+                        label_prefix="strict recovery generation",
+                        require_runnable_files=True,
+                        notify_stage_switch=True,
                     )
+                    if rescue_stage_result.get("ok"):
+                        rescue_result: dict[str, Any] = {
+                            "status": "success",
+                            "result": rescue_stage_result.get("inner", {}),
+                        }
+                    else:
+                        attempted = rescue_stage_result.get("attempted_stages") or []
+                        rescue_result = {
+                            "status": "error",
+                            "error": f"GENERATION_FAILED: {','.join(attempted) or 'none'}",
+                        }
                     if rescue_result.get("status") == "error":
                         logger.warning(
                             "Strict recovery generation failed for project %s milestone %s: %s",
@@ -2243,7 +2546,7 @@ async def _coding_loop(
                 summary = (inner.get("stdout") or inner.get("stderr") or "")[:500].strip()
 
                 # Track written files for the run handler.
-                written = inner.get("files_written") or []
+                written = _normalize_written_files(inner.get("files_written"))
                 if written:
                     all_written_files.extend(written)
                 else:
@@ -2743,7 +3046,90 @@ def _select_entrypoint(
     return f"{interpreter} {target}", target
 
 
-async def _extract_milestones(router, project: dict) -> list[str]:
+def _parse_json_string_list(raw: str) -> list[str] | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return None
+    if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
+        return [item.strip() for item in parsed if str(item).strip()]
+    return None
+
+
+async def _extract_milestones_codex_then_router(
+    *,
+    router,
+    project: dict[str, Any],
+    working_dir: str,
+) -> list[str]:
+    if str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "codex")).strip().lower() != "codex":
+        return await _extract_milestones_router(router, project)
+
+    plan = project.get("description", "")
+    if not plan:
+        return []
+
+    prompt = (
+        "You are a project planner. Extract coding milestones from the plan.\n"
+        "Return ONLY a JSON array of strings.\n"
+        "No markdown, no explanation.\n\n"
+        f"Project: {project['name']}\n"
+        f"Plan:\n{plan}\n"
+    )
+    timeout = max(30, int(getattr(cfg, "MILESTONE_CODEX_TIMEOUT_SECONDS", 120) or 120))
+
+    try:
+        result = await send_action(
+            "run_coding_agent",
+            {
+                "agent": "codex",
+                "backend": "auto",
+                "prompt": prompt,
+                "working_dir": working_dir,
+                "timeout_seconds": timeout,
+            },
+            timeout=timeout,
+            confirmed=True,
+        )
+        if result.get("status") == "error":
+            raise RuntimeError(_action_error_text(result, "run_coding_agent"))
+        if _action_exit_code(result) != 0:
+            raise RuntimeError(_action_excerpt(result))
+
+        output = str(_action_inner_result(result).get("stdout") or "").strip()
+        parsed = _parse_json_string_list(output)
+        if parsed:
+            return parsed
+        raise RuntimeError("Codex milestone output was not valid JSON list")
+    except Exception as exc:
+        logger.warning(
+            "milestone.primary.failover project_id=%s stage=codex error=%s",
+            project.get("id"),
+            str(exc)[:220],
+        )
+        return await _extract_milestones_router(router, project)
+
+
+async def _extract_milestones(
+    router,
+    project: dict[str, Any],
+    *,
+    working_dir: str | None = None,
+) -> list[str]:
+    effective_working_dir = working_dir or f"{cfg.WORKER_PROJECTS_DIR}/_planner_sessions/milestones"
+    return await _extract_milestones_codex_then_router(
+        router=router,
+        project=project,
+        working_dir=effective_working_dir,
+    )
+
+
+async def _extract_milestones_router(router, project: dict) -> list[str]:
     """
     Ask the LLM to extract an ordered list of coding milestones from the plan.
     Returns a list of milestone description strings.
@@ -2826,6 +3212,7 @@ async def _extract_milestones_with_heartbeat(
     *,
     router,
     project: dict[str, Any],
+    working_dir: str,
     app,
     chat_id: int,
     stop_request_cache_key: str,
@@ -2838,7 +3225,13 @@ async def _extract_milestones_with_heartbeat(
         heartbeat,
         int(getattr(cfg, "MILESTONE_EXTRACTION_MAX_WAIT_SECONDS", 180) or 180),
     )
-    pending = asyncio.create_task(_extract_milestones(router, project))
+    pending = asyncio.create_task(
+        _extract_milestones(
+            router,
+            project,
+            working_dir=working_dir,
+        )
+    )
     elapsed = 0
     try:
         while True:
