@@ -88,6 +88,13 @@ Use this to push local `.env` values into repository Actions secrets:
 python scripts/dev/sync_env_to_github.py --mode secrets
 ```
 
+Safety behavior:
+- Keys with reserved prefix `GITHUB_` are skipped automatically.
+- Keys with empty values are skipped automatically.
+- Invalid key names are skipped automatically.
+- When repo secret quota is full, new secret names are skipped automatically.
+- Only actual GitHub API write failures return non-zero.
+
 You can also enable automatic sync on every `git push`:
 
 ```bash

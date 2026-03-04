@@ -1,10 +1,22 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-04 15:05
+Last updated (UTC): 2026-03-04 15:55
 
 ## Current Goal
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-04 Pre-Push Secret Sync Reliability Update
+
+- Hardened `scripts/dev/sync_env_to_github.py` so pre-push sync no longer fails on predictable GitHub constraints.
+- Added automatic skip rules for env sync:
+  - reserved `GITHUB_*` key names
+  - empty values
+  - invalid secret/variable names
+- Added repository secret-quota guard:
+  - when GitHub repo secret count reaches configured limit (default `100`), new secret names are skipped instead of failing pre-push.
+- Updated sync summary output to include `skipped=` counts.
+- Updated `README.md` sync section to document skip behavior and non-zero failure semantics.
 
 ### 2026-03-04 EC2->Worker Control Path Stabilization Update
 

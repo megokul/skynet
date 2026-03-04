@@ -17,6 +17,7 @@ from pathlib import Path
 
 
 ENV_LINE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+GH_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def parse_env(env_path: Path) -> dict[str, str]:
@@ -91,6 +92,27 @@ def run_cmd(args: list[str], stdin_text: str | None = None) -> subprocess.Comple
         stderr=subprocess.PIPE,
         check=False,
     )
+
+
+def list_target_names(gh_bin: str, repo: str, mode: str) -> set[str]:
+    """
+    List existing secret/variable names for a repository.
+    """
+
+    target = "secret" if mode == "secrets" else "variable"
+    res = run_cmd([gh_bin, target, "list", "--repo", repo])
+    if res.returncode != 0:
+        return set()
+
+    names: set[str] = set()
+    for line in (res.stdout or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        name = text.split("\t", 1)[0].strip()
+        if name:
+            names.add(name)
+    return names
 
 
 def resolve_gh() -> str:
@@ -175,7 +197,8 @@ def sync_values(
     mode: str,
     dry_run: bool = False,
     quiet: bool = False,
-) -> tuple[int, int]:
+    secret_limit: int = 100,
+) -> tuple[int, int, int]:
     """
     Sync values.
     
@@ -205,24 +228,56 @@ def sync_values(
 
     updated = 0
     failed = 0
+    skipped = 0
+    existing = list_target_names(gh_bin, repo, mode)
+    existing_count = len(existing)
     for key in sorted(values.keys()):
         value = values[key]
         target = "secret" if mode == "secrets" else "variable"
+
+        # GitHub rejects reserved and invalid names; avoid blocking push hooks.
+        if key.upper().startswith("GITHUB_"):
+            skipped += 1
+            if not quiet:
+                print(f"skipped {target}: {key} (reserved prefix)")
+            continue
+        if not GH_NAME_RE.match(key):
+            skipped += 1
+            if not quiet:
+                print(f"skipped {target}: {key} (invalid name)")
+            continue
+        if value == "":
+            skipped += 1
+            if not quiet:
+                print(f"skipped {target}: {key} (empty value)")
+            continue
+        if mode == "secrets" and key not in existing and existing_count >= secret_limit:
+            skipped += 1
+            if not quiet:
+                print(f"skipped {target}: {key} (secret quota reached: {secret_limit})")
+            continue
+
         cmd = [gh_bin, target, "set", key, "--repo", repo, "--body", value]
         if dry_run:
             if not quiet:
                 print(f"[dry-run] gh {target} set {key} --repo {repo} --body ***")
             updated += 1
+            if key not in existing:
+                existing.add(key)
+                existing_count += 1
             continue
         res = run_cmd(cmd)
         if res.returncode == 0:
             updated += 1
+            if key not in existing:
+                existing.add(key)
+                existing_count += 1
             if not quiet:
                 print(f"updated {target}: {key}")
         else:
             failed += 1
             print(f"failed {target}: {key}\n{res.stderr.strip()}", file=sys.stderr)
-    return updated, failed
+    return updated, failed, skipped
 
 
 def main() -> int:
@@ -259,6 +314,12 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true", help="Print actions without writing to GitHub")
     parser.add_argument("--quiet", action="store_true", help="Reduce output")
+    parser.add_argument(
+        "--secret-limit",
+        type=int,
+        default=100,
+        help="Repository secret quota guard used to skip new secrets when full (default: 100).",
+    )
     args = parser.parse_args()
 
     env_path = Path(args.env_file)
@@ -283,15 +344,19 @@ def main() -> int:
         print("No env keys found to sync.", file=sys.stderr)
         return 2
 
-    updated, failed = sync_values(
+    updated, failed, skipped = sync_values(
         gh_bin,
         repo,
         values,
         mode=args.mode,
         dry_run=args.dry_run,
         quiet=args.quiet,
+        secret_limit=max(args.secret_limit, 0),
     )
-    print(f"sync complete: updated={updated} failed={failed} repo={repo} mode={args.mode}")
+    print(
+        f"sync complete: updated={updated} failed={failed} skipped={skipped} "
+        f"repo={repo} mode={args.mode}"
+    )
     return 1 if failed else 0
 
 
