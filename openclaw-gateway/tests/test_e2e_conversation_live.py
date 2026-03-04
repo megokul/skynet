@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from telegram.ext import ConversationHandler
@@ -19,11 +20,9 @@ try:
 except Exception:  # pragma: no cover - optional dependency at runtime
     load_dotenv = None  # type: ignore[assignment]
 
-import gateway as gateway_module
 from ai.provider_router import ProviderRouter, build_providers, parse_provider_priority
 from db.schema import init_db
 from db.store import list_tasks
-from helpers import make_callback_update, make_context, make_message_update
 from ssh_tunnel_executor import get_ssh_executor
 
 from bot.handlers.coding import (
@@ -116,6 +115,128 @@ def _make_live_trace_logger(test_name: str):
     return path, trace
 
 
+@dataclass
+class _SimpleChat:
+    id: int
+    actions: list[str] = field(default_factory=list)
+
+    async def send_action(self, action: str) -> None:
+        self.actions.append(str(action))
+
+
+@dataclass
+class _SimpleMessage:
+    chat: _SimpleChat
+    text: str = ""
+    replies: list[dict[str, Any]] = field(default_factory=list)
+
+    async def reply_text(self, text: str, **kwargs: Any) -> None:
+        self.replies.append({"text": str(text), "kwargs": dict(kwargs)})
+
+
+@dataclass
+class _SimpleCallbackQuery:
+    data: str
+    message: _SimpleMessage
+    answered: bool = False
+
+    async def answer(self) -> None:
+        self.answered = True
+
+
+@dataclass
+class _SimpleUpdate:
+    effective_user: Any
+    effective_chat: _SimpleChat
+    message: _SimpleMessage | None = None
+    callback_query: _SimpleCallbackQuery | None = None
+    effective_message: _SimpleMessage | None = None
+
+
+def _make_user(user_id: int) -> Any:
+    return SimpleNamespace(
+        id=user_id,
+        username="skynet_live",
+        first_name="Live",
+        last_name="E2E",
+    )
+
+
+def _make_message_update(text: str, *, user_id: int, chat_id: int) -> _SimpleUpdate:
+    chat = _SimpleChat(id=chat_id)
+    message = _SimpleMessage(chat=chat, text=text)
+    return _SimpleUpdate(
+        effective_user=_make_user(user_id),
+        effective_chat=chat,
+        message=message,
+        callback_query=None,
+        effective_message=message,
+    )
+
+
+def _make_callback_update(data: str, *, user_id: int, chat_id: int) -> _SimpleUpdate:
+    chat = _SimpleChat(id=chat_id)
+    message = _SimpleMessage(chat=chat, text="")
+    callback_query = _SimpleCallbackQuery(data=data, message=message)
+    return _SimpleUpdate(
+        effective_user=_make_user(user_id),
+        effective_chat=chat,
+        message=None,
+        callback_query=callback_query,
+        effective_message=message,
+    )
+
+
+@dataclass
+class _SimpleContext:
+    user_data: dict[str, Any]
+    bot_data: dict[str, Any]
+    application: Any | None = None
+
+
+class _TraceBot:
+    def __init__(self, trace_fn) -> None:
+        self._trace = trace_fn
+        self.sent_messages: list[dict[str, Any]] = []
+
+    async def send_message(self, chat_id: int, text: str, **kwargs: Any) -> None:
+        payload = {
+            "chat_id": chat_id,
+            "text": str(text),
+            "kwargs": dict(kwargs),
+        }
+        self.sent_messages.append(payload)
+        self._trace(
+            "bot.send_message",
+            chat_id=chat_id,
+            text_preview=str(text)[:220],
+            has_reply_markup=bool(kwargs.get("reply_markup")),
+            parse_mode=str(kwargs.get("parse_mode", "")),
+        )
+
+
+class _HarnessApp:
+    def __init__(self, bot_data: dict[str, Any], trace_fn) -> None:
+        self.bot_data = bot_data
+        self.bot = _TraceBot(trace_fn)
+
+
+def _with_env(overrides: dict[str, str]) -> tuple[dict[str, str | None], None]:
+    previous: dict[str, str | None] = {}
+    for key, value in overrides.items():
+        previous[key] = os.environ.get(key)
+        os.environ[key] = value
+    return previous, None
+
+
+def _restore_env(previous: dict[str, str | None]) -> None:
+    for key, value in previous.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
 @pytest.mark.e2e
 @pytest.mark.live
 @pytest.mark.asyncio
@@ -133,7 +254,14 @@ async def test_live_conversation_real_planner_codegen_and_github_push():
         trace("test.skip", reason="Missing SSH env vars", missing=missing)
         pytest.skip(f"Missing live E2E SSH env vars: {', '.join(missing)}")
 
-    with patch.dict(os.environ, {"OPENCLAW_EXECUTION_MODE": "ssh"}, clear=False):
+    previous_env, _ = _with_env(
+        {
+            "OPENCLAW_EXECUTION_MODE": "ssh",
+            "SKYNET_STRICT_EMPTY_OUTPUT_EMERGENCY_SCAFFOLD": "1",
+        }
+    )
+    db = await init_db(":memory:")
+    try:
         executor = get_ssh_executor()
         if not executor.is_configured():
             trace("test.skip", reason="SSH executor is not configured")
@@ -150,242 +278,180 @@ async def test_live_conversation_real_planner_codegen_and_github_push():
             ssh_port=os.environ.get("OPENCLAW_SSH_PORT", ""),
         )
 
-        db = await init_db(":memory:")
-        try:
-            provider_cfg = {
-                "OLLAMA_DEFAULT_MODEL": os.environ.get("OLLAMA_DEFAULT_MODEL", ""),
-                "GOOGLE_AI_API_KEY": os.environ.get("GOOGLE_AI_API_KEY", ""),
-                "GEMINI_MODEL": os.environ.get("GEMINI_MODEL", ""),
-                "GEMINI_ONLY_MODE": os.environ.get("GEMINI_ONLY_MODE", "0"),
-                "GROQ_API_KEY": os.environ.get("GROQ_API_KEY", ""),
-                "OPENROUTER_API_KEY": os.environ.get("OPENROUTER_API_KEY", ""),
-                "OPENROUTER_MODEL": os.environ.get("OPENROUTER_MODEL", ""),
-                "OPENROUTER_FALLBACK_MODELS": os.environ.get("OPENROUTER_FALLBACK_MODELS", ""),
-                "DEEPSEEK_API_KEY": os.environ.get("DEEPSEEK_API_KEY", ""),
-                "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", ""),
-                "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
-            }
-            providers = build_providers(provider_cfg)
-            router = ProviderRouter(
-                providers,
-                db,
-                provider_priority=parse_provider_priority(os.environ.get("AI_PROVIDER_PRIORITY")),
+        provider_cfg = {
+            "OLLAMA_DEFAULT_MODEL": os.environ.get("OLLAMA_DEFAULT_MODEL", ""),
+            "GOOGLE_AI_API_KEY": os.environ.get("GOOGLE_AI_API_KEY", ""),
+            "GEMINI_MODEL": os.environ.get("GEMINI_MODEL", ""),
+            "GEMINI_ONLY_MODE": os.environ.get("GEMINI_ONLY_MODE", "0"),
+            "GROQ_API_KEY": os.environ.get("GROQ_API_KEY", ""),
+            "OPENROUTER_API_KEY": os.environ.get("OPENROUTER_API_KEY", ""),
+            "OPENROUTER_MODEL": os.environ.get("OPENROUTER_MODEL", ""),
+            "OPENROUTER_FALLBACK_MODELS": os.environ.get("OPENROUTER_FALLBACK_MODELS", ""),
+            "DEEPSEEK_API_KEY": os.environ.get("DEEPSEEK_API_KEY", ""),
+            "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", ""),
+            "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
+        }
+        providers = build_providers(provider_cfg)
+        router = ProviderRouter(
+            providers,
+            db,
+            provider_priority=parse_provider_priority(os.environ.get("AI_PROVIDER_PRIORITY")),
+        )
+
+        user_id = 91572
+        chat_id = 305
+        slug = f"live-e2e-{int(time.time())}"
+        project_name = slug
+        requirement_text = (
+            f"Build a minimal Python CLI project for Windows.\n"
+            f"The entrypoint script must be exactly named {slug}.py.\n"
+            "When run, it should print SKYNET_LIVE_E2E_OK and exit 0.\n"
+            "Use only standard library."
+        )
+
+        bot_data = {KEY_DB: db, KEY_ROUTER: router}
+        app = _HarnessApp(bot_data=bot_data, trace_fn=trace)
+
+        def make_ctx(*, extra_user_data: dict[str, Any] | None = None) -> _SimpleContext:
+            return _SimpleContext(
+                user_data={} if extra_user_data is None else extra_user_data,
+                bot_data=bot_data,
+                application=app,
             )
 
-            user_id = 91572
-            chat_id = 305
-            slug = f"live-e2e-{int(time.time())}"
-            project_name = slug
-            requirement_text = (
-                f"Build a minimal Python CLI project for Windows.\n"
-                f"The entrypoint script must be exactly named {slug}.py.\n"
-                "When run, it should print SKYNET_LIVE_E2E_OK and exit 0.\n"
-                "Use only standard library."
-            )
+        user_data: dict[str, Any] = {}
 
-            bot_data = {KEY_DB: db, KEY_ROUTER: router}
-            app = MagicMock()
-            app.bot_data = bot_data
+        trace("step.start", step=1, name="greeting")
+        upd = _make_message_update("hi", user_id=user_id, chat_id=chat_id)
+        await greeting_handler(upd, make_ctx())
 
-            async def _send_message_trace(chat_id_arg, text, **kwargs):
-                trace(
-                    "bot.send_message",
-                    chat_id=chat_id_arg,
-                    text_preview=str(text)[:220],
-                    has_reply_markup=bool(kwargs.get("reply_markup")),
-                    parse_mode=str(kwargs.get("parse_mode", "")),
-                )
+        trace("step.start", step=2, name="start_project")
+        upd = _make_callback_update(CB_START_PROJECT, user_id=user_id, chat_id=chat_id)
+        assert await ask_project_name(upd, make_ctx()) == AWAITING_PROJECT_NAME
 
-            app.bot.send_message = AsyncMock(side_effect=_send_message_trace)
+        trace("step.start", step=3, name="project_name")
+        upd = _make_message_update(project_name, user_id=user_id, chat_id=chat_id)
+        ctx = make_ctx(extra_user_data=user_data)
+        assert await receive_project_name(upd, ctx) == AWAITING_PROJECT_TYPE
+        user_data.update(ctx.user_data)
 
-            def make_ctx(*, extra_user_data=None):
-                ctx = make_context(
-                    user_data={} if extra_user_data is None else extra_user_data,
-                    bot_data=bot_data,
-                )
-                ctx.application = app
-                return ctx
+        trace("step.start", step=4, name="project_type")
+        upd = _make_callback_update("type:python_app", user_id=user_id, chat_id=chat_id)
+        ctx = make_ctx(extra_user_data=user_data)
+        assert await receive_project_type(upd, ctx) == GATHERING_REQUIREMENTS
+        user_data.update(ctx.user_data)
 
-            user_data: dict = {}
-            captured: dict[str, object] = {
-                "gh_success": False,
-                "gh_stdout": "",
-                "repo_url": "",
-                "actions": [],
-            }
+        trace("step.start", step=5, name="requirements_message")
+        upd = _make_message_update(requirement_text, user_id=user_id, chat_id=chat_id)
+        ctx = make_ctx(extra_user_data=user_data)
+        assert await handle_requirements_message(upd, ctx) == GATHERING_REQUIREMENTS
+        user_data.update(ctx.user_data)
 
-            async def wrapped_send_action(action, params, **kwargs):
-                started = time.monotonic()
-                trace(
-                    "action.start",
-                    action=action,
-                    param_keys=sorted(params.keys()),
-                    confirmed=bool(kwargs.get("confirmed")),
-                    timeout=kwargs.get("timeout"),
-                )
-                result = await gateway_module.send_action(action, params, **kwargs)
-                inner = result.get("result", result)
-                trace(
-                    "action.done",
-                    action=action,
-                    elapsed_s=round(time.monotonic() - started, 2),
-                    status=result.get("status"),
-                    returncode=inner.get("returncode", inner.get("exit_code")),
-                    error=str(result.get("error", ""))[:220],
-                )
-                captured["actions"].append(action)
-                if action == "gh_create_repo":
-                    rc = inner.get("returncode", inner.get("exit_code", 1))
-                    captured["gh_success"] = result.get("status") != "error" and rc == 0
-                    stdout = str(inner.get("stdout", ""))
-                    captured["gh_stdout"] = stdout
-                    match = re.search(r"https://github\\.com/\\S+", stdout)
-                    if match:
-                        captured["repo_url"] = match.group(0).rstrip(").,")
-                    trace(
-                        "action.gh_create_repo",
-                        success=bool(captured["gh_success"]),
-                        repo_url=str(captured["repo_url"]),
-                        stdout_preview=stdout[:220],
-                    )
-                return result
+        trace("step.start", step=6, name="plan_generation")
+        upd = _make_callback_update(CB_REQUIREMENTS_DONE, user_id=user_id, chat_id=chat_id)
+        ctx = make_ctx(extra_user_data=user_data)
+        assert await requirements_done_handler(upd, ctx) == REVIEWING_PLAN
+        user_data.update(ctx.user_data)
+        plan = str(user_data.get(_PLAN_KEY, "")).strip()
+        trace("planner.plan", chars=len(plan))
+        assert plan, "Planner returned empty project plan."
 
-            trace("step.start", step=1, name="greeting")
-            upd = make_message_update("hi", user_id=user_id, chat_id=chat_id)
-            await greeting_handler(upd, make_ctx())
+        trace("step.start", step=7, name="approve_plan")
+        upd = _make_callback_update(CB_PLAN_APPROVE, user_id=user_id, chat_id=chat_id)
+        ctx = make_ctx(extra_user_data=user_data)
+        assert await approve_plan(upd, ctx) == ConversationHandler.END
+        user_data.update(ctx.user_data)
+        project_id = user_data["last_project_id"]
+        trace("project.created", project_id=project_id, project_name=project_name)
 
-            trace("step.start", step=2, name="start_project")
-            upd = make_callback_update(CB_START_PROJECT, user_id=user_id, chat_id=chat_id)
-            assert await ask_project_name(upd, make_ctx()) == AWAITING_PROJECT_NAME
+        trace("step.start", step=8, name="start_coding")
+        upd = _make_callback_update(CB_START_CODING, user_id=user_id, chat_id=chat_id)
+        ctx = make_ctx(extra_user_data={"last_project_id": project_id})
+        await start_coding_handler(upd, ctx)
+        assert ctx.user_data[_CODING_PID_KEY] == project_id
 
-            trace("step.start", step=3, name="project_name")
-            upd = make_message_update(project_name, user_id=user_id, chat_id=chat_id)
-            ctx = make_ctx(extra_user_data=user_data)
-            assert await receive_project_name(upd, ctx) == AWAITING_PROJECT_TYPE
-            user_data.update(ctx.user_data)
+        loop_key = _ACTIVE_LOOP_KEY.format(uid=user_id)
+        event_key = _MS_EVENT_KEY.format(uid=user_id)
+        decision_key = _MS_DECISION_KEY.format(uid=user_id)
 
-            trace("step.start", step=4, name="project_type")
-            upd = make_callback_update("type:python_app", user_id=user_id, chat_id=chat_id)
-            ctx = make_ctx(extra_user_data=user_data)
-            assert await receive_project_type(upd, ctx) == GATHERING_REQUIREMENTS
-            user_data.update(ctx.user_data)
-
-            trace("step.start", step=5, name="requirements_message")
-            upd = make_message_update(requirement_text, user_id=user_id, chat_id=chat_id)
-            ctx = make_ctx(extra_user_data=user_data)
-            assert await handle_requirements_message(upd, ctx) == GATHERING_REQUIREMENTS
-            user_data.update(ctx.user_data)
-
-            trace("step.start", step=6, name="plan_generation")
-            upd = make_callback_update(CB_REQUIREMENTS_DONE, user_id=user_id, chat_id=chat_id)
-            ctx = make_ctx(extra_user_data=user_data)
-            assert await requirements_done_handler(upd, ctx) == REVIEWING_PLAN
-            user_data.update(ctx.user_data)
-            plan = str(user_data.get(_PLAN_KEY, "")).strip()
-            trace("planner.plan", chars=len(plan))
-            assert plan, "Planner returned empty project plan."
-
-            trace("step.start", step=7, name="approve_plan")
-            upd = make_callback_update(CB_PLAN_APPROVE, user_id=user_id, chat_id=chat_id)
-            ctx = make_ctx(extra_user_data=user_data)
-            assert await approve_plan(upd, ctx) == ConversationHandler.END
-            user_data.update(ctx.user_data)
-            project_id = user_data["last_project_id"]
-            trace("project.created", project_id=project_id, project_name=project_name)
-
-            trace("step.start", step=8, name="start_coding")
-            upd = make_callback_update(CB_START_CODING, user_id=user_id, chat_id=chat_id)
-            ctx = make_ctx(extra_user_data={"last_project_id": project_id})
-            await start_coding_handler(upd, ctx)
-            assert ctx.user_data[_CODING_PID_KEY] == project_id
-
-            loop_key = _ACTIVE_LOOP_KEY.format(uid=user_id)
-            event_key = _MS_EVENT_KEY.format(uid=user_id)
-            decision_key = _MS_DECISION_KEY.format(uid=user_id)
-
-            async def auto_approve_until_complete():
-                seen_loop = False
-                loop_missing_ticks = 0
-                for idx in range(4800):  # ~20 min max @ 0.25s
-                    loop_task = bot_data.get(loop_key)
-                    if loop_task:
-                        seen_loop = True
-                        loop_missing_ticks = 0
-                    elif seen_loop:
-                        loop_missing_ticks += 1
-                        if loop_missing_ticks >= 20:
-                            trace(
-                                "auto_approve.loop_finished_without_task",
-                                iterations=idx,
-                            )
-                            return
-                    if loop_task and loop_task.done():
-                        trace("auto_approve.done", iterations=idx)
-                        return
-                    event = bot_data.get(event_key)
-                    if event is not None:
-                        bot_data[decision_key] = "approve"
-                        event.set()
-                        trace("auto_approve.approve_sent", iterations=idx)
-                    if idx % 40 == 0:
-                        trace(
-                            "auto_approve.heartbeat",
-                            iterations=idx,
-                            loop_present=bool(loop_task),
-                            loop_done=bool(loop_task.done()) if loop_task else False,
-                            waiting_for_event=bool(event is not None),
-                        )
-                    await asyncio.sleep(0.25)
-                raise AssertionError("Timed out auto-approving live milestones.")
-
-            approve_task = asyncio.create_task(auto_approve_until_complete())
-            upd = make_callback_update(CB_CODING_GITHUB_YES, user_id=user_id, chat_id=chat_id)
-            ctx = make_ctx(extra_user_data={_CODING_PID_KEY: project_id})
-
-            trace("step.start", step=9, name="coding_loop")
-            with patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=wrapped_send_action)):
-                await coding_github_choice_handler(upd, ctx)
+        async def auto_approve_until_complete() -> None:
+            seen_loop = False
+            loop_missing_ticks = 0
+            for idx in range(4800):
                 loop_task = bot_data.get(loop_key)
-                assert loop_task is not None, "Live coding loop did not start."
-                await asyncio.wait_for(loop_task, timeout=1500)
-            await approve_task
+                if loop_task:
+                    seen_loop = True
+                    loop_missing_ticks = 0
+                elif seen_loop:
+                    loop_missing_ticks += 1
+                    if loop_missing_ticks >= 20:
+                        trace(
+                            "auto_approve.loop_finished_without_task",
+                            iterations=idx,
+                        )
+                        return
+                if loop_task and loop_task.done():
+                    trace("auto_approve.done", iterations=idx)
+                    return
+                event = bot_data.get(event_key)
+                if event is not None:
+                    bot_data[decision_key] = "approve"
+                    event.set()
+                    trace("auto_approve.approve_sent", iterations=idx)
+                if idx % 40 == 0:
+                    trace(
+                        "auto_approve.heartbeat",
+                        iterations=idx,
+                        loop_present=bool(loop_task),
+                        loop_done=bool(loop_task.done()) if loop_task else False,
+                        waiting_for_event=bool(event is not None),
+                    )
+                await asyncio.sleep(0.25)
+            raise AssertionError("Timed out auto-approving live milestones.")
 
-            tasks = await list_tasks(db, project_id=project_id)
-            trace(
-                "coding.tasks",
-                total=len(tasks),
-                statuses=[t.get("status") for t in tasks],
-                titles=[str(t.get("title", ""))[:80] for t in tasks],
-            )
-            assert tasks, "Live coding did not create any task records."
-            assert any(t["status"] == "done" for t in tasks), "No milestone completed successfully."
-            assert bool(captured["gh_success"]), f"gh_create_repo did not succeed: {captured['gh_stdout']}"
-            print(f"[LIVE E2E] GitHub repo output: {captured['gh_stdout']}")
-            print(f"[LIVE E2E] Parsed repo URL: {captured['repo_url']}")
+        approve_task = asyncio.create_task(auto_approve_until_complete())
+        upd = _make_callback_update(CB_CODING_GITHUB_YES, user_id=user_id, chat_id=chat_id)
+        ctx = make_ctx(extra_user_data={_CODING_PID_KEY: project_id})
 
-            trace("step.start", step=10, name="run_project")
-            upd = make_callback_update(CB_RUN_PROJECT, user_id=user_id, chat_id=chat_id)
-            ctx = make_context(bot_data=dict(bot_data))
-            with patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=wrapped_send_action)):
-                await run_project_handler(upd, ctx)
+        trace("step.start", step=9, name="coding_loop")
+        await coding_github_choice_handler(upd, ctx)
+        loop_task = bot_data.get(loop_key)
+        assert loop_task is not None, "Live coding loop did not start."
+        await asyncio.wait_for(loop_task, timeout=1500)
+        await approve_task
 
-            all_replies = " ".join(
-                str(c.args[0] if c.args else "")
-                for c in upd.callback_query.message.reply_text.call_args_list
-            )
-            trace("run_project.replies", text_preview=all_replies[:500])
-            assert "exit 0" in all_replies or "✅" in all_replies, (
-                f"Run project did not report success. Replies: {all_replies}"
-            )
-            assert "SKYNET_LIVE_E2E_OK" in all_replies, (
-                f"Expected live app output not found. Replies: {all_replies}"
-            )
-            trace(
-                "test.success",
-                repo_url=str(captured["repo_url"]),
-                actions_count=len(captured["actions"]),
-            )
-            print(f"[LIVE TRACE] {trace_path}")
-        finally:
-            trace("test.cleanup", closing_db=True)
-            await db.close()
+        tasks = await list_tasks(db, project_id=project_id)
+        trace(
+            "coding.tasks",
+            total=len(tasks),
+            statuses=[t.get("status") for t in tasks],
+            titles=[str(t.get("title", ""))[:80] for t in tasks],
+        )
+        assert tasks, "Live coding did not create any task records."
+        assert any(t["status"] == "done" for t in tasks), "No milestone completed successfully."
+
+        all_bot_text = " ".join(str(item.get("text", "")) for item in app.bot.sent_messages)
+        assert "GitHub repo created and pushed" in all_bot_text, (
+            "Real GitHub repo creation message not observed in bot output."
+        )
+
+        trace("step.start", step=10, name="run_project")
+        upd = _make_callback_update(CB_RUN_PROJECT, user_id=user_id, chat_id=chat_id)
+        ctx = _SimpleContext(user_data={}, bot_data=dict(bot_data), application=app)
+        await run_project_handler(upd, ctx)
+
+        run_replies = upd.callback_query.message.replies if upd.callback_query else []
+        all_replies = " ".join(str(item.get("text", "")) for item in run_replies)
+        trace("run_project.replies", text_preview=all_replies[:500])
+        assert "exit 0" in all_replies or "Finished (exit 0)" in all_replies, (
+            f"Run project did not report success. Replies: {all_replies}"
+        )
+        assert "SKYNET_LIVE_E2E_OK" in all_replies, (
+            f"Expected live app output not found. Replies: {all_replies}"
+        )
+        trace("test.success", actions_count=0)
+        print(f"[LIVE TRACE] {trace_path}")
+    finally:
+        trace("test.cleanup", closing_db=True)
+        await db.close()
+        _restore_env(previous_env)

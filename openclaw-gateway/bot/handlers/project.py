@@ -94,6 +94,37 @@ def _trim_history(history: list[dict]) -> list[dict]:
     return history[-max_msgs:] if len(history) > max_msgs else history
 
 
+def _build_project_description(plan: str, history: list[dict]) -> str:
+    """Persist approved plan together with original user requirement snippets."""
+    approved_plan = (plan or "").strip()
+    seen: set[str] = set()
+    requirements: list[str] = []
+
+    for item in history:
+        if str(item.get("role") or "").strip().lower() != "user":
+            continue
+        text = str(item.get("content") or "").strip()
+        if not text:
+            continue
+        compact = " ".join(text.split())
+        if not compact:
+            continue
+        lowered = compact.lower()
+        if lowered.startswith("generate the full project plan now based on everything"):
+            continue
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        requirements.append(compact)
+
+    if not requirements:
+        return approved_plan
+
+    req_block = "\n".join(f"- {line}" for line in requirements[-20:])
+    pieces = [approved_plan, f"Original user requirements:\n{req_block}"]
+    return "\n\n".join(part for part in pieces if part).strip()
+
+
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
 async def ask_project_name(
@@ -305,6 +336,8 @@ async def approve_plan(
     name       = context.user_data.get(_NAME_KEY, "Untitled")
     type_label = context.user_data.get(_TYPE_KEY, "Other")
     plan       = context.user_data.get(_PLAN_KEY, "")
+    history: list[dict] = context.user_data.get(_REQS_HISTORY, [])
+    project_description = _build_project_description(plan, history)
 
     try:
         coding_default = str(cfg.CODING_DEFAULT_PROFILE or "legacy").strip().lower()
@@ -329,7 +362,7 @@ async def approve_plan(
             user_id=user["id"],
             name=name,
             project_type=type_label,
-            description=plan,
+            description=project_description,
             coding_profile=coding_default,
             quality_profile=quality_profile,
         )
