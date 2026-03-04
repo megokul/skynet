@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-03 15:32
+Last updated (UTC): 2026-03-04 08:04
 
 ## Current Goal
 
@@ -41,6 +41,13 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
   - Auto-bootstrap `tests/test_smoke.py` for Python strict-mode projects when no tests are detected.
 - Confirmed full live conversation flow (`hi` -> project creation -> coding -> run project) passes with strict gates enabled using local SSH profile.
 - Hardened provider registration for optional SDK absence and improved live E2E env loading (`SKYNET_ENV_FILE`).
+
+### 2026-03-04 Live-E2E Strict-Recovery Determinism Update
+
+- Removed mock-based harnessing from live conversation E2E and now execute the real planner/coding/SSH/GitHub path only.
+- Fixed strict recovery marker extraction to preserve required output tokens (for example `SKYNET_LIVE_E2E_OK`) during emergency scaffold fallback.
+- Added milestone extraction heartbeat and timeout handling to avoid silent "stuck" behavior before milestone rendering.
+- Persisted original user requirement snippets alongside approved plans so strict recovery and run-contract enforcement retain exact user constraints.
 ## Current Repo State
 
 - Branch: `main`
@@ -101,6 +108,8 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
   - `1 passed`
 - `$env:SKYNET_ENV_FILE='.env.local-e2e'; python openclaw-gateway/tests/e2e_live.py`
   - `1 passed` (`test_live_conversation_real_planner_codegen_and_github_push`, ~236s)
+- `$env:SKYNET_ENV_FILE='.env.local-e2e'; python openclaw-gateway/tests/e2e_live.py`
+  - `1 passed` (`test_live_conversation_real_planner_codegen_and_github_push`, ~143s, trace `e2e-live-1772610595.log`)
 ## Trace Evidence
 
 - Live e2e test run via `tests/e2e_live.py` inside container
@@ -121,6 +130,9 @@ Supercharge the CLAW coding agent — smarter model routing, better prompts, aut
 - task_id=live-conversation-e2e-policy-compliance
 - openclaw-gateway/tests/.artifacts/e2e-live-1772550136.log
 - openclaw-gateway/tests/.artifacts/e2e-live-1772550666.log
+- request_id=live-e2e-strict-recovery-20260304
+- task_id=conversation-flow-no-mocks
+- openclaw-gateway/tests/.artifacts/e2e-live-1772610595.log
 ## Documentation Updates
 
 - `docs/AGENT_HANDOFF.md`
