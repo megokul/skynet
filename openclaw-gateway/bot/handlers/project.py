@@ -47,6 +47,7 @@ from bot.state import KEY_DB, KEY_ROUTER
 from db.store import create_project, ensure_user
 from gateway import is_worker_available, send_action
 from orchestration.openclaw_runner import get_openclaw_runner
+from runtime_trace import build_debug_bundle, command_hash, emit_runtime_trace_async
 
 logger = logging.getLogger("skynet.bot.project")
 
@@ -72,7 +73,62 @@ _PLAN_BANNED_PHRASES = (
     "i can help you plan",
     "i'll act as your planner assistant",
     "i’ll act as your planner assistant",
+    "you must generate the full project plan now",
+    "telegram product workflow",
+    "send the first item",
+    "send your current item",
 )
+
+
+def _runtime_flow() -> str:
+    raw = str(cfg.get_str("SKYNET_LIVE_E2E_FLOW", "") or "").strip().lower()
+    if raw in {"telegram_real", "conversation", "direct"}:
+        return raw
+    return "direct"
+
+
+async def _emit_runtime(
+    *,
+    context: ContextTypes.DEFAULT_TYPE,
+    update: Update | None,
+    event: str,
+    status: str = "ok",
+    phase: str = "project",
+    project_id: str = "",
+    error_code: str = "",
+    error_message: str = "",
+    failure_class: str = "",
+    details: dict | None = None,
+    action_name: str = "",
+) -> None:
+    db = context.bot_data.get(KEY_DB) if isinstance(context.bot_data, dict) else None
+    tg_user = update.effective_user if update is not None else None
+    chat = update.effective_chat if update is not None else None
+    debug_bundle = None
+    if status.strip().lower() in {"fail", "failed", "error"}:
+        debug_bundle = build_debug_bundle(
+            failure_class=failure_class or error_code or "UNKNOWN",
+            error_message=error_message,
+            causal_chain=[event],
+            mitigation_hint="Inspect planner trace and fallback path.",
+        )
+    await emit_runtime_trace_async(
+        db=db,
+        event=event,
+        status=status,
+        flow=_runtime_flow(),
+        phase=phase,
+        project_id=project_id,
+        telegram_chat_id=str(getattr(chat, "id", "") or ""),
+        telegram_user_id=str(getattr(tg_user, "id", "") or ""),
+        action_name=action_name,
+        command_hash=command_hash(action_name),
+        error_code=error_code,
+        error_message=error_message,
+        failure_class=failure_class or error_code,
+        details=details or {},
+        debug_bundle=debug_bundle,
+    )
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
@@ -188,13 +244,20 @@ def _is_requirement_grounded_plan(plan: str, history: list[dict]) -> bool:
     lowered = plan_text.lower()
     if any(marker not in lowered for marker in _PLAN_REQUIRED_MARKERS):
         return False
-    if any(phrase in lowered for phrase in _PLAN_BANNED_PHRASES):
+    if _looks_like_meta_planner_output(plan_text):
         return False
     terms = _requirement_terms(history)
     if not terms:
         return True
     overlap = sum(1 for term in terms if term in lowered)
     return overlap >= min(2, len(terms))
+
+
+def _looks_like_meta_planner_output(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return True
+    return any(phrase in lowered for phrase in _PLAN_BANNED_PHRASES)
 
 
 def _build_deterministic_plan(
@@ -297,7 +360,7 @@ async def _planner_via_codex_then_router(
     user_id: int,
 ) -> str:
     use_codex = str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router")).strip().lower() == "codex"
-    allow_router_fallback = bool(getattr(cfg, "CONTROL_LOOP_ROUTER_FALLBACK_ENABLED", False))
+    allow_router_fallback = bool(getattr(cfg, "PLANNER_ROUTER_FALLBACK_ENABLED", True))
     if use_codex:
         sandbox_dir = _planner_sandbox_dir(user_id)
         planner_prompt = (
@@ -374,6 +437,8 @@ async def _planner_via_codex_then_router(
                 text = _planner_action_text(result)
             if not text:
                 raise RuntimeError("planner codex returned empty output")
+            if _looks_like_meta_planner_output(text):
+                raise RuntimeError("planner codex returned meta assistant text")
             return text
         except Exception as exc:
             logger.warning(
@@ -403,8 +468,23 @@ async def ask_project_name(
 ) -> int:
     """Entry: user tapped 'Start a Project'."""
     await update.callback_query.answer()
+    await _emit_runtime(
+        context=context,
+        update=update,
+        event="project.start",
+        status="start",
+        phase="project_intake",
+    )
     await update.callback_query.message.reply_text(
         "What should we call this project?"
+    )
+    await _emit_runtime(
+        context=context,
+        update=update,
+        event="project.start",
+        status="ok",
+        phase="project_intake",
+        details={"next_state": "awaiting_project_name"},
     )
     return AWAITING_PROJECT_NAME
 
@@ -416,10 +496,28 @@ async def receive_project_name(
     """User typed the project name."""
     name = (update.message.text or "").strip()
     if not name:
+        await _emit_runtime(
+            context=context,
+            update=update,
+            event="project.name",
+            status="fail",
+            phase="project_intake",
+            error_code="INVALID_NAME",
+            error_message="Empty project name.",
+            failure_class="CONTRACT_FAILED",
+        )
         await update.message.reply_text("Please give the project a name.")
         return AWAITING_PROJECT_NAME
 
     context.user_data[_NAME_KEY] = name
+    await _emit_runtime(
+        context=context,
+        update=update,
+        event="project.name",
+        status="ok",
+        phase="project_intake",
+        details={"name": name[:120]},
+    )
     await update.message.reply_text(
         f"What type of project is <b>{name}</b>?",
         parse_mode="HTML",
@@ -441,6 +539,14 @@ async def receive_project_type(
     template   = get_template(type_label)
 
     context.user_data[_TYPE_KEY] = type_label
+    await _emit_runtime(
+        context=context,
+        update=update,
+        event="project.type",
+        status="ok",
+        phase="project_intake",
+        details={"name": str(name)[:120], "type": type_label},
+    )
 
     # Opening message from the Project Specialist (seeded into history)
     opening = (
@@ -467,10 +573,28 @@ async def handle_requirements_message(
     """Forward each user message to the Project Specialist LLM."""
     user_text = (update.message.text or "").strip()
     if not user_text:
+        await _emit_runtime(
+            context=context,
+            update=update,
+            event="project.requirements.message",
+            status="skip",
+            phase="requirements",
+            details={"reason": "empty_message"},
+        )
         return GATHERING_REQUIREMENTS
 
     router = context.bot_data.get(KEY_ROUTER)
     if router is None:
+        await _emit_runtime(
+            context=context,
+            update=update,
+            event="project.requirements.message",
+            status="fail",
+            phase="requirements",
+            error_code="ROUTER_UNAVAILABLE",
+            error_message="AI router unavailable while collecting requirements.",
+            failure_class="ENVIRONMENT_FAILED",
+        )
         await update.message.reply_text("AI router is not available right now.")
         return GATHERING_REQUIREMENTS
 
@@ -496,6 +620,17 @@ async def handle_requirements_message(
         )
     except Exception:
         logger.exception("Requirements AI call failed")
+        await _emit_runtime(
+            context=context,
+            update=update,
+            event="project.requirements.message",
+            status="fail",
+            phase="requirements",
+            action_name="run_coding_agent",
+            error_code="PLANNER_CALL_FAILED",
+            error_message="Requirements AI call failed.",
+            failure_class="GENERATION_FAILED",
+        )
         await update.message.reply_text(
             "AI is unavailable right now. Please try again."
         )
@@ -503,6 +638,15 @@ async def handle_requirements_message(
 
     history.append({"role": "assistant", "content": reply})
     context.user_data[_REQS_HISTORY] = history
+    await _emit_runtime(
+        context=context,
+        update=update,
+        event="project.requirements.message",
+        status="ok",
+        phase="requirements",
+        action_name="run_coding_agent",
+        details={"history_len": len(history), "reply_len": len(reply)},
+    )
 
     await update.message.reply_text(reply, reply_markup=requirements_done())
     return GATHERING_REQUIREMENTS
@@ -514,6 +658,13 @@ async def requirements_done_handler(
 ) -> int:
     """User tapped 'Done — Generate Plan' button during requirements chat."""
     await update.callback_query.answer()
+    await _emit_runtime(
+        context=context,
+        update=update,
+        event="project.plan.generate",
+        status="start",
+        phase="planning",
+    )
     # Delegate directly to plan generation (same logic as /plan).
     return await _do_generate_plan(update.callback_query.message, context)
 
@@ -533,6 +684,16 @@ async def _do_generate_plan(
     """Shared logic: call the Project Specialist to generate the plan."""
     router = context.bot_data.get(KEY_ROUTER)
     if router is None:
+        await emit_runtime_trace_async(
+            db=context.bot_data.get(KEY_DB) if isinstance(context.bot_data, dict) else None,
+            event="project.plan.generate",
+            status="fail",
+            flow=_runtime_flow(),
+            phase="planning",
+            error_code="ROUTER_UNAVAILABLE",
+            error_message="AI router unavailable during plan generation.",
+            failure_class="ENVIRONMENT_FAILED",
+        )
         await message.reply_text("AI router is not available right now.")
         return GATHERING_REQUIREMENTS
 
@@ -560,8 +721,37 @@ async def _do_generate_plan(
             user_id=message.chat.id,
         )
         plan = plan.strip() or "Could not generate plan."
+        await emit_runtime_trace_async(
+            db=context.bot_data.get(KEY_DB) if isinstance(context.bot_data, dict) else None,
+            event="project.plan.generate",
+            status="ok",
+            flow=_runtime_flow(),
+            phase="planning",
+            action_name="run_coding_agent",
+            command_hash=command_hash(system_prompt),
+            details={"plan_len": len(plan), "project_name": str(name)[:120]},
+        )
     except Exception:
         logger.exception("Plan generation AI call failed")
+        await emit_runtime_trace_async(
+            db=context.bot_data.get(KEY_DB) if isinstance(context.bot_data, dict) else None,
+            event="project.plan.generate",
+            status="fail",
+            level="error",
+            flow=_runtime_flow(),
+            phase="planning",
+            action_name="run_coding_agent",
+            command_hash=command_hash(system_prompt),
+            error_code="PLANNER_CALL_FAILED",
+            error_message="Plan generation AI call failed.",
+            failure_class="GENERATION_FAILED",
+            debug_bundle=build_debug_bundle(
+                failure_class="GENERATION_FAILED",
+                error_message="Plan generation AI call failed.",
+                causal_chain=["project.plan.generate"],
+                mitigation_hint="Check planner backend availability and response format.",
+            ),
+        )
         await message.reply_text("Could not generate the plan. Please try /plan again.")
         return GATHERING_REQUIREMENTS
 
@@ -663,8 +853,27 @@ async def approve_plan(
             quality_profile=quality_profile,
             control_loop_profile=control_loop_profile,
         )
+        await _emit_runtime(
+            context=context,
+            update=update,
+            event="project.plan.approve",
+            status="ok",
+            phase="planning",
+            project_id=str(project.get("id") or ""),
+            details={"project_type": type_label, "project_name": str(name)[:120]},
+        )
     except Exception:
         logger.exception("Failed to save project name=%r type=%r", name, type_label)
+        await _emit_runtime(
+            context=context,
+            update=update,
+            event="project.plan.approve",
+            status="fail",
+            phase="planning",
+            error_code="PROJECT_SAVE_FAILED",
+            error_message="Failed to save approved project.",
+            failure_class="ENVIRONMENT_FAILED",
+        )
         await update.callback_query.message.reply_text(
             "Something went wrong saving the project. Please try again.",
             reply_markup=main_menu(),

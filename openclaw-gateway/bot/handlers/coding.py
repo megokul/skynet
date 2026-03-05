@@ -58,6 +58,7 @@ from db.store import (
     list_critic_findings,
     list_graph_nodes,
     list_project_memory,
+    list_runtime_trace_events,
     list_task_node_events,
     list_task_gate_results,
     list_projects,
@@ -101,6 +102,7 @@ from orchestration.learning import (
 from orchestration.loop_controller import ClosedLoopController
 from orchestration.openclaw_runner import get_openclaw_runner
 from orchestration.trace import format_timeline_lines, load_trace_timeline
+from runtime_trace import build_debug_bundle, command_hash, emit_runtime_trace, emit_runtime_trace_async
 from orchestration.worker_pool import select_worker
 
 logger = logging.getLogger("skynet.bot.coding")
@@ -157,6 +159,86 @@ _STAGE_ENV_HINT = {
     "claude_ollama": "OPENCLAW_SSH_CLAUDE_BIN",
     "cline": "OPENCLAW_SSH_CLINE_BIN",
 }
+
+
+def _runtime_flow() -> str:
+    raw = str(cfg.get_str("SKYNET_LIVE_E2E_FLOW", "") or "").strip().lower()
+    if raw in {"telegram_real", "conversation", "direct"}:
+        return raw
+    return "direct"
+
+
+async def _emit_runtime(
+    *,
+    context: ContextTypes.DEFAULT_TYPE | None,
+    event: str,
+    status: str = "ok",
+    level: str = "info",
+    user_id: int | None = None,
+    project_id: str = "",
+    task_id: str = "",
+    graph_id: str = "",
+    node_key: str = "",
+    node_type: str = "",
+    phase: str = "",
+    stage: str = "",
+    gate: str = "",
+    worker_id: str = "",
+    transport: str = "ssh_first",
+    runtime_mode: str = "ssh",
+    error_type: str = "",
+    error_code: str = "",
+    error_message: str = "",
+    action_name: str = "",
+    working_dir: str = "",
+    details: dict[str, Any] | None = None,
+    failure_class: str = "",
+    mitigation_hint: str = "",
+) -> None:
+    db = None
+    chat_id = ""
+    if context is not None and isinstance(getattr(context, "bot_data", None), dict):
+        db = context.bot_data.get(KEY_DB)
+        chat_id = str(context.bot_data.get("last_chat_id") or "")
+    debug_bundle = None
+    if status.strip().lower() in {"fail", "failed", "error"}:
+        debug_bundle = build_debug_bundle(
+            failure_class=failure_class or error_code or "UNKNOWN",
+            error_message=error_message,
+            causal_chain=[event],
+            mitigation_hint=mitigation_hint or "Inspect /trace deep timeline and debug.bundle entries.",
+            retry_policy_snapshot={"strict_mode": bool(getattr(cfg, "STRICT_QUALITY_GATES_ENABLED", True))},
+        )
+    await emit_runtime_trace_async(
+        db=db,
+        event=event,
+        status=status,
+        level=level,
+        flow=_runtime_flow(),
+        project_id=project_id,
+        task_id=task_id,
+        graph_id=graph_id,
+        node_key=node_key,
+        node_type=node_type,
+        phase=phase,
+        stage=stage,
+        gate=gate,
+        worker_id=worker_id,
+        transport=transport,
+        runtime_mode=runtime_mode,
+        error_type=error_type,
+        error_code=error_code,
+        error_message=error_message,
+        telegram_chat_id=chat_id,
+        telegram_user_id=str(user_id or ""),
+        action_name=action_name,
+        command_hash=command_hash(action_name),
+        working_dir=working_dir,
+        details=details or {},
+        debug_bundle=debug_bundle,
+        failure_class=failure_class or error_code,
+        mitigation_hint=mitigation_hint,
+    )
 
 
 def _parse_code_blocks(text: str) -> list[tuple[str, str]]:
@@ -1665,6 +1747,23 @@ async def _run_stage_chain_for_generation(
             task_id,
             stage_name,
         )
+        await emit_runtime_trace_async(
+            db=db,
+            event="coding.stage.start",
+            status="start",
+            flow=_runtime_flow(),
+            project_id=str(project.get("id") or ""),
+            task_id=str(task_id or ""),
+            phase=str(label_prefix or ""),
+            stage=stage_name,
+            worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
+            transport="ssh_first",
+            runtime_mode=("acp" if use_acp else "ssh"),
+            action_name="run_coding_agent",
+            command_hash=command_hash(prompt),
+            working_dir=working_dir,
+            details={"stage_index": idx, "stage_total": len(stage_chain)},
+        )
         if use_acp:
             await _record_orchestration_event(
                 db=db,
@@ -1871,6 +1970,23 @@ async def _run_stage_chain_for_generation(
                         queue_mode=str(inner.get("queue_mode") or ""),
                         detail=f"Stage {stage_name} succeeded",
                     )
+            await emit_runtime_trace_async(
+                db=db,
+                event="coding.stage.end",
+                status="ok",
+                flow=_runtime_flow(),
+                project_id=str(project.get("id") or ""),
+                task_id=str(task_id or ""),
+                phase=str(label_prefix or ""),
+                stage=stage_name,
+                worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
+                transport="ssh_first",
+                runtime_mode=("acp" if use_acp else "ssh"),
+                action_name="run_coding_agent",
+                command_hash=command_hash(prompt),
+                working_dir=working_dir,
+                details={"returncode": return_code, "files_written": len(written)},
+            )
             return {
                 "ok": True,
                 "inner": inner,
@@ -1887,6 +2003,47 @@ async def _run_stage_chain_for_generation(
             stage_name,
             return_code,
             failure_excerpt,
+        )
+        await emit_runtime_trace_async(
+            db=db,
+            event="coding.stage.end",
+            status="fail",
+            level="error",
+            flow=_runtime_flow(),
+            project_id=str(project.get("id") or ""),
+            task_id=str(task_id or ""),
+            phase=str(label_prefix or ""),
+            stage=stage_name,
+            worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
+            transport="ssh_first",
+            runtime_mode=("acp" if use_acp else "ssh"),
+            error_type="StageFailure",
+            error_code="GENERATION_FAILED",
+            error_message=failure_excerpt,
+            action_name="run_coding_agent",
+            command_hash=command_hash(prompt),
+            working_dir=working_dir,
+            failure_class="GENERATION_FAILED",
+            mitigation_hint="Inspect stage output and causal chain via /trace deep.",
+            details={
+                "returncode": return_code,
+                "attempted_stages": list(attempted_stages),
+            },
+            debug_bundle=build_debug_bundle(
+                failure_class="GENERATION_FAILED",
+                error_message=failure_excerpt,
+                causal_chain=[f"coding.stage.start:{stage_name}", f"coding.stage.end:{stage_name}"],
+                last_success_event=(
+                    f"coding.stage.end:{attempted_stages[-2]}"
+                    if len(attempted_stages) > 1
+                    else ""
+                ),
+                stdout_tail=str(inner.get("stdout") or ""),
+                stderr_tail=str(inner.get("stderr") or failure_excerpt),
+                files_touched=[str(path) for path in written if str(path).strip()],
+                mitigation_hint="Validate worker writability, prompt quality, and command output.",
+                retry_policy_snapshot={"stage_index": idx, "stage_total": len(stage_chain)},
+            ),
         )
         if use_acp:
             await _record_orchestration_event(
@@ -2278,6 +2435,38 @@ async def _run_strict_quality_gates(
             summary: str = "",
             command: str = "",
         ) -> None:
+            level = "error" if status.strip().lower() in {"failed", "error"} else "info"
+            await emit_runtime_trace_async(
+                db=db,
+                event="coding.gate.update",
+                status=("fail" if status.strip().lower() in {"failed", "error"} else status.strip().lower() or "ok"),
+                level=level,
+                flow=_runtime_flow(),
+                project_id=str(project.get("id") or ""),
+                task_id=str(task_id),
+                phase="quality_gates",
+                gate=gate_name,
+                transport="ssh_first",
+                runtime_mode="ssh",
+                error_code=("STRICT_GATES_FAILED" if status.strip().lower() in {"failed", "error"} else ""),
+                error_message=(summary if status.strip().lower() in {"failed", "error"} else ""),
+                action_name=command.split(" ", 1)[0] if command else "",
+                command_hash=command_hash(command),
+                working_dir=working_dir,
+                failure_class=("STRICT_GATE_FAILED" if status.strip().lower() in {"failed", "error"} else ""),
+                mitigation_hint=(
+                    "Inspect gate command output and rerun after fixing blocker."
+                    if status.strip().lower() in {"failed", "error"}
+                    else ""
+                ),
+                details={
+                    "gate_name": gate_name,
+                    "status": status,
+                    "summary": summary[:240],
+                    "command": command,
+                    "attempt": attempt,
+                },
+            )
             if tracker_hook is None:
                 return
             await tracker_hook(
@@ -2869,11 +3058,30 @@ async def start_coding_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """User tapped Ã°Å¸Å¡â‚¬ Start Coding Ã¢â‚¬â€ ask GitHub/folder setup preference."""
+    """User tapped start coding - ask GitHub/folder setup preference."""
     await update.callback_query.answer()
+    await _emit_runtime(
+        context=context,
+        event="coding.session.request",
+        status="start",
+        user_id=update.effective_user.id if update.effective_user else None,
+        project_id=str(context.user_data.get(_PROJECT_ID_KEY) or ""),
+        phase="setup",
+    )
 
     project_id = context.user_data.get(_PROJECT_ID_KEY)
     if not project_id:
+        await _emit_runtime(
+            context=context,
+            event="coding.session.request",
+            status="fail",
+            user_id=update.effective_user.id if update.effective_user else None,
+            phase="setup",
+            error_code="NO_ACTIVE_PROJECT",
+            error_message="No active project found before Start Coding.",
+            failure_class="ENVIRONMENT_FAILED",
+            mitigation_hint="Create or select a project before starting coding.",
+        )
         await update.callback_query.message.reply_text(
             "No active project found. Start a project first.",
             reply_markup=main_menu(),
@@ -2885,6 +3093,15 @@ async def start_coding_handler(
     await update.callback_query.message.reply_text(
         "Should I set up a GitHub repo and project folder on your laptop?",
         reply_markup=coding_github_setup(),
+    )
+    await _emit_runtime(
+        context=context,
+        event="coding.session.request",
+        status="ok",
+        user_id=update.effective_user.id if update.effective_user else None,
+        project_id=str(project_id),
+        phase="setup",
+        details={"awaiting_choice": True},
     )
 
 
@@ -2901,6 +3118,17 @@ async def _start_coding_loop(
     loop_key = _ACTIVE_LOOP_KEY.format(uid=user_id)
     existing = context.bot_data.get(loop_key)
     if existing and not existing.done():
+        await _emit_runtime(
+            context=context,
+            event="coding.loop.start",
+            status="fail",
+            user_id=user_id,
+            project_id=str(project.get("id") or ""),
+            phase="setup",
+            error_code="LOOP_ALREADY_RUNNING",
+            error_message="A coding session is already running for this user.",
+            failure_class="ENVIRONMENT_FAILED",
+        )
         await message.reply_text("A coding session is already running for you!")
         return False
 
@@ -2929,6 +3157,19 @@ async def _start_coding_loop(
         working_dir=working_dir,
         strict_mode=_is_strict_project(project),
     )
+    await _emit_runtime(
+        context=context,
+        event="coding.loop.start",
+        status="start",
+        user_id=user_id,
+        project_id=str(project.get("id") or ""),
+        phase="setup",
+        transport="ssh_first",
+        runtime_mode="ssh",
+        working_dir=working_dir,
+        action_name="start_coding_loop",
+        details={"do_github": bool(do_github), "strict_mode": _is_strict_project(project)},
+    )
 
     task = asyncio.create_task(
         _coding_loop(context.application, chat_id, user_id, project, do_github)
@@ -2950,16 +3191,46 @@ async def coding_github_choice_handler(
     chat_id    = update.effective_chat.id
 
     if not project_id:
+        await _emit_runtime(
+            context=context,
+            event="coding.github.choice",
+            status="fail",
+            user_id=user_id,
+            phase="setup",
+            error_code="SESSION_EXPIRED",
+            error_message="Coding GitHub choice callback missing project id.",
+            failure_class="ENVIRONMENT_FAILED",
+        )
         await update.callback_query.message.reply_text("Session expired Ã¢â‚¬â€ start over.")
         return
 
     db = context.bot_data.get(KEY_DB)
     project = await get_project(db, project_id)
     if not project:
+        await _emit_runtime(
+            context=context,
+            event="coding.github.choice",
+            status="fail",
+            user_id=user_id,
+            project_id=str(project_id),
+            phase="setup",
+            error_code="PROJECT_NOT_FOUND",
+            error_message="Project row not found during coding GitHub choice.",
+            failure_class="ENVIRONMENT_FAILED",
+        )
         await update.callback_query.message.reply_text("Project not found in database.")
         return
 
     do_github = (cb_data == CB_CODING_GITHUB_YES)
+    await _emit_runtime(
+        context=context,
+        event="coding.github.choice",
+        status="ok",
+        user_id=user_id,
+        project_id=str(project_id),
+        phase="setup",
+        details={"do_github": bool(do_github)},
+    )
 
     context.bot_data[_GITHUB_PREF_KEY.format(uid=user_id, pid=project_id)] = do_github
 
@@ -2985,6 +3256,16 @@ async def retry_coding_handler(
     cb_data = update.callback_query.data or ""
     project_id = cb_data.removeprefix(CB_CODING_RETRY_PREFIX).strip()
     if not project_id:
+        await _emit_runtime(
+            context=context,
+            event="coding.retry.request",
+            status="fail",
+            user_id=update.effective_user.id if update.effective_user else None,
+            phase="setup",
+            error_code="INVALID_RETRY_REQUEST",
+            error_message="Retry callback missing project id.",
+            failure_class="ENVIRONMENT_FAILED",
+        )
         await update.callback_query.message.reply_text(
             "Invalid retry request.",
             reply_markup=main_menu(),
@@ -3003,6 +3284,17 @@ async def retry_coding_handler(
 
     project = await get_project(db, project_id)
     if not project or int(project.get("user_id", -1)) != int(user["id"]):
+        await _emit_runtime(
+            context=context,
+            event="coding.retry.request",
+            status="fail",
+            user_id=tg_user.id,
+            project_id=str(project_id),
+            phase="setup",
+            error_code="ACCESS_DENIED",
+            error_message="Retry link invalid or inaccessible project.",
+            failure_class="ENVIRONMENT_FAILED",
+        )
         await update.callback_query.message.reply_text(
             "This retry link is invalid or you no longer have access to this project.",
             reply_markup=main_menu(),
@@ -3025,12 +3317,30 @@ async def retry_coding_handler(
             project=project,
             do_github=remembered_pref,
         )
+        await _emit_runtime(
+            context=context,
+            event="coding.retry.request",
+            status="ok",
+            user_id=tg_user.id,
+            project_id=str(project_id),
+            phase="setup",
+            details={"reused_preference": True, "do_github": bool(remembered_pref)},
+        )
         return
 
     context.user_data[_CODING_PID_KEY] = project_id
     await update.callback_query.message.reply_text(
         "Should I set up a GitHub repo and project folder on your laptop?",
         reply_markup=coding_github_setup(),
+    )
+    await _emit_runtime(
+        context=context,
+        event="coding.retry.request",
+        status="ok",
+        user_id=tg_user.id,
+        project_id=str(project_id),
+        phase="setup",
+        details={"reused_preference": False},
     )
 
 async def approve_milestone_handler(
@@ -3056,10 +3366,26 @@ async def approve_milestone_handler(
                 stage="",
                 gate="",
             )
+        await _emit_runtime(
+            context=context,
+            event="milestone.approval",
+            status="ok",
+            user_id=user_id,
+            phase="milestone_review",
+            details={"decision": "approve"},
+        )
     else:
         logger.debug(
             "Ignoring stale milestone approval callback for user_id=%s (no active event).",
             user_id,
+        )
+        await _emit_runtime(
+            context=context,
+            event="milestone.approval",
+            status="skip",
+            user_id=user_id,
+            phase="milestone_review",
+            details={"decision": "approve", "reason": "stale_callback"},
         )
 
 
@@ -3086,6 +3412,23 @@ async def skip_milestone_handler(
                 stage="",
                 gate="",
             )
+        await _emit_runtime(
+            context=context,
+            event="milestone.approval",
+            status="ok",
+            user_id=user_id,
+            phase="milestone_review",
+            details={"decision": "skip"},
+        )
+    else:
+        await _emit_runtime(
+            context=context,
+            event="milestone.approval",
+            status="skip",
+            user_id=user_id,
+            phase="milestone_review",
+            details={"decision": "skip", "reason": "stale_callback"},
+        )
 
 
 async def stop_milestone_handler(
@@ -3115,6 +3458,14 @@ async def stop_milestone_handler(
                 gate="",
                 force=True,
             )
+        await _emit_runtime(
+            context=context,
+            event="coding.stop.request",
+            status="ok",
+            user_id=user_id,
+            phase="finalization",
+            details={"active_event": True},
+        )
         return
 
     loop_key = _ACTIVE_LOOP_KEY.format(uid=user_id)
@@ -3123,10 +3474,26 @@ async def stop_milestone_handler(
         await update.callback_query.message.reply_text(
             "Stopping current milestone execution... this may take a few seconds."
         )
+        await _emit_runtime(
+            context=context,
+            event="coding.stop.request",
+            status="ok",
+            user_id=user_id,
+            phase="finalization",
+            details={"active_event": False, "active_loop": True},
+        )
     else:
         context.bot_data.pop(_stop_request_key(user_id), None)
         await update.callback_query.message.reply_text(
             "No active coding session to stop."
+        )
+        await _emit_runtime(
+            context=context,
+            event="coding.stop.request",
+            status="skip",
+            user_id=user_id,
+            phase="finalization",
+            details={"active_event": False, "active_loop": False},
         )
 
 
@@ -3311,7 +3678,7 @@ async def trace_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """/trace - show recent loop timeline events for live debugging."""
+    """/trace - show recent loop timeline events; `/trace deep` adds runtime debug bundle context."""
     db = context.bot_data.get(KEY_DB)
     tg_user = update.effective_user
     user = await ensure_user(
@@ -3321,14 +3688,39 @@ async def trace_handler(
         first_name=tg_user.first_name or "",
         last_name=tg_user.last_name or "",
     )
+    await _emit_runtime(
+        context=context,
+        event="trace.command",
+        status="start",
+        user_id=tg_user.id,
+        phase="trace",
+        details={"deep": bool(context.args and context.args[0].strip().lower() == "deep")},
+    )
     projects = await list_projects(db, user_id=user["id"])
     if not projects:
         await update.message.reply_text("No projects yet.")
+        await _emit_runtime(
+            context=context,
+            event="trace.command",
+            status="skip",
+            user_id=tg_user.id,
+            phase="trace",
+            details={"reason": "no_projects"},
+        )
         return
     project = projects[0]
     active_graph = await get_active_task_graph(db, project_id=project["id"])
     if not active_graph:
         await update.message.reply_text("No active control-loop graph for this project.")
+        await _emit_runtime(
+            context=context,
+            event="trace.command",
+            status="skip",
+            user_id=tg_user.id,
+            project_id=str(project["id"]),
+            phase="trace",
+            details={"reason": "no_active_graph"},
+        )
         return
     graph_id = int(active_graph.get("id") or 0)
     events = await load_trace_timeline(
@@ -3338,6 +3730,16 @@ async def trace_handler(
     )
     if not events:
         await update.message.reply_text(f"Graph {graph_id} has no trace events yet.")
+        await _emit_runtime(
+            context=context,
+            event="trace.command",
+            status="skip",
+            user_id=tg_user.id,
+            project_id=str(project["id"]),
+            graph_id=str(graph_id),
+            phase="trace",
+            details={"reason": "no_events"},
+        )
         return
     lines = format_timeline_lines(events)
     latest_failure = next(
@@ -3364,9 +3766,86 @@ async def trace_handler(
     if repair_events:
         header += f"\nRepairs observed: {len(repair_events)}"
     body = "\n".join(lines[-30:])
+    deep = bool(context.args and len(context.args) > 0 and str(context.args[0]).strip().lower() == "deep")
+    if not deep:
+        await update.message.reply_text(
+            f"{header}\n\n<pre>{html_mod.escape(body)}</pre>",
+            parse_mode="HTML",
+        )
+        await _emit_runtime(
+            context=context,
+            event="trace.command",
+            status="ok",
+            user_id=tg_user.id,
+            project_id=str(project["id"]),
+            graph_id=str(graph_id),
+            phase="trace",
+            details={"deep": False, "events": len(events)},
+        )
+        return
+
+    runtime_rows = await list_runtime_trace_events(
+        db,
+        project_id=str(project["id"]),
+        graph_id=str(graph_id),
+        limit=80,
+    )
+    recent_rows = runtime_rows[-30:] if len(runtime_rows) > 30 else runtime_rows
+    runtime_lines: list[str] = []
+    for row in recent_rows:
+        event_name = str(row.get("event") or "").strip() or "event"
+        status = str(row.get("status") or "").strip() or "ok"
+        stage_name = str(row.get("stage") or "").strip()
+        gate_name = str(row.get("gate") or "").strip()
+        error_code = str(row.get("error_code") or "").strip()
+        msg = str(row.get("error_message") or "").strip()
+        line = f"[{row.get('id')}] {event_name} ({status})"
+        if stage_name:
+            line += f" stage={stage_name}"
+        if gate_name:
+            line += f" gate={gate_name}"
+        if error_code:
+            line += f" code={error_code}"
+        if msg:
+            line += f" msg={msg[:120]}"
+        runtime_lines.append(line)
+    latest_debug_bundle = next(
+        (row for row in reversed(runtime_rows) if str(row.get("event") or "").strip() == "debug.bundle"),
+        None,
+    )
+    debug_digest = ""
+    if latest_debug_bundle:
+        payload = latest_debug_bundle.get("payload") or {}
+        details = payload.get("details") if isinstance(payload, dict) else {}
+        bundle = details.get("debug_bundle") if isinstance(details, dict) else {}
+        if isinstance(bundle, dict):
+            failure_class = str(bundle.get("failure_class") or "UNKNOWN")
+            mitigation_hint = str(bundle.get("mitigation_hint") or "")
+            causal_len = len(bundle.get("causal_chain") or [])
+            debug_digest = (
+                f"Latest debug bundle: class={failure_class}, causal_chain={causal_len}, "
+                f"mitigation={mitigation_hint[:120]}"
+            )
+
+    deep_body = "\n".join(runtime_lines) if runtime_lines else "No runtime trace rows."
+    deep_header = (
+        f"{header}\n"
+        f"Runtime events: {len(runtime_rows)}"
+        + (f"\n{debug_digest}" if debug_digest else "")
+    )
     await update.message.reply_text(
-        f"{header}\n\n<pre>{html_mod.escape(body)}</pre>",
+        f"{deep_header}\n\n<pre>{html_mod.escape(body)}</pre>\n\n<pre>{html_mod.escape(deep_body)}</pre>",
         parse_mode="HTML",
+    )
+    await _emit_runtime(
+        context=context,
+        event="trace.command",
+        status="ok",
+        user_id=tg_user.id,
+        project_id=str(project["id"]),
+        graph_id=str(graph_id),
+        phase="trace",
+        details={"deep": True, "timeline_events": len(events), "runtime_events": len(runtime_rows)},
     )
 
 
@@ -3381,16 +3860,20 @@ def _control_loop_work_prompt(
     milestone_text: str,
     working_dir: str,
 ) -> str:
+    preferred_entrypoint = f"{str(project.get('name') or 'main').strip().lower().replace(' ', '_')}.py"
     return (
         f"Project: {project['name']} ({project['project_type']})\n"
         f"Working directory: {working_dir}\n\n"
         f"Task:\n{milestone_text}\n\n"
-        "Implement this task completely.\n"
+        "Implement this task completely by writing files directly in the working directory.\n"
+        "This is an implementation task, not a planning task.\n"
         "Requirements:\n"
         f"- Include {_RUN_CONTRACT_FILE} with a valid command.\n"
+        f"- Prefer entrypoint file `{preferred_entrypoint}` unless an existing entrypoint already exists.\n"
         "- Create or update tests needed to validate behavior.\n"
         "- Write complete files and ensure they run.\n"
-        "- Do not ask clarifying questions."
+        "- Do not ask clarifying questions.\n"
+        "- Do NOT return architecture plans, checklists, or mermaid diagrams."
     )
 
 
@@ -3423,7 +3906,8 @@ def _control_loop_repair_prompt(
         "Requirements:\n"
         "- Keep existing behavior intact unless findings require changes.\n"
         "- Ensure lint/tests/smoke pass in strict gates.\n"
-        "- Return complete updated files only."
+        "- Return complete updated files only.\n"
+        "- Do NOT return architecture plans, checklists, or mermaid diagrams."
     )
 
 
@@ -3732,6 +4216,39 @@ async def _run_control_loop_v1(
                 agent=(node.owner if isinstance(node, LoopNode) else ""),
                 stage=(node.node_type if isinstance(node, LoopNode) else ""),
                 failure_type=failure_type,
+                details=details or {},
+            )
+        with contextlib.suppress(Exception):
+            await emit_runtime_trace_async(
+                db=db,
+                event=f"control_loop.{event_type}",
+                status=(
+                    "fail"
+                    if str(failure_type or "").strip()
+                    else (str(status or "").strip().lower() or "ok")
+                ),
+                level=("error" if str(failure_type or "").strip() else "info"),
+                flow=_runtime_flow(),
+                project_id=str(project.get("id") or ""),
+                graph_id=str(graph_id),
+                node_key=(node.node_key if isinstance(node, LoopNode) else ""),
+                node_type=(node.node_type if isinstance(node, LoopNode) else ""),
+                phase="execution",
+                stage=(node.node_type if isinstance(node, LoopNode) else ""),
+                worker_id=(
+                    str(node.worker_id or active_worker_id)
+                    if isinstance(node, LoopNode)
+                    else str(active_worker_id)
+                ),
+                transport="ssh_first",
+                runtime_mode="ssh",
+                error_code=(str(failure_type or "").strip() if str(failure_type or "").strip() else ""),
+                error_message=(
+                    str((details or {}).get("error") or (details or {}).get("summary") or "")
+                    if str(failure_type or "").strip()
+                    else ""
+                ),
+                failure_class=(str(failure_type or "").strip() if str(failure_type or "").strip() else ""),
                 details=details or {},
             )
 
@@ -4603,6 +5120,24 @@ async def _coding_loop(
     stop_request_cache_key = _stop_request_key(user_id)
     last_valid_run_contract: dict[str, Any] | None = None
     tracker_finalized = False
+    await emit_runtime_trace_async(
+        db=db,
+        event="coding.loop.enter",
+        status="start",
+        flow=_runtime_flow(),
+        project_id=project_id,
+        phase="setup",
+        worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
+        transport="ssh_first",
+        runtime_mode="ssh",
+        working_dir=working_dir,
+        details={
+            "strict_mode": strict_mode,
+            "effective_profile": effective_profile,
+            "stage_chain": list(active_stage_chain),
+            "do_github": bool(do_github),
+        },
+    )
 
     async def _update_tracker(**kwargs: Any) -> None:
         with contextlib.suppress(Exception):
@@ -5832,6 +6367,24 @@ async def _coding_loop(
                 parse_mode="HTML",
                 reply_markup=run_project() if can_run_now else main_menu(),
             )
+            await emit_runtime_trace_async(
+                db=db,
+                event="coding.loop.exit",
+                status="ok",
+                flow=_runtime_flow(),
+                project_id=project_id,
+                phase="finalization",
+                worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
+                transport="ssh_first",
+                runtime_mode="ssh",
+                working_dir=working_dir,
+                details={
+                    "complete": successful_milestones,
+                    "failed": failed_milestones,
+                    "skipped": skipped_milestones,
+                    "strict_mode": strict_mode,
+                },
+            )
         else:
             await app.bot.send_message(
                 chat_id,
@@ -5865,9 +6418,50 @@ async def _coding_loop(
                     f"skipped={skipped_milestones})"
                 ),
             )
+            await emit_runtime_trace_async(
+                db=db,
+                event="coding.loop.exit",
+                status="fail",
+                level="error",
+                flow=_runtime_flow(),
+                project_id=project_id,
+                phase="finalization",
+                worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
+                transport="ssh_first",
+                runtime_mode="ssh",
+                error_type="LoopFailure",
+                error_code="GENERATION_FAILED",
+                error_message="No successful milestones completed.",
+                failure_class="GENERATION_FAILED",
+                mitigation_hint="Inspect failed milestones and gate outputs in /trace deep.",
+                working_dir=working_dir,
+                details={
+                    "complete": successful_milestones,
+                    "failed": failed_milestones,
+                    "skipped": skipped_milestones,
+                },
+            )
 
     except Exception:
         logger.exception("Coding loop crashed for project %s user %s", project["id"], user_id)
+        await emit_runtime_trace_async(
+            db=db,
+            event="coding.loop.exit",
+            status="fail",
+            level="error",
+            flow=_runtime_flow(),
+            project_id=project_id,
+            phase="finalization",
+            worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
+            transport="ssh_first",
+            runtime_mode="ssh",
+            error_type="LoopCrash",
+            error_code="LOOP_CRASH",
+            error_message="Unexpected coding loop crash.",
+            failure_class="ENVIRONMENT_FAILED",
+            mitigation_hint="Inspect traceback and latest debug.bundle event.",
+            working_dir=working_dir,
+        )
         await _update_tracker(
             phase="finalization",
             phase_detail="Unexpected coding loop crash",
@@ -5907,6 +6501,13 @@ async def run_project_handler(
 
     user_id = update.effective_user.id
     db = context.bot_data.get(KEY_DB)
+    await _emit_runtime(
+        context=context,
+        event="run_project.request",
+        status="start",
+        user_id=user_id,
+        phase="run",
+    )
 
     # Prefer the project from the last coding session; fallback to most recent.
     pid_key = f"run_project_{user_id}"
@@ -5928,6 +6529,16 @@ async def run_project_handler(
         project = projects[0] if projects else None
 
     if not project:
+        await _emit_runtime(
+            context=context,
+            event="run_project.request",
+            status="fail",
+            user_id=user_id,
+            phase="run",
+            error_code="PROJECT_NOT_FOUND",
+            error_message="No project found to run.",
+            failure_class="ENVIRONMENT_FAILED",
+        )
         await update.callback_query.message.reply_text(
             "No project found to run.",
             reply_markup=main_menu(),
@@ -5939,6 +6550,17 @@ async def run_project_handler(
     run_contract_cache_key = _run_contract_key(user_id, project["id"])
 
     if not is_worker_available():
+        await _emit_runtime(
+            context=context,
+            event="run_project.request",
+            status="fail",
+            user_id=user_id,
+            project_id=str(project.get("id") or ""),
+            phase="run",
+            error_code="WORKER_UNAVAILABLE",
+            error_message="Worker not connected for run action.",
+            failure_class="ENVIRONMENT_FAILED",
+        )
         await update.callback_query.message.reply_text(
             "Worker not connected - cannot run the project right now.",
             reply_markup=run_project() if not strict_mode else main_menu(),
@@ -5982,6 +6604,19 @@ async def run_project_handler(
                     parse_mode="HTML",
                     reply_markup=main_menu(),
                 )
+                await _emit_runtime(
+                    context=context,
+                    event="run_project.request",
+                    status="fail",
+                    user_id=user_id,
+                    project_id=str(project.get("id") or ""),
+                    phase="run",
+                    error_code=("ENVIRONMENT_FAILED" if manifest_infra else "CONTRACT_FAILED"),
+                    error_message=str(manifest_summary or "Invalid run contract"),
+                    failure_class=("ENVIRONMENT_FAILED" if manifest_infra else "CONTRACT_FAILED"),
+                    mitigation_hint="Validate skynet_run.json and worker connectivity before running.",
+                    working_dir=working_dir,
+                )
                 return
     else:
         stored_files = context.bot_data.get(run_files_cache_key) or []
@@ -6009,6 +6644,18 @@ async def run_project_handler(
                     parse_mode="HTML",
                     reply_markup=run_project(),
                 )
+                await _emit_runtime(
+                    context=context,
+                    event="run_project.request",
+                    status="fail",
+                    user_id=user_id,
+                    project_id=str(project.get("id") or ""),
+                    phase="run",
+                    error_code="ENVIRONMENT_FAILED",
+                    error_message=detail,
+                    failure_class="ENVIRONMENT_FAILED",
+                    working_dir=working_dir,
+                )
                 return
 
             if list_result.get("status") == "error" or _action_exit_code(list_result) != 0:
@@ -6017,6 +6664,18 @@ async def run_project_handler(
                     f"Run failed: infrastructure error while listing files: <code>{html_mod.escape(detail[:260])}</code>",
                     parse_mode="HTML",
                     reply_markup=run_project(),
+                )
+                await _emit_runtime(
+                    context=context,
+                    event="run_project.request",
+                    status="fail",
+                    user_id=user_id,
+                    project_id=str(project.get("id") or ""),
+                    phase="run",
+                    error_code="ENVIRONMENT_FAILED",
+                    error_message=detail,
+                    failure_class="ENVIRONMENT_FAILED",
+                    working_dir=working_dir,
                 )
                 return
 
@@ -6038,6 +6697,19 @@ async def run_project_handler(
                 parse_mode="HTML",
                 reply_markup=main_menu(),
             )
+            await _emit_runtime(
+                context=context,
+                event="run_project.request",
+                status="fail",
+                user_id=user_id,
+                project_id=str(project.get("id") or ""),
+                phase="run",
+                error_code="CONTRACT_FAILED",
+                error_message="No runnable entry point found.",
+                failure_class="CONTRACT_FAILED",
+                mitigation_hint="Ensure project includes skynet_run.json or a detectable entrypoint.",
+                working_dir=working_dir,
+            )
             return
 
         run_cmd, run_target = resolved
@@ -6047,11 +6719,34 @@ async def run_project_handler(
             "No runnable command is available for this project.",
             reply_markup=main_menu(),
         )
+        await _emit_runtime(
+            context=context,
+            event="run_project.request",
+            status="fail",
+            user_id=user_id,
+            project_id=str(project.get("id") or ""),
+            phase="run",
+            error_code="CONTRACT_FAILED",
+            error_message="No runnable command available.",
+            failure_class="CONTRACT_FAILED",
+            working_dir=working_dir,
+        )
         return
 
     await update.callback_query.message.reply_text(
         f"Running <code>{html_mod.escape(run_target or '')}</code> on your laptop...",
         parse_mode="HTML",
+    )
+    await _emit_runtime(
+        context=context,
+        event="run_project.exec",
+        status="start",
+        user_id=user_id,
+        project_id=str(project.get("id") or ""),
+        phase="run",
+        action_name="exec_command",
+        working_dir=working_dir,
+        details={"run_target": str(run_target or ""), "strict_mode": strict_mode},
     )
 
     run_markup = run_project() if (not strict_mode or _has_cached_run_contract(
@@ -6089,11 +6784,42 @@ async def run_project_handler(
             parse_mode="HTML",
             reply_markup=run_markup,
         )
+        await _emit_runtime(
+            context=context,
+            event="run_project.exec",
+            status=("ok" if int(exit_code or 0) == 0 else "fail"),
+            level=("info" if int(exit_code or 0) == 0 else "error"),
+            user_id=user_id,
+            project_id=str(project.get("id") or ""),
+            phase="run",
+            action_name="exec_command",
+            working_dir=working_dir,
+            error_code=("RUN_FAILED" if int(exit_code or 0) != 0 else ""),
+            error_message=(stderr or stdout)[:240] if int(exit_code or 0) != 0 else "",
+            failure_class=("STRICT_GATE_FAILED" if int(exit_code or 0) != 0 else ""),
+            details={"exit_code": int(exit_code or 0), "run_target": str(run_target or "")},
+        )
     except Exception as exc:
         await update.callback_query.message.reply_text(
             f"Run failed: {html_mod.escape(str(exc)[:300])}",
             parse_mode="HTML",
             reply_markup=run_markup,
+        )
+        await _emit_runtime(
+            context=context,
+            event="run_project.exec",
+            status="fail",
+            level="error",
+            user_id=user_id,
+            project_id=str(project.get("id") or ""),
+            phase="run",
+            action_name="exec_command",
+            working_dir=working_dir,
+            error_type=type(exc).__name__,
+            error_code="ENVIRONMENT_FAILED" if _is_infra_error(str(exc)) else "RUN_FAILED",
+            error_message=str(exc)[:300],
+            failure_class=("ENVIRONMENT_FAILED" if _is_infra_error(str(exc)) else "STRICT_GATE_FAILED"),
+            mitigation_hint="Check worker command execution and run contract target.",
         )
 
 def _project_prefers_node(project_type: str) -> bool:
@@ -6364,6 +7090,13 @@ async def _extract_milestones_codex_then_router(
     if not plan:
         return []
 
+    # Prefer explicit milestones already present in the approved plan text.
+    # This avoids planner-side DAG drift and keeps coding steps requirement-grounded.
+    direct_milestones = _parse_milestones_fallback(str(plan))
+    if direct_milestones:
+        _reset_loop_graph_hints()
+        return direct_milestones
+
     prompt = (
         "You are a project planner. Build an execution DAG for coding milestones.\n"
         "Return ONLY valid JSON, no markdown.\n"
@@ -6400,6 +7133,12 @@ async def _extract_milestones_codex_then_router(
                 raise RuntimeError(str(run_result.get("stderr") or run_result.get("stdout") or "codex failed"))
             output = str(run_result.get("stdout") or "").strip()
         else:
+            await send_action(
+                "create_directory",
+                {"directory": working_dir},
+                timeout=20,
+                confirmed=True,
+            )
             result = await send_action(
                 "run_coding_agent",
                 {
@@ -6464,7 +7203,9 @@ async def _extract_milestones(
     *,
     working_dir: str | None = None,
 ) -> list[str]:
-    effective_working_dir = working_dir or f"{cfg.WORKER_PROJECTS_DIR}/_planner_sessions/milestones"
+    project_id = str(project.get("id") or "unknown")
+    # Keep planner/extraction artifacts out of the project workspace.
+    effective_working_dir = f"{cfg.WORKER_PROJECTS_DIR}/_planner_sessions/milestones/{project_id}"
     return await _extract_milestones_codex_then_router(
         router=router,
         project=project,

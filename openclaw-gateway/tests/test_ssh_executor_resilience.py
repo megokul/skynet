@@ -150,6 +150,63 @@ def test_codex_read_only_signature_is_promoted_to_setup_error(
     assert "CODEX_WRITE_BLOCKED" in str(result.get("stderr", ""))
 
 
+def test_block_parser_ignores_mermaid_tag_and_writes_python_fallback(
+    ssh_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = SSHTunnelExecutor()
+    executor.remote_os = "windows"
+
+    class _FakeSftpWriter:
+        def __init__(self):
+            self.content = ""
+
+        def write(self, text):
+            self.content += text
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeSftp:
+        def __init__(self):
+            self.files = {}
+
+        def open(self, path, _mode):
+            writer = _FakeSftpWriter()
+            self.files[path] = writer
+            return writer
+
+        def close(self):
+            return None
+
+    class _FakeClient:
+        def __init__(self):
+            self.sftp = _FakeSftp()
+
+        def open_sftp(self):
+            return self.sftp
+
+    fake = _FakeClient()
+    monkeypatch.setattr(executor, "_sftp_makedirs", lambda *_args, **_kwargs: None)
+    files, errors = executor._persist_generated_files_from_blocks(
+        client=fake,
+        generated=(
+            "```mermaid\n"
+            "graph TD\nA-->B\n"
+            "```\n\n"
+            "```python\n"
+            "print('hello')\n"
+            "```\n"
+        ),
+        working_dir="E:/SKYNET-SANDBOX/Projects/tmp",
+    )
+    assert errors == []
+    assert files == ["file1.py"]
+
+
 def test_build_windows_command_uses_base64_argument_transport() -> None:
     prompt = (
         "Build milestones from this plan.\n"

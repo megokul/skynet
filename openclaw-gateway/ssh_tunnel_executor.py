@@ -26,6 +26,7 @@ import paramiko
 _log = logging.getLogger(__name__)
 
 import config as bot_cfg
+from runtime_trace import build_debug_bundle, command_hash, emit_runtime_trace
 from search.web_search import WebSearcher
 
 
@@ -529,6 +530,7 @@ class SSHTunnelExecutor:
             1,
             _env_int("OPENCLAW_SSH_HEALTH_PROBE_TIMEOUT", bot_cfg.SSH_HEALTH_PROBE_TIMEOUT),
         )
+        self._trace_local = threading.local()
         self._parallel_sem = threading.BoundedSemaphore(self._max_parallel)
         self._diag_lock = threading.Lock()
         self._failure_streak = 0
@@ -774,7 +776,66 @@ class SSHTunnelExecutor:
         """
 
         del confirmed
+        raw_params = dict(params or {})
+        project_id = str(raw_params.get("project_id") or "")
+        task_id = str(raw_params.get("task_id") or "")
+        graph_id = str(raw_params.get("graph_id") or "")
+        node_key = str(raw_params.get("node_key") or "")
+        node_type = str(raw_params.get("node_type") or "")
+        stage = str(raw_params.get("agent") or raw_params.get("stage") or "").strip().lower()
+        working_dir = str(
+            raw_params.get("working_dir")
+            or raw_params.get("project_dir")
+            or raw_params.get("directory")
+            or ""
+        )
+        cmd_hash = command_hash(str(raw_params.get("command") or raw_params.get("prompt") or ""))
+        worker_id = str(
+            raw_params.get("worker_id")
+            or getattr(bot_cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "")
+            or "worker-primary"
+        )
+        action_trace_id = uuid.uuid4().hex
+        action_span_id = uuid.uuid4().hex[:16]
+        base_trace = {
+            "trace_id": action_trace_id,
+            "span_id": action_span_id,
+            "parent_span_id": "",
+            "phase": "ssh_executor",
+            "stage": stage,
+            "project_id": project_id,
+            "task_id": task_id,
+            "graph_id": graph_id,
+            "node_key": node_key,
+            "node_type": node_type,
+            "worker_id": worker_id,
+            "transport": "ssh_first",
+            "runtime_mode": str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
+            "action_name": str(action or "").strip(),
+            "command_hash": cmd_hash,
+            "working_dir": working_dir,
+        }
+        emit_runtime_trace(
+            "ssh.action.dispatch",
+            status="start",
+            details={
+                "host": self.host,
+                "port": int(self.port),
+                "auth_mode": "key+password" if (self.key_path and self.password) else ("key" if self.key_path else ("password" if self.password else "agent")),
+                "remote_os": self.remote_os,
+            },
+            **base_trace,
+        )
+
         if not self.is_configured():
+            emit_runtime_trace(
+                "ssh.action.dispatch",
+                status="fail",
+                error_code="SSH_NOT_CONFIGURED",
+                error_message="SSH fallback is not configured.",
+                details={"host": self.host, "port": int(self.port)},
+                **base_trace,
+            )
             return {"status": "error", "action": action, "error": "SSH fallback is not configured."}
 
         remaining = self._circuit_remaining_seconds()
@@ -782,16 +843,37 @@ class SSHTunnelExecutor:
             diag = self.get_diagnostics()
             category = str(diag.get("ssh_error_category") or "unknown")
             endpoint = str(diag.get("ssh_endpoint") or f"{self.host}:{self.port}")
+            err = (
+                "SSH action failed: "
+                f"SSH_INFRA_CIRCUIT {endpoint} - circuit open after {category} failures. "
+                f"Retry after {remaining}s."
+            )
+            emit_runtime_trace(
+                "ssh.action.dispatch",
+                status="fail",
+                error_type="RuntimeError",
+                error_code="SSH_INFRA_CIRCUIT",
+                error_message=err,
+                details={
+                    "host": self.host,
+                    "port": int(self.port),
+                    "error_category": category,
+                    "retry_after_s": int(remaining),
+                },
+                debug_bundle=build_debug_bundle(
+                    failure_class="SSH_INFRA_CIRCUIT",
+                    error_message=err,
+                    causal_chain=["ssh.action.dispatch"],
+                    mitigation_hint="Wait for circuit cooldown or fix repeated SSH infra errors.",
+                ),
+                **base_trace,
+            )
             return {
                 "status": "error",
                 "action": action,
                 "error_category": category,
                 "retry_after_s": remaining,
-                "error": (
-                    "SSH action failed: "
-                    f"SSH_INFRA_CIRCUIT {endpoint} - circuit open after {category} failures. "
-                    f"Retry after {remaining}s."
-                ),
+                "error": err,
             }
 
         params = dict(params or {})
@@ -799,10 +881,24 @@ class SSHTunnelExecutor:
             if isinstance(params.get(key), str):
                 val = _norm_remote_path(params[key], self.remote_os)
                 if not _is_allowed_path(val, self.allowed_roots, self.remote_os):
+                    error_text = f"Path '{params[key]}' is outside OPENCLAW_SSH_ALLOWED_ROOTS."
+                    emit_runtime_trace(
+                        "ssh.action.dispatch",
+                        status="fail",
+                        error_code="PATH_OUTSIDE_ALLOWED_ROOTS",
+                        error_message=error_text,
+                        details={
+                            "path_key": key,
+                            "candidate_path": str(params.get(key)),
+                            "normalized_path": val,
+                            "allowed_roots": list(self.allowed_roots),
+                        },
+                        **base_trace,
+                    )
                     return {
                         "status": "error",
                         "action": action,
-                        "error": f"Path '{params[key]}' is outside OPENCLAW_SSH_ALLOWED_ROOTS.",
+                        "error": error_text,
                     }
                 params[key] = val
 
@@ -815,22 +911,49 @@ class SSHTunnelExecutor:
                 num = int(raw_num) if isinstance(raw_num, (int, str)) else 5
                 num = min(max(num, 1), 10)
                 output = await self._searcher.search(query, num)
+                emit_runtime_trace(
+                    "ssh.action.dispatch",
+                    status="ok",
+                    details={"result_returncode": 0},
+                    **base_trace,
+                )
                 return {
                     "status": "ok",
                     "action": action,
                     "result": {"returncode": 0, "stdout": output, "stderr": ""},
                 }
             except Exception as exc:
+                error_text = f"Web search failed: {exc}"
+                emit_runtime_trace(
+                    "ssh.action.dispatch",
+                    status="fail",
+                    error_type=type(exc).__name__,
+                    error_code="WEB_SEARCH_FAILED",
+                    error_message=error_text,
+                    details={"query_hash": command_hash(str(params.get("query") or ""))},
+                    **base_trace,
+                )
                 return {
                     "status": "ok",
                     "action": action,
-                    "result": {"returncode": 1, "stdout": "", "stderr": f"Web search failed: {exc}"},
+                    "result": {"returncode": 1, "stdout": "", "stderr": error_text},
                 }
 
         loop = asyncio.get_running_loop()
         try:
-            result = await loop.run_in_executor(None, self._execute_sync, action, params)
+            trace_ctx = dict(base_trace)
+            result = await loop.run_in_executor(None, self._execute_sync, action, params, trace_ctx)
             self._record_ssh_success()
+            rc = int(result.get("returncode", 0) or 0) if isinstance(result, dict) else 0
+            is_fail = rc != 0
+            emit_runtime_trace(
+                "ssh.action.dispatch",
+                status="fail" if is_fail else "ok",
+                error_code="SSH_ACTION_NONZERO" if is_fail else "",
+                error_message=str(result.get("stderr") or "")[:1200] if is_fail and isinstance(result, dict) else "",
+                details={"result_returncode": rc},
+                **base_trace,
+            )
             return {"status": "ok", "action": action, "result": result}
         except Exception as exc:
             err_type = type(exc).__name__
@@ -855,9 +978,45 @@ class SSHTunnelExecutor:
                 }
                 if remaining_after > 0:
                     payload["retry_after_s"] = remaining_after
+                emit_runtime_trace(
+                    "ssh.action.dispatch",
+                    status="fail",
+                    error_type=err_type,
+                    error_code=infra_code,
+                    error_message=f"SSH action failed: {err_msg}",
+                    details={
+                        "host": self.host,
+                        "port": int(self.port),
+                        "error_category": category,
+                        "retry_after_s": int(remaining_after),
+                        "auth_mode": "key+password" if (self.key_path and self.password) else ("key" if self.key_path else ("password" if self.password else "agent")),
+                    },
+                    debug_bundle=build_debug_bundle(
+                        failure_class=infra_code,
+                        error_message=f"SSH action failed: {err_msg}",
+                        causal_chain=["ssh.action.dispatch"],
+                        mitigation_hint="Inspect tunnel health, SSH auth, and endpoint reachability.",
+                    ),
+                    **base_trace,
+                )
                 _log.error("SSH infra action '%s' failed (%s): %s", action, category, err_msg, exc_info=True)
                 return payload
 
+            emit_runtime_trace(
+                "ssh.action.dispatch",
+                status="fail",
+                error_type=err_type,
+                error_code="SSH_ACTION_ERROR",
+                error_message=f"SSH action failed: {err_msg}",
+                details={"host": self.host, "port": int(self.port)},
+                debug_bundle=build_debug_bundle(
+                    failure_class="SSH_ACTION_ERROR",
+                    error_message=f"SSH action failed: {err_msg}",
+                    causal_chain=["ssh.action.dispatch"],
+                    mitigation_hint="Inspect action inputs and remote command stderr.",
+                ),
+                **base_trace,
+            )
             _log.error("SSH action '%s' failed: %s", action, err_msg, exc_info=True)
             return {"status": "error", "action": action, "error": f"SSH action failed: {err_msg}"}
 
@@ -933,8 +1092,35 @@ class SSHTunnelExecutor:
         retries = max(1, int(max_retries))
         last_exc: Exception | None = None
         connect_timeout = max(1, int(timeout_override or self.connect_timeout))
+        trace_ctx = self._runtime_trace_context()
 
         for attempt in range(1, retries + 1):
+            emit_runtime_trace(
+                "ssh.connect.attempt",
+                status="start",
+                trace_id=str(trace_ctx.get("trace_id") or ""),
+                parent_span_id=str(trace_ctx.get("span_id") or ""),
+                phase="ssh_connect",
+                stage=str(trace_ctx.get("stage") or ""),
+                project_id=str(trace_ctx.get("project_id") or ""),
+                task_id=str(trace_ctx.get("task_id") or ""),
+                graph_id=str(trace_ctx.get("graph_id") or ""),
+                node_key=str(trace_ctx.get("node_key") or ""),
+                node_type=str(trace_ctx.get("node_type") or ""),
+                worker_id=str(trace_ctx.get("worker_id") or ""),
+                transport="ssh_first",
+                runtime_mode=str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
+                details={
+                    "attempt": int(attempt),
+                    "retries": int(retries),
+                    "host": self.host,
+                    "port": int(self.port),
+                    "username": self.username,
+                    "timeout": int(connect_timeout),
+                    "strict_host_key": bool(self.strict_host_key),
+                    "auth_mode": "key+password" if (self.key_path and self.password) else ("key" if self.key_path else ("password" if self.password else "agent")),
+                },
+            )
             client = paramiko.SSHClient()
             if self.strict_host_key:
                 client.load_system_host_keys()
@@ -963,6 +1149,32 @@ class SSHTunnelExecutor:
                 client.close()
                 err_detail = str(exc).strip() or type(exc).__name__
                 category = self._classify_ssh_error(err_detail)
+                emit_runtime_trace(
+                    "ssh.connect.attempt",
+                    status="fail",
+                    trace_id=str(trace_ctx.get("trace_id") or ""),
+                    parent_span_id=str(trace_ctx.get("span_id") or ""),
+                    phase="ssh_connect",
+                    stage=str(trace_ctx.get("stage") or ""),
+                    project_id=str(trace_ctx.get("project_id") or ""),
+                    task_id=str(trace_ctx.get("task_id") or ""),
+                    graph_id=str(trace_ctx.get("graph_id") or ""),
+                    node_key=str(trace_ctx.get("node_key") or ""),
+                    node_type=str(trace_ctx.get("node_type") or ""),
+                    worker_id=str(trace_ctx.get("worker_id") or ""),
+                    transport="ssh_first",
+                    runtime_mode=str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
+                    error_type=type(exc).__name__,
+                    error_code=f"SSH_CONNECT_{category.upper()}",
+                    error_message=err_detail,
+                    details={
+                        "attempt": int(attempt),
+                        "retries": int(retries),
+                        "host": self.host,
+                        "port": int(self.port),
+                        "category": category,
+                    },
+                )
                 if category == "auth":
                     _log.error("SSH authentication failed to %s:%s (%s)", self.host, self.port, err_detail)
                     raise RuntimeError(
@@ -991,11 +1203,43 @@ class SSHTunnelExecutor:
             except Exception:
                 pass  # best effort - if SFTP probe fails, proceed anyway
 
+            emit_runtime_trace(
+                "ssh.connect.attempt",
+                status="ok",
+                trace_id=str(trace_ctx.get("trace_id") or ""),
+                parent_span_id=str(trace_ctx.get("span_id") or ""),
+                phase="ssh_connect",
+                stage=str(trace_ctx.get("stage") or ""),
+                project_id=str(trace_ctx.get("project_id") or ""),
+                task_id=str(trace_ctx.get("task_id") or ""),
+                graph_id=str(trace_ctx.get("graph_id") or ""),
+                node_key=str(trace_ctx.get("node_key") or ""),
+                node_type=str(trace_ctx.get("node_type") or ""),
+                worker_id=str(trace_ctx.get("worker_id") or ""),
+                transport="ssh_first",
+                runtime_mode=str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
+                details={
+                    "attempt": int(attempt),
+                    "host": self.host,
+                    "port": int(self.port),
+                },
+            )
             return client
 
         raise last_exc  # unreachable, but keeps mypy happy
 
-    def _execute_sync(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _runtime_trace_context(self) -> dict[str, Any]:
+        ctx = getattr(self._trace_local, "ctx", None)
+        if isinstance(ctx, dict):
+            return dict(ctx)
+        return {}
+
+    def _execute_sync(
+        self,
+        action: str,
+        params: dict[str, Any],
+        trace_ctx: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """
         Execute sync.
         
@@ -1019,26 +1263,31 @@ class SSHTunnelExecutor:
         - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
         """
 
-        slot_timeout = max(1, self.connect_timeout + 1)
-        acquired = self._parallel_sem.acquire(timeout=slot_timeout)
-        if not acquired:
-            raise RuntimeError("SSH concurrency limit reached; try again shortly.")
+        prev_ctx = getattr(self._trace_local, "ctx", None)
+        self._trace_local.ctx = dict(trace_ctx or {})
         try:
-            client = self._connect()
+            slot_timeout = max(1, self.connect_timeout + 1)
+            acquired = self._parallel_sem.acquire(timeout=slot_timeout)
+            if not acquired:
+                raise RuntimeError("SSH concurrency limit reached; try again shortly.")
             try:
-                if action == "file_read":
-                    return self._file_read(client, params)
-                if action == "file_write":
-                    return self._file_write(client, params)
-                if action == "create_directory":
-                    return self._create_directory(client, params)
-                if action == "list_directory":
-                    return self._list_directory(client, params)
-                return self._run_command_action(client, action, params)
+                client = self._connect()
+                try:
+                    if action == "file_read":
+                        return self._file_read(client, params)
+                    if action == "file_write":
+                        return self._file_write(client, params)
+                    if action == "create_directory":
+                        return self._create_directory(client, params)
+                    if action == "list_directory":
+                        return self._list_directory(client, params)
+                    return self._run_command_action(client, action, params)
+                finally:
+                    client.close()
             finally:
-                client.close()
+                self._parallel_sem.release()
         finally:
-            self._parallel_sem.release()
+            self._trace_local.ctx = prev_ctx
 
     def _build_command(
         self,
@@ -1138,18 +1387,99 @@ class SSHTunnelExecutor:
         """
 
         command = self._build_command(args, cwd=cwd, env=env)
-        _, stdout, stderr = client.exec_command(
-            command,
-            timeout=timeout or self.command_timeout,
-            get_pty=use_pty,
+        cmd_hash = command_hash(command)
+        trace_ctx = self._runtime_trace_context()
+        emit_runtime_trace(
+            "ssh.command.exec",
+            status="start",
+            trace_id=str(trace_ctx.get("trace_id") or ""),
+            parent_span_id=str(trace_ctx.get("span_id") or ""),
+            phase="ssh_command",
+            stage=str(trace_ctx.get("stage") or ""),
+            project_id=str(trace_ctx.get("project_id") or ""),
+            task_id=str(trace_ctx.get("task_id") or ""),
+            graph_id=str(trace_ctx.get("graph_id") or ""),
+            node_key=str(trace_ctx.get("node_key") or ""),
+            node_type=str(trace_ctx.get("node_type") or ""),
+            worker_id=str(trace_ctx.get("worker_id") or ""),
+            transport="ssh_first",
+            runtime_mode=str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
+            action_name=str(trace_ctx.get("action_name") or "exec_command"),
+            command_hash=cmd_hash,
+            working_dir=str(cwd or ""),
+            details={
+                "args_count": len(args or []),
+                "timeout": int(timeout or self.command_timeout),
+                "use_pty": bool(use_pty),
+                "remote_os": self.remote_os,
+            },
         )
-        out = stdout.read().decode("utf-8", errors="replace")[:8192]
-        err = stderr.read().decode("utf-8", errors="replace")[:4096]
-        if self.remote_os == "windows":
-            out = _sanitize_powershell_output(out)
-            err = _sanitize_powershell_output(err)
-        rc = stdout.channel.recv_exit_status()
-        return {"returncode": int(rc), "stdout": out, "stderr": err}
+        try:
+            _, stdout, stderr = client.exec_command(
+                command,
+                timeout=timeout or self.command_timeout,
+                get_pty=use_pty,
+            )
+            out = stdout.read().decode("utf-8", errors="replace")[:8192]
+            err = stderr.read().decode("utf-8", errors="replace")[:4096]
+            if self.remote_os == "windows":
+                out = _sanitize_powershell_output(out)
+                err = _sanitize_powershell_output(err)
+            rc = int(stdout.channel.recv_exit_status())
+            emit_runtime_trace(
+                "ssh.command.exec",
+                status="ok" if rc == 0 else "fail",
+                trace_id=str(trace_ctx.get("trace_id") or ""),
+                parent_span_id=str(trace_ctx.get("span_id") or ""),
+                phase="ssh_command",
+                stage=str(trace_ctx.get("stage") or ""),
+                project_id=str(trace_ctx.get("project_id") or ""),
+                task_id=str(trace_ctx.get("task_id") or ""),
+                graph_id=str(trace_ctx.get("graph_id") or ""),
+                node_key=str(trace_ctx.get("node_key") or ""),
+                node_type=str(trace_ctx.get("node_type") or ""),
+                worker_id=str(trace_ctx.get("worker_id") or ""),
+                transport="ssh_first",
+                runtime_mode=str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
+                action_name=str(trace_ctx.get("action_name") or "exec_command"),
+                command_hash=cmd_hash,
+                working_dir=str(cwd or ""),
+                error_code="SSH_COMMAND_NONZERO" if rc != 0 else "",
+                error_message=err[:1200] if rc != 0 else "",
+                details={"returncode": rc, "stdout_len": len(out), "stderr_len": len(err)},
+            )
+            return {"returncode": rc, "stdout": out, "stderr": err}
+        except Exception as exc:
+            emit_runtime_trace(
+                "ssh.command.exec",
+                status="fail",
+                trace_id=str(trace_ctx.get("trace_id") or ""),
+                parent_span_id=str(trace_ctx.get("span_id") or ""),
+                phase="ssh_command",
+                stage=str(trace_ctx.get("stage") or ""),
+                project_id=str(trace_ctx.get("project_id") or ""),
+                task_id=str(trace_ctx.get("task_id") or ""),
+                graph_id=str(trace_ctx.get("graph_id") or ""),
+                node_key=str(trace_ctx.get("node_key") or ""),
+                node_type=str(trace_ctx.get("node_type") or ""),
+                worker_id=str(trace_ctx.get("worker_id") or ""),
+                transport="ssh_first",
+                runtime_mode=str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
+                action_name=str(trace_ctx.get("action_name") or "exec_command"),
+                command_hash=cmd_hash,
+                working_dir=str(cwd or ""),
+                error_type=type(exc).__name__,
+                error_code="SSH_COMMAND_EXEC_ERROR",
+                error_message=str(exc)[:1200],
+                debug_bundle=build_debug_bundle(
+                    failure_class="SSH_COMMAND_EXEC_ERROR",
+                    error_message=str(exc),
+                    causal_chain=["ssh.command.exec"],
+                    mitigation_hint="Validate command syntax and SSH channel stability.",
+                ),
+                details={"args_count": len(args or []), "timeout": int(timeout or self.command_timeout)},
+            )
+            raise
 
     def _run_windows_command_with_prompt_file(
         self,
@@ -1251,6 +1581,18 @@ class SSHTunnelExecutor:
             "toml": ".toml", "sql": ".sql", "r": ".r", "swift": ".swift",
             "kotlin": ".kt", "dart": ".dart", "lua": ".lua", "perl": ".pl",
         }
+        known_filenames = {
+            "dockerfile",
+            "makefile",
+            "readme",
+            "readme.md",
+            "license",
+            "license.txt",
+            "requirements.txt",
+            "pyproject.toml",
+            "package.json",
+            "skynet_run.json",
+        }
 
         cwd_norm = _norm_remote_path(working_dir, self.remote_os) if working_dir else ""
 
@@ -1263,11 +1605,7 @@ class SSHTunnelExecutor:
                 "." in tag
                 or "/" in tag
                 or "\\" in tag
-                or (
-                    " " not in tag
-                    and tag.lower() not in lang_ext
-                    and re.match(r"^[A-Za-z0-9_.\\/-]+$", tag) is not None
-                )
+                or tag.strip().lower() in known_filenames
             )
             if looks_like_file:
                 file_blocks.append((tag, content))
@@ -1276,7 +1614,9 @@ class SSHTunnelExecutor:
 
         if not file_blocks and lang_blocks:
             for idx, (tag, content) in enumerate(lang_blocks):
-                ext = lang_ext.get(tag.lower(), f".{tag.lower()}")
+                ext = lang_ext.get(tag.lower())
+                if not ext:
+                    continue
                 fallback = f"main{ext}" if idx == 0 else f"file{idx}{ext}"
                 file_blocks.append((fallback, content))
 

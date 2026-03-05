@@ -45,6 +45,18 @@ def test_meta_planner_boilerplate_is_rejected():
     assert _is_requirement_grounded_plan(bad_plan, _history()) is False
 
 
+def test_prompt_echo_plan_is_rejected():
+    bad_plan = (
+        "**demo — Project Plan**\n"
+        "**Overview:** You MUST generate the full project plan now.\n"
+        "**Core Features:**\n- item\n"
+        "**Tech Stack:**\n- Python\n"
+        "**Project Structure:**\n- main.py\n"
+        "**Milestones:**\n1. step one\n2. step two"
+    )
+    assert _is_requirement_grounded_plan(bad_plan, _history()) is False
+
+
 @pytest.mark.asyncio
 async def test_extract_milestones_invalid_codex_json_uses_local_fallback():
     project = {
@@ -88,6 +100,32 @@ async def test_extract_milestones_invalid_codex_json_uses_local_fallback():
     assert len(milestones) >= 2
     assert all(isinstance(item, str) and item.strip() for item in milestones)
     assert project.get("_loop_node_specs") == []
+
+
+@pytest.mark.asyncio
+async def test_extract_milestones_prefers_numbered_plan_without_codex_call():
+    project = {
+        "id": "proj-3",
+        "name": "numbered-plan",
+        "description": (
+            "**Milestones:**\n"
+            "1. Build main script\n"
+            "2. Add tests\n"
+            "3. Add skynet_run.json"
+        ),
+    }
+    send_action = AsyncMock()
+    with (
+        patch("bot.handlers.coding.cfg.PLANNER_PRIMARY_AGENT", "codex"),
+        patch("bot.handlers.coding.send_action", new=send_action),
+    ):
+        milestones = await _extract_milestones_codex_then_router(
+            router=MagicMock(),
+            project=project,
+            working_dir="E:/SKYNET-SANDBOX/Projects/numbered-plan",
+        )
+    assert milestones == ["Build main script", "Add tests", "Add skynet_run.json"]
+    send_action.assert_not_awaited()
 
 
 @pytest.mark.asyncio
