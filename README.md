@@ -291,6 +291,20 @@ Live E2E flow modes:
 - `SKYNET_LIVE_E2E_FLOW=telegram_real`
   - Fully real Telegram-network conversation using a Telethon user session (real messages + inline button clicks).
 
+Live trace logging:
+
+- Default live E2E trace logs are written to `E:\MyProjects\skynet\logs\`.
+- Runtime trace source defaults to `E:\MyProjects\skynet\logs\skynet.trace.log`.
+- Monitor E2E trace live in PowerShell:
+
+```powershell
+Get-Content E:\MyProjects\skynet\logs\e2e-live-*.log -Wait
+```
+
+- Override trace file path if needed:
+  - `SKYNET_LIVE_TRACE_FILE=E:\MyProjects\skynet\logs\my-live-trace.log`
+  - `SKYNET_E2E_RUNTIME_TRACE_FILE=E:\MyProjects\skynet\logs\skynet.trace.log`
+
 ### Telegram Coding Tracker
 
 During coding sessions, SKYNET now maintains one live tracker message with:

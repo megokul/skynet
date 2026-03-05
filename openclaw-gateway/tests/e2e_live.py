@@ -58,13 +58,15 @@ class LiveTrace:
         if env_path:
             path = Path(env_path)
         else:
-            artifacts = Path(__file__).resolve().parent / ".artifacts"
-            artifacts.mkdir(parents=True, exist_ok=True)
-            path = artifacts / f"{label}-{int(time.time())}.log"
+            repo_root = Path(__file__).resolve().parents[2]
+            log_dir = repo_root / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            path = log_dir / f"{label}-{int(time.time())}.log"
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self._started = time.monotonic()
         self.log("trace.start", trace_file=str(self.path))
+        print(f"[LIVE TRACE] {self.path}", flush=True)
 
     def log(self, event: str, **fields: Any) -> None:
         payload: dict[str, Any] = {

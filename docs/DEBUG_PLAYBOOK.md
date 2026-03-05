@@ -22,6 +22,7 @@ Use this policy for every `telegram_real` failure. Do not stop at first symptom.
 2. Extract root cause evidence before any fix:
    - gateway stacktrace for the same timestamp window
    - relevant `/status` or `/trace` output
+   - runtime trace tail from `E:\MyProjects\skynet\logs\skynet.trace.log`
    - task/event rows for the affected project/task
    - write a clear bug explanation for operators: `symptom -> root cause -> impact`
 3. Classify failure category (single primary category):

@@ -1,10 +1,29 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-05 10:16
+Last updated (UTC): 2026-03-05 19:45
 
 ## Current Goal
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-05 Live E2E Runtime Trace Visibility Update
+
+- Live E2E trace defaults now write to repo logs directory:
+  - `E:\MyProjects\skynet\logs\`
+- Updated live trace loggers:
+  - `openclaw-gateway/tests/e2e_live.py`
+  - `openclaw-gateway/tests/test_e2e_conversation_live.py`
+  - `openclaw-gateway/tests/test_e2e_telegram_real_live.py`
+- Added runtime trace snapshots throughout Telegram real E2E cycle:
+  - checkpoints at plan/coding transitions, milestone clicks, periodic coding polls, run output, and terminal failures.
+  - runtime source defaults to `logs/skynet.trace.log` (override via `SKYNET_E2E_RUNTIME_TRACE_FILE`).
+- Added fast-fail detection for coding session failure summary in Telegram real E2E:
+  - no more silent polling until timeout after `session failed`.
+- Added new tests:
+  - `openclaw-gateway/tests/test_live_e2e_trace_logging.py`
+- Updated operator docs:
+  - `README.md` live trace location and live monitoring commands.
+  - `docs/DEBUG_PLAYBOOK.md` now requires runtime trace tail evidence in mitigation loop.
 
 ### 2026-03-05 SSH-First Hierarchical Closed Loop v1.2 Update
 
@@ -390,6 +409,10 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
 
 ## Test Results
 
+- `python -m pytest -q openclaw-gateway/tests/test_live_e2e_trace_logging.py openclaw-gateway/tests/test_live_e2e_runner_policy.py openclaw-gateway/tests/test_ssh_executor_resilience.py openclaw-gateway/tests/test_planner_resilience.py`
+  - `26 passed`
+- `python -m py_compile openclaw-gateway/tests/e2e_live.py openclaw-gateway/tests/test_e2e_telegram_real_live.py`
+  - pass
 - `python -m py_compile openclaw-gateway/ssh_tunnel_executor.py openclaw-gateway/api.py openclaw-gateway/gateway.py openclaw-gateway/tests/e2e_live.py openclaw-gateway/tests/test_e2e_conversation_live.py openclaw-gateway/tests/test_ssh_executor_resilience.py openclaw-gateway/tests/test_api_status_diagnostics.py openclaw-gateway/tests/test_gateway_ssh_mode.py openclaw-gateway/tests/test_live_e2e_runner_policy.py`
   - pass
 - `python -m pytest -q openclaw-gateway/tests/test_ssh_executor_resilience.py openclaw-gateway/tests/test_api_status_diagnostics.py openclaw-gateway/tests/test_gateway_ssh_mode.py openclaw-gateway/tests/test_live_e2e_runner_policy.py`
@@ -448,6 +471,10 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
   - `1 passed` (`test_live_conversation_real_planner_codegen_and_github_push`, ~143s, trace `e2e-live-1772610595.log`)
 ## Trace Evidence
 
+- request_id=live-e2e-runtime-trace-visibility-20260305
+- task_id=telegram-real-e2e-runtime-trace-snapshots
+- `E:\MyProjects\skynet\logs\e2e-live-1772737353.log`
+- `E:\MyProjects\skynet\logs\skynet.trace.log`
 - Live e2e test run via `tests/e2e_live.py` inside container
 - request_id=ci-cd-hardening-20260302
 - task_id=ci-cd-env-vars-and-guards

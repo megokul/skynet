@@ -107,9 +107,10 @@ def _make_live_trace_logger(test_name: str):
     if env_path:
         path = Path(env_path)
     else:
-        artifacts = Path(__file__).resolve().parent / ".artifacts"
-        artifacts.mkdir(parents=True, exist_ok=True)
-        path = artifacts / f"{test_name}-{int(time.time())}.log"
+        repo_root = Path(__file__).resolve().parents[2]
+        log_dir = repo_root / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / f"{test_name}-{int(time.time())}.log"
     path.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
 

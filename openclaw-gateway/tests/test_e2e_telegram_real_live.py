@@ -7,7 +7,9 @@ import contextlib
 import json
 import os
 import time
+from collections import deque
 from datetime import datetime, timezone
+from hashlib import sha1
 from pathlib import Path
 from typing import Callable
 
@@ -65,9 +67,10 @@ def _make_live_trace_logger(test_name: str):
     if env_path:
         path = Path(env_path)
     else:
-        artifacts = Path(__file__).resolve().parent / ".artifacts"
-        artifacts.mkdir(parents=True, exist_ok=True)
-        path = artifacts / f"{test_name}-{int(time.time())}.log"
+        repo_root = Path(__file__).resolve().parents[2]
+        log_dir = repo_root / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / f"{test_name}-{int(time.time())}.log"
     path.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
 
@@ -85,6 +88,77 @@ def _make_live_trace_logger(test_name: str):
 
     trace("trace.start", test_name=test_name, trace_file=str(path))
     return path, trace
+
+
+def _resolve_runtime_trace_file() -> Path | None:
+    repo_root = Path(__file__).resolve().parents[2]
+    explicit = (os.environ.get("SKYNET_E2E_RUNTIME_TRACE_FILE") or "").strip()
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit))
+    candidates.extend(
+        [
+            repo_root / "logs" / "skynet.trace.log",
+            repo_root / "openclaw-gateway" / "logs" / "skynet.trace.log",
+        ]
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    if explicit:
+        return Path(explicit)
+    return None
+
+
+def _emit_runtime_trace_snapshot(
+    trace_fn: Callable[..., None],
+    *,
+    checkpoint: str,
+    tail_lines: int = 120,
+) -> None:
+    path = _resolve_runtime_trace_file()
+    if path is None:
+        trace_fn(
+            "runtime.trace.snapshot",
+            checkpoint=checkpoint,
+            status="missing",
+            reason="trace file not found",
+        )
+        return
+    if not path.exists():
+        trace_fn(
+            "runtime.trace.snapshot",
+            checkpoint=checkpoint,
+            status="missing",
+            trace_file=str(path),
+            reason="path does not exist",
+        )
+        return
+    try:
+        tail = deque(maxlen=max(1, tail_lines))
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                tail.append(line.rstrip("\n"))
+        joined = "\n".join(tail)
+        digest = sha1(joined.encode("utf-8", errors="replace")).hexdigest()
+        preview = joined[-2500:]
+        trace_fn(
+            "runtime.trace.snapshot",
+            checkpoint=checkpoint,
+            status="ok",
+            trace_file=str(path),
+            lines=len(tail),
+            digest=digest,
+            preview=preview,
+        )
+    except Exception as exc:
+        trace_fn(
+            "runtime.trace.snapshot",
+            checkpoint=checkpoint,
+            status="error",
+            trace_file=str(path),
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
 
 def _require_env(name: str) -> str:
@@ -314,6 +388,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         bot_username=bot_username,
         flow="hi_to_project_completion",
     )
+    _emit_runtime_trace_snapshot(trace, checkpoint="test.start", tail_lines=80)
 
     project_slug = f"livee2e{int(time.time())}"
     requirement = _CONVERSATIONAL_REQUIREMENT
@@ -340,6 +415,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         )
         last_id = int(msg.id)
         await _click_button_contains(msg, "Start a Project", trace_fn=trace, step="click_start_project")
+        _emit_runtime_trace_snapshot(trace, checkpoint="after.start_project", tail_lines=60)
 
         trace("step.start", step=2, name="project_name")
         msg = await _wait_for_bot_message(
@@ -388,6 +464,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         last_id = int(msg.id)
         await client.send_message(bot, requirement)
         trace("telegram.message.sent", step="requirements_sent", text_preview=requirement[:220])
+        _emit_runtime_trace_snapshot(trace, checkpoint="after.requirements_sent", tail_lines=80)
 
         trace("step.start", step=5, name="generate_plan")
         plan_msg = None
@@ -457,6 +534,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         trace("step.start", step=6, name="approve_plan")
         msg = plan_msg
         await _click_button_contains(msg, "Approve", trace_fn=trace, step="click_plan_approve")
+        _emit_runtime_trace_snapshot(trace, checkpoint="after.plan_approved", tail_lines=100)
 
         trace("step.start", step=7, name="start_coding")
         msg = await _wait_for_bot_message(
@@ -470,6 +548,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         )
         last_id = int(msg.id)
         await _click_button_contains(msg, "Start Coding", trace_fn=trace, step="click_start_coding")
+        _emit_runtime_trace_snapshot(trace, checkpoint="after.start_coding_clicked", tail_lines=120)
 
         trace("step.start", step=8, name="skip_github_repo_creation")
         msg = await _wait_for_bot_message(
@@ -483,6 +562,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         )
         last_id = int(msg.id)
         await _click_button_contains(msg, "Skip", trace_fn=trace, step="click_skip_github")
+        _emit_runtime_trace_snapshot(trace, checkpoint="after.skip_github", tail_lines=120)
 
         trace("step.start", step=9, name="coding_and_run")
         saw_run_button = False
@@ -526,6 +606,12 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 text_preview=text[:220],
                 buttons=btns,
             )
+            if idx == 0 or (idx + 1) % 5 == 0:
+                _emit_runtime_trace_snapshot(
+                    trace,
+                    checkpoint=f"coding_poll_{idx + 1}",
+                    tail_lines=80,
+                )
             lowered = text.lower()
             if "phase: director" in lowered:
                 saw_director_phase = True
@@ -540,8 +626,15 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                     message_id=last_id,
                     text_preview=text[:320],
                 )
+                _emit_runtime_trace_snapshot(trace, checkpoint="coding.preflight.failure", tail_lines=200)
                 raise AssertionError(
                     f"Live Telegram E2E encountered terminal preflight failure: {text[:260]}"
+                )
+
+            if "session failed" in lowered and "complete=" in lowered:
+                _emit_runtime_trace_snapshot(trace, checkpoint="coding.session.failed", tail_lines=220)
+                raise AssertionError(
+                    f"Live Telegram E2E reached failed session summary: {text[:260]}"
                 )
 
             if "coding progress [" in lowered:
@@ -590,6 +683,11 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
 
             if any("run it" in b.lower() for b in btns):
                 await _click_button_contains(msg, "Run It", trace_fn=trace, step="click_milestone_run_it")
+                _emit_runtime_trace_snapshot(
+                    trace,
+                    checkpoint=f"milestone.run_it.clicked.{idx + 1}",
+                    tail_lines=120,
+                )
                 continue
 
             if "session finished" in lowered or "complete=" in lowered:
@@ -631,12 +729,14 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                     "run_project.output",
                     text_preview=run_text[:320],
                 )
+                _emit_runtime_trace_snapshot(trace, checkpoint="run_project.output", tail_lines=220)
                 if "exit 0" in run_text.lower() or "finished (exit 0)" in run_text.lower():
                     saw_run_success = True
                 break
 
         if saw_run_success:
             _validate_generated_project_artifacts(project_slug=project_slug, trace_fn=trace)
+            _emit_runtime_trace_snapshot(trace, checkpoint="artifact.validation.ok", tail_lines=160)
 
         assert saw_no_github_push, "Live Telegram E2E unexpectedly created/pushed a GitHub repo."
         assert tracker_message_id is not None, "Live Telegram E2E did not observe tracker message."
@@ -664,4 +764,5 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
             tracker_message_id=tracker_message_id,
             tracker_edit_count=tracker_edit_count,
         )
+        _emit_runtime_trace_snapshot(trace, checkpoint="test.success", tail_lines=180)
         print(f"[LIVE TRACE] {trace_path}")
