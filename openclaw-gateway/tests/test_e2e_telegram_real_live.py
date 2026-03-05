@@ -25,6 +25,16 @@ except Exception:  # pragma: no cover - optional dependency at runtime
     TelegramClient = None  # type: ignore[assignment]
     StringSession = None  # type: ignore[assignment]
 
+_CONVERSATIONAL_REQUIREMENT = (
+    "I'm building a small Windows Python script that runs from the terminal. "
+    "When executed, it should show a popup saying \"hi\" and play a short beep sound. "
+    "Use only Python standard library, include tests, and add a valid skynet_run.json."
+)
+_CONVERSATIONAL_RESTATEMENT = (
+    "It is a Windows terminal Python script that pops up \"hi\" and plays a short beep on run, "
+    "using only stdlib."
+)
+
 
 def _load_live_env_from_dotenv() -> None:
     if load_dotenv is None:
@@ -178,6 +188,100 @@ async def _click_button_contains(message, needle: str, *, trace_fn: Callable[...
     raise AssertionError(f"Could not find button containing '{needle}'.")
 
 
+def _resolve_worker_projects_dir() -> Path:
+    candidates = [
+        os.environ.get("OPENCLAW_PROJECT_BASE_DIR", "").strip(),
+        os.environ.get("WORKER_PROJECTS_DIR", "").strip(),
+        os.environ.get("SKYNET_PROJECT_BASE_DIR", "").strip(),
+        "C:/Projects",
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        path = Path(raw)
+        if path.exists():
+            return path
+    for raw in candidates:
+        if raw:
+            return Path(raw)
+    return Path("C:/Projects")
+
+
+def _is_safe_relative_path(path: str) -> bool:
+    norm = path.replace("\\", "/").strip()
+    if not norm:
+        return False
+    if norm.startswith("/") or ":" in norm:
+        return False
+    return ".." not in norm.split("/")
+
+
+def _validate_generated_project_artifacts(*, project_slug: str, trace_fn: Callable[..., None]) -> None:
+    base_dir = _resolve_worker_projects_dir()
+    project_dir = base_dir / project_slug
+    if not project_dir.exists():
+        raise AssertionError(
+            f"Generated project folder not found: {project_dir} "
+            "(set OPENCLAW_PROJECT_BASE_DIR/WORKER_PROJECTS_DIR for this test host)"
+        )
+
+    py_files = sorted(project_dir.rglob("*.py"))
+    if not py_files:
+        raise AssertionError(f"No Python files found in generated project: {project_dir}")
+
+    popup_markers = ("messageboxw", "tkinter", "messagebox")
+    beep_markers = ("winsound.beep", "winsound.messagebeep", "winsound.playsound")
+    popup_detected = False
+    beep_detected = False
+
+    for py_file in py_files:
+        content = py_file.read_text(encoding="utf-8", errors="ignore").lower()
+        if any(marker in content for marker in popup_markers):
+            popup_detected = True
+        if any(marker in content for marker in beep_markers):
+            beep_detected = True
+
+    run_contract_path = project_dir / "skynet_run.json"
+    run_contract_valid = False
+    run_contract_summary = "missing"
+    if run_contract_path.exists():
+        try:
+            contract = json.loads(run_contract_path.read_text(encoding="utf-8"))
+            if isinstance(contract, dict):
+                interpreter = str(contract.get("interpreter") or "").strip().lower()
+                entrypoint = str(contract.get("entrypoint") or "").strip()
+                if interpreter in {"python", "python3"} and _is_safe_relative_path(entrypoint):
+                    entrypoint_norm = Path(*entrypoint.replace("\\", "/").split("/"))
+                    if (project_dir / entrypoint_norm).exists():
+                        run_contract_valid = True
+                        run_contract_summary = f"{interpreter}:{entrypoint}"
+                    else:
+                        run_contract_summary = f"entrypoint_missing:{entrypoint}"
+                else:
+                    run_contract_summary = "invalid_contract_fields"
+            else:
+                run_contract_summary = "contract_not_object"
+        except Exception as exc:
+            run_contract_summary = f"json_error:{type(exc).__name__}"
+
+    trace_fn(
+        "artifact.validation",
+        project_dir=str(project_dir),
+        py_files_count=len(py_files),
+        popup_detected=popup_detected,
+        beep_detected=beep_detected,
+        run_contract_valid=run_contract_valid,
+        run_contract_summary=run_contract_summary,
+    )
+
+    if not popup_detected:
+        raise AssertionError("Missing popup implementation evidence")
+    if not beep_detected:
+        raise AssertionError("Missing beep implementation evidence")
+    if not run_contract_valid:
+        raise AssertionError("Missing/invalid skynet_run.json")
+
+
 @pytest.mark.e2e
 @pytest.mark.live
 @pytest.mark.asyncio
@@ -212,12 +316,9 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
     )
 
     project_slug = f"livee2e{int(time.time())}"
-    requirement = (
-        f"Build a minimal Python CLI for Windows in file {project_slug}.py. "
-        "When executed it must print exactly SKYNET_TELEGRAM_REAL_E2E_OK and exit 0. "
-        "Use standard library only. Include tests and a valid run contract."
-    )
+    requirement = _CONVERSATIONAL_REQUIREMENT
     trace("test.input", project_slug=project_slug, requirement_preview=requirement[:220])
+    trace("test.requirement.payload", payload=requirement)
 
     async with TelegramClient(StringSession(session), api_id, api_hash) as client:
         trace("telegram.client.connected")
@@ -289,29 +390,72 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         trace("telegram.message.sent", step="requirements_sent", text_preview=requirement[:220])
 
         trace("step.start", step=5, name="generate_plan")
-        msg = await _wait_for_bot_message(
-            client,
-            bot,
-            last_id,
-            timeout_s=120,
-            trace_fn=trace,
-            step="await_generate_plan_button",
-            predicate=lambda _text, btns: any("done" in b.lower() and "generate plan" in b.lower() for b in btns),
-        )
-        last_id = int(msg.id)
-        await _click_button_contains(msg, "Generate Plan", trace_fn=trace, step="click_generate_plan")
+        plan_msg = None
+        max_rounds = 3
+        for round_idx in range(1, max_rounds + 1):
+            msg = await _wait_for_bot_message(
+                client,
+                bot,
+                last_id,
+                timeout_s=240,
+                trace_fn=trace,
+                step=f"await_plan_flow_round_{round_idx}",
+                predicate=lambda text, btns: bool(text.strip()) or bool(btns),
+            )
+            last_id = int(msg.id)
+            text = str(getattr(msg, "message", "") or "")
+            lowered = text.lower()
+            btns = _button_texts(msg)
+
+            if any("approve" in b.lower() for b in btns):
+                plan_msg = msg
+                trace(
+                    "planner.approve.ready",
+                    round=round_idx,
+                    message_id=last_id,
+                    text_preview=text[:220],
+                )
+                break
+
+            if any("generate plan" in b.lower() for b in btns):
+                await _click_button_contains(
+                    msg,
+                    "Generate Plan",
+                    trace_fn=trace,
+                    step=f"click_generate_plan_round_{round_idx}",
+                )
+                continue
+
+            needs_clarification = any(
+                marker in lowered
+                for marker in (
+                    "what are you building",
+                    "describe",
+                    "clarify",
+                    "confirm",
+                    "2-3 sentences",
+                )
+            )
+            if needs_clarification:
+                trace(
+                    "planner.clarification.detected",
+                    round=round_idx,
+                    message_id=last_id,
+                    text_preview=text[:220],
+                )
+                await client.send_message(bot, _CONVERSATIONAL_RESTATEMENT)
+                trace(
+                    "planner.requirement.resubmitted",
+                    round=round_idx,
+                    text_preview=_CONVERSATIONAL_RESTATEMENT[:220],
+                )
+                continue
+
+        if plan_msg is None:
+            raise AssertionError("Planner clarification loop exhausted before plan approval")
 
         trace("step.start", step=6, name="approve_plan")
-        msg = await _wait_for_bot_message(
-            client,
-            bot,
-            last_id,
-            timeout_s=300,
-            trace_fn=trace,
-            step="await_plan_approve_button",
-            predicate=lambda _text, btns: any("approve" in b.lower() for b in btns),
-        )
-        last_id = int(msg.id)
+        msg = plan_msg
         await _click_button_contains(msg, "Approve", trace_fn=trace, step="click_plan_approve")
 
         trace("step.start", step=7, name="start_coding")
@@ -474,6 +618,9 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 if "exit 0" in run_text.lower() or "finished (exit 0)" in run_text.lower():
                     saw_run_success = True
                 break
+
+        if saw_run_success:
+            _validate_generated_project_artifacts(project_slug=project_slug, trace_fn=trace)
 
         assert saw_no_github_push, "Live Telegram E2E unexpectedly created/pushed a GitHub repo."
         assert tracker_message_id is not None, "Live Telegram E2E did not observe tracker message."

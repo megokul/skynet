@@ -6,6 +6,43 @@ Last updated (UTC): 2026-03-05 10:16
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
 
+### 2026-03-05 SSH-First Closed Loop v1 Update
+
+- Added closed-loop config surface in `openclaw-gateway/config.py`:
+  - `SKYNET_CONTROL_LOOP_*` flags for enable/force/profile/retry/critic/memory controls.
+  - coding fallback default now `codex` and planner default `codex`.
+- Added DB schema for persistent loop state in `openclaw-gateway/db/schema.py`:
+  - `projects.control_loop_profile`
+  - `task_graphs`
+  - `task_nodes`
+  - `critic_findings`
+  - `project_memory`
+- Added store APIs in `openclaw-gateway/db/store.py` for graph nodes, critic findings, and project memory tiers.
+- Added orchestration modules:
+  - `openclaw-gateway/orchestration/graph.py`
+  - `openclaw-gateway/orchestration/critic.py`
+  - `openclaw-gateway/orchestration/memory.py`
+  - `openclaw-gateway/orchestration/loop_controller.py`
+- Wired coding loop integration in `openclaw-gateway/bot/handlers/coding.py`:
+  - `loop_v1` path executes a persisted node graph (`work -> critic -> repair -> gate`).
+  - manual milestone approval remains for `work` nodes.
+  - strict gates remain blocking before node completion.
+  - codex-only generation stage enforced for loop mode.
+  - tracker/status now include graph/node metadata.
+- Updated project creation defaults in `openclaw-gateway/bot/handlers/project.py`:
+  - sets `control_loop_profile` for new projects (`loop_v1` when enabled/forced).
+- Updated templates/settings:
+  - `.env.example`
+  - `.env.local-e2e.example`
+  - `.env.ec2-gateway.example`
+  - `openclaw-gateway/settings/settings.yaml`
+  - `openclaw-gateway/settings/settings.example.yaml`
+- Added closed-loop tests:
+  - `test_control_loop_graph.py`
+  - `test_control_loop_critic.py`
+  - `test_control_loop_memory.py`
+  - `test_control_loop_integration.py`
+
 ### 2026-03-05 Reverse Tunnel Key/Bind + Codex Trust Fix
 
 - Updated reverse tunnel scripts to use canonical worker key precedence:

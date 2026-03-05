@@ -33,6 +33,7 @@ from bot.handlers.coding import (
     skip_milestone_handler,
     start_coding_handler,
     stop_milestone_handler,
+    trace_handler,
 )
 from bot.handlers.project import build_project_conversation_handler
 from bot.keyboards import (
@@ -85,6 +86,7 @@ def build_app(db, router) -> Application:
     app.add_handler(CommandHandler("start",  greeting_handler),  group=1)
     app.add_handler(CommandHandler("help",   greeting_handler),  group=1)
     app.add_handler(CommandHandler("status", dashboard_handler), group=1)
+    app.add_handler(CommandHandler("trace",  trace_handler),     group=1)
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.Regex(GREETING_RE),

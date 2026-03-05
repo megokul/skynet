@@ -1,12 +1,13 @@
 """
 SKYNET — Data Access Layer
 
-Thin async functions over the 4 schema tables.
+Thin async functions over gateway schema tables.
 Every function returns plain dicts (never aiosqlite.Row objects) so callers
 don't need to know about the DB layer.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -26,6 +27,15 @@ def _new_id() -> str:
 
 def _row(row: aiosqlite.Row | None) -> dict[str, Any] | None:
     return dict(row) if row else None
+
+
+def _dump_json(value: Any, default: str = "{}") -> str:
+    if value is None:
+        return default
+    try:
+        return json.dumps(value, ensure_ascii=True)
+    except Exception:
+        return default
 
 
 # ── Users ─────────────────────────────────────────────────────────────────────
@@ -82,6 +92,7 @@ async def create_project(
     description: str = "",
     coding_profile: str = "legacy",
     quality_profile: str = "legacy",
+    control_loop_profile: str = "legacy",
 ) -> dict[str, Any]:
     """Create a new project and return its row."""
     project_id = _new_id()
@@ -90,12 +101,15 @@ async def create_project(
     await db.execute(
         """
         INSERT INTO projects (id, user_id, name, display_name, project_type, description,
-                              coding_profile, quality_profile, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)
+                              coding_profile, quality_profile, control_loop_profile,
+                              status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)
         """,
         (project_id, int(user_id), _name, _name, project_type.strip(),
          description.strip(), coding_profile.strip() or "legacy",
-         quality_profile.strip() or "legacy", now, now),
+         quality_profile.strip() or "legacy",
+         control_loop_profile.strip() or "legacy",
+         now, now),
     )
     await db.commit()
     return await get_project(db, project_id)
@@ -305,6 +319,617 @@ async def list_task_orchestration_runs(
         ORDER BY id ASC
         """,
         (int(task_id),),
+    ) as cur:
+        return [dict(r) for r in await cur.fetchall()]
+
+
+# ── Closed loop graph state ──────────────────────────────────────────────────
+
+async def create_task_graph(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+    goal: str,
+    status: str = "active",
+    planner_summary: str = "",
+    max_iterations: int = 40,
+    max_runtime_seconds: int = 3600,
+    max_repairs: int = 1,
+    max_tokens: int = 250000,
+    success_contract: dict[str, Any] | None = None,
+    started_at: str | None = None,
+) -> dict[str, Any]:
+    now = _now()
+    async with db.execute(
+        """
+        INSERT INTO task_graphs (
+            project_id, goal, status, planner_summary,
+            iteration_count, repair_count,
+            max_iterations, max_runtime_seconds, max_repairs, max_tokens, tokens_used,
+            success_contract_json, started_at, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+        """,
+        (
+            project_id,
+            goal.strip(),
+            status.strip() or "active",
+            planner_summary.strip(),
+            int(max_iterations),
+            int(max_runtime_seconds),
+            int(max_repairs),
+            int(max_tokens),
+            _dump_json(success_contract or {}, "{}"),
+            (started_at.strip() if isinstance(started_at, str) and started_at.strip() else now),
+            now,
+            now,
+        ),
+    ) as cur:
+        graph_id = cur.lastrowid
+    await db.commit()
+    async with db.execute("SELECT * FROM task_graphs WHERE id = ?", (graph_id,)) as cur:
+        return _row(await cur.fetchone())
+
+
+async def get_active_task_graph(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+) -> dict[str, Any] | None:
+    async with db.execute(
+        """
+        SELECT * FROM task_graphs
+        WHERE project_id = ? AND status IN ('active', 'paused')
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (project_id,),
+    ) as cur:
+        return _row(await cur.fetchone())
+
+
+async def update_task_graph_status(
+    db: aiosqlite.Connection,
+    *,
+    graph_id: int,
+    status: str,
+    finished_at: str | None = None,
+) -> None:
+    now = _now()
+    done_at = finished_at.strip() if isinstance(finished_at, str) and finished_at.strip() else None
+    if done_at:
+        await db.execute(
+            "UPDATE task_graphs SET status = ?, finished_at = ?, updated_at = ? WHERE id = ?",
+            (status.strip(), done_at, now, int(graph_id)),
+        )
+    else:
+        await db.execute(
+            "UPDATE task_graphs SET status = ?, updated_at = ? WHERE id = ?",
+            (status.strip(), now, int(graph_id)),
+        )
+    await db.commit()
+
+
+async def update_task_graph_counters(
+    db: aiosqlite.Connection,
+    *,
+    graph_id: int,
+    iteration_delta: int = 0,
+    repair_delta: int = 0,
+    tokens_delta: int = 0,
+) -> None:
+    await db.execute(
+        """
+        UPDATE task_graphs
+        SET iteration_count = MAX(0, iteration_count + ?),
+            repair_count = MAX(0, repair_count + ?),
+            tokens_used = MAX(0, tokens_used + ?),
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            int(iteration_delta),
+            int(repair_delta),
+            int(tokens_delta),
+            _now(),
+            int(graph_id),
+        ),
+    )
+    await db.commit()
+
+
+async def create_task_node(
+    db: aiosqlite.Connection,
+    *,
+    graph_id: int,
+    node_key: str,
+    title: str,
+    node_type: str,
+    owner: str = "",
+    deps: list[str] | None = None,
+    inputs: dict[str, Any] | None = None,
+    allowed_paths: list[str] | None = None,
+    forbidden_paths: list[str] | None = None,
+    acceptance: list[dict[str, Any]] | None = None,
+    priority: int = 100,
+    execution_lock: str = "repo-write",
+    retry_budget: int = 0,
+    attempt_count: int = 0,
+    status: str = "queued",
+    failure_type: str = "",
+    result_summary: str = "",
+    error_message: str = "",
+    started_at: str | None = None,
+    finished_at: str | None = None,
+) -> dict[str, Any]:
+    now = _now()
+    async with db.execute(
+        """
+        INSERT INTO task_nodes (
+            graph_id, node_key, title, node_type, owner,
+            deps_json, inputs_json, allowed_paths_json, forbidden_paths_json,
+            acceptance_json, priority, execution_lock, retry_budget, attempt_count, status,
+            failure_type, result_summary, error_message, started_at, finished_at, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(graph_id),
+            node_key.strip(),
+            title.strip(),
+            node_type.strip(),
+            owner.strip(),
+            _dump_json(deps or [], "[]"),
+            _dump_json(inputs or {}, "{}"),
+            _dump_json(allowed_paths or [], "[]"),
+            _dump_json(forbidden_paths or [], "[]"),
+            _dump_json(acceptance or [], "[]"),
+            int(priority),
+            execution_lock.strip() or "repo-write",
+            int(retry_budget),
+            int(attempt_count),
+            status.strip() or "queued",
+            failure_type.strip(),
+            result_summary.strip(),
+            error_message.strip(),
+            (started_at.strip() if isinstance(started_at, str) and started_at.strip() else None),
+            (finished_at.strip() if isinstance(finished_at, str) and finished_at.strip() else None),
+            now,
+            now,
+        ),
+    ) as cur:
+        node_id = cur.lastrowid
+    await db.commit()
+    async with db.execute("SELECT * FROM task_nodes WHERE id = ?", (node_id,)) as cur:
+        return _row(await cur.fetchone())
+
+
+async def list_graph_nodes(
+    db: aiosqlite.Connection,
+    *,
+    graph_id: int,
+) -> list[dict[str, Any]]:
+    async with db.execute(
+        "SELECT * FROM task_nodes WHERE graph_id = ? ORDER BY id ASC",
+        (int(graph_id),),
+    ) as cur:
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_task_node_by_key(
+    db: aiosqlite.Connection,
+    *,
+    graph_id: int,
+    node_key: str,
+) -> dict[str, Any] | None:
+    async with db.execute(
+        """
+        SELECT * FROM task_nodes
+        WHERE graph_id = ? AND node_key = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (int(graph_id), node_key.strip()),
+    ) as cur:
+        return _row(await cur.fetchone())
+
+
+async def update_task_node_status(
+    db: aiosqlite.Connection,
+    *,
+    node_id: int,
+    status: str,
+    result_summary: str = "",
+    error_message: str = "",
+    failure_type: str = "",
+    started_at: str | None = None,
+    finished_at: str | None = None,
+) -> None:
+    now = _now()
+    start_value = started_at.strip() if isinstance(started_at, str) and started_at.strip() else None
+    done_value = finished_at.strip() if isinstance(finished_at, str) and finished_at.strip() else None
+    await db.execute(
+        """
+        UPDATE task_nodes
+        SET status = ?, result_summary = ?, error_message = ?, failure_type = ?,
+            started_at = COALESCE(?, started_at),
+            finished_at = COALESCE(?, finished_at),
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            status.strip(),
+            result_summary.strip(),
+            error_message.strip(),
+            failure_type.strip(),
+            start_value,
+            done_value,
+            now,
+            int(node_id),
+        ),
+    )
+    await db.commit()
+
+
+async def increment_task_node_attempt(
+    db: aiosqlite.Connection,
+    *,
+    node_id: int,
+) -> None:
+    await db.execute(
+        """
+        UPDATE task_nodes
+        SET attempt_count = attempt_count + 1, updated_at = ?
+        WHERE id = ?
+        """,
+        (_now(), int(node_id)),
+    )
+    await db.commit()
+
+
+async def update_task_node_deps(
+    db: aiosqlite.Connection,
+    *,
+    node_id: int,
+    deps: list[str],
+) -> None:
+    await db.execute(
+        """
+        UPDATE task_nodes
+        SET deps_json = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (_dump_json(deps or [], "[]"), _now(), int(node_id)),
+    )
+    await db.commit()
+
+
+async def create_critic_finding(
+    db: aiosqlite.Connection,
+    *,
+    node_id: int,
+    critic_name: str,
+    severity: str,
+    code: str = "",
+    message: str,
+    files: list[str] | None = None,
+    suggested_fix: str = "",
+) -> dict[str, Any]:
+    async with db.execute(
+        """
+        INSERT INTO critic_findings
+            (node_id, critic_name, severity, code, message, files_json, suggested_fix)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(node_id),
+            critic_name.strip(),
+            severity.strip(),
+            code.strip(),
+            message.strip(),
+            _dump_json(files or [], "[]"),
+            suggested_fix.strip(),
+        ),
+    ) as cur:
+        finding_id = cur.lastrowid
+    await db.commit()
+    async with db.execute("SELECT * FROM critic_findings WHERE id = ?", (finding_id,)) as cur:
+        return _row(await cur.fetchone())
+
+
+async def list_critic_findings(
+    db: aiosqlite.Connection,
+    *,
+    node_id: int,
+) -> list[dict[str, Any]]:
+    async with db.execute(
+        "SELECT * FROM critic_findings WHERE node_id = ? ORDER BY id ASC",
+        (int(node_id),),
+    ) as cur:
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def upsert_project_memory(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+    tier: str,
+    memory_key: str,
+    memory_value: Any,
+    source_node_id: int | None = None,
+) -> None:
+    await db.execute(
+        """
+        INSERT INTO project_memory (project_id, tier, memory_key, memory_value_json, source_node_id, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(project_id, tier, memory_key) DO UPDATE SET
+            memory_value_json = excluded.memory_value_json,
+            source_node_id = excluded.source_node_id,
+            updated_at = excluded.updated_at
+        """,
+        (
+            project_id,
+            tier.strip(),
+            memory_key.strip(),
+            _dump_json(memory_value),
+            int(source_node_id) if isinstance(source_node_id, int) else None,
+            _now(),
+        ),
+    )
+    await db.commit()
+
+
+async def get_project_memory(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+    tier: str,
+    memory_key: str,
+) -> dict[str, Any] | None:
+    async with db.execute(
+        """
+        SELECT * FROM project_memory
+        WHERE project_id = ? AND tier = ? AND memory_key = ?
+        LIMIT 1
+        """,
+        (project_id, tier.strip(), memory_key.strip()),
+    ) as cur:
+        row = _row(await cur.fetchone())
+    if not row:
+        return None
+    try:
+        row["memory_value"] = json.loads(str(row.get("memory_value_json") or "{}"))
+    except Exception:
+        row["memory_value"] = {}
+    return row
+
+
+async def list_project_memory(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+    tier: str | None = None,
+) -> list[dict[str, Any]]:
+    if tier:
+        query = (
+            "SELECT * FROM project_memory WHERE project_id = ? AND tier = ? "
+            "ORDER BY updated_at DESC, id DESC"
+        )
+        params: tuple[Any, ...] = (project_id, tier.strip())
+    else:
+        query = (
+            "SELECT * FROM project_memory WHERE project_id = ? "
+            "ORDER BY updated_at DESC, id DESC"
+        )
+        params = (project_id,)
+    async with db.execute(query, params) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    for row in rows:
+        try:
+            row["memory_value"] = json.loads(str(row.get("memory_value_json") or "{}"))
+        except Exception:
+            row["memory_value"] = {}
+    return rows
+
+
+async def create_task_node_event(
+    db: aiosqlite.Connection,
+    *,
+    graph_id: int,
+    node_id: int | None,
+    node_key: str,
+    event_type: str,
+    status: str = "",
+    agent: str = "",
+    stage: str = "",
+    failure_type: str = "",
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    async with db.execute(
+        """
+        INSERT INTO task_node_events
+            (graph_id, node_id, node_key, event_type, status, agent, stage, failure_type, details_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(graph_id),
+            int(node_id) if isinstance(node_id, int) else None,
+            node_key.strip(),
+            event_type.strip(),
+            status.strip(),
+            agent.strip(),
+            stage.strip(),
+            failure_type.strip(),
+            _dump_json(details or {}, "{}"),
+        ),
+    ) as cur:
+        event_id = cur.lastrowid
+    await db.commit()
+    async with db.execute("SELECT * FROM task_node_events WHERE id = ?", (event_id,)) as cur:
+        row = _row(await cur.fetchone())
+    if row:
+        try:
+            row["details"] = json.loads(str(row.get("details_json") or "{}"))
+        except Exception:
+            row["details"] = {}
+    return row or {}
+
+
+async def list_task_node_events(
+    db: aiosqlite.Connection,
+    *,
+    graph_id: int,
+    limit: int = 30,
+    after_id: int | None = None,
+) -> list[dict[str, Any]]:
+    query = (
+        "SELECT * FROM task_node_events WHERE graph_id = ? "
+        + ("AND id > ? " if isinstance(after_id, int) else "")
+        + "ORDER BY id DESC LIMIT ?"
+    )
+    params: tuple[Any, ...]
+    if isinstance(after_id, int):
+        params = (int(graph_id), int(after_id), max(1, int(limit)))
+    else:
+        params = (int(graph_id), max(1, int(limit)))
+    async with db.execute(query, params) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    rows.reverse()
+    for row in rows:
+        try:
+            row["details"] = json.loads(str(row.get("details_json") or "{}"))
+        except Exception:
+            row["details"] = {}
+    return rows
+
+
+async def upsert_code_index_file(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+    path: str,
+    language: str,
+    sha1: str,
+    size_bytes: int,
+) -> None:
+    await db.execute(
+        """
+        INSERT INTO code_index_files (project_id, path, language, sha1, size_bytes, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(project_id, path) DO UPDATE SET
+            language = excluded.language,
+            sha1 = excluded.sha1,
+            size_bytes = excluded.size_bytes,
+            updated_at = excluded.updated_at
+        """,
+        (
+            project_id,
+            path.strip(),
+            language.strip(),
+            sha1.strip(),
+            max(0, int(size_bytes)),
+            _now(),
+        ),
+    )
+    await db.commit()
+
+
+async def replace_code_index_symbols(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+    path: str,
+    symbols: list[dict[str, Any]],
+) -> None:
+    clean_path = path.strip()
+    await db.execute(
+        "DELETE FROM code_index_symbols WHERE project_id = ? AND path = ?",
+        (project_id, clean_path),
+    )
+    for sym in symbols:
+        await db.execute(
+            """
+            INSERT INTO code_index_symbols (project_id, path, symbol, symbol_kind, line_no, signature)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project_id,
+                clean_path,
+                str(sym.get("symbol") or "").strip(),
+                str(sym.get("symbol_kind") or "").strip(),
+                int(sym.get("line_no") or 0),
+                str(sym.get("signature") or "").strip(),
+            ),
+        )
+    await db.commit()
+
+
+async def replace_code_index_refs(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+    from_path: str,
+    refs: list[dict[str, Any]],
+) -> None:
+    clean_from = from_path.strip()
+    await db.execute(
+        "DELETE FROM code_index_refs WHERE project_id = ? AND from_path = ?",
+        (project_id, clean_from),
+    )
+    for ref in refs:
+        await db.execute(
+            """
+            INSERT INTO code_index_refs (project_id, from_path, to_module, ref_kind)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                project_id,
+                clean_from,
+                str(ref.get("to_module") or "").strip(),
+                str(ref.get("ref_kind") or "import").strip(),
+            ),
+        )
+    await db.commit()
+
+
+async def query_code_index(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+    terms: list[str],
+    top_k: int = 12,
+) -> list[dict[str, Any]]:
+    clean_terms = [str(t).strip().lower() for t in terms if str(t).strip()]
+    if not clean_terms:
+        return []
+    placeholders = " OR ".join(["LOWER(symbol) LIKE ?"] * len(clean_terms))
+    like_params = tuple(f"%{term}%" for term in clean_terms)
+    async with db.execute(
+        f"""
+        SELECT path, symbol, symbol_kind, line_no, signature
+        FROM code_index_symbols
+        WHERE project_id = ? AND ({placeholders})
+        ORDER BY line_no ASC
+        LIMIT ?
+        """,
+        (project_id, *like_params, max(1, int(top_k))),
+    ) as cur:
+        symbol_rows = [dict(r) for r in await cur.fetchall()]
+
+    if symbol_rows:
+        return symbol_rows
+
+    file_placeholders = " OR ".join(["LOWER(path) LIKE ?"] * len(clean_terms))
+    file_params = tuple(f"%{term}%" for term in clean_terms)
+    async with db.execute(
+        f"""
+        SELECT path, language, sha1, size_bytes
+        FROM code_index_files
+        WHERE project_id = ? AND ({file_placeholders})
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        (project_id, *file_params, max(1, int(top_k))),
     ) as cur:
         return [dict(r) for r in await cur.fetchall()]
 

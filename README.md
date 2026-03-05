@@ -296,7 +296,8 @@ Live E2E flow modes:
 During coding sessions, SKYNET now maintains one live tracker message with:
 
 - phase (`setup`, `milestone_extraction`, `milestone_review`, `milestone_execution`, `quality_gates`, `finalization`)
-- stage switches (`codex`, `claude_ollama`, `cline`)
+- node transitions (`work_*`, `critic_*`, `repair_*`, `gate_final`)
+- coding stage (`codex`)
 - OpenClaw orchestration session context (`session`, `runtime`, `queue`)
 - strict gate progression (`infra_preflight`, `run_contract`, `lint`, `tests`, `smoke`)
 - monotonic percent progress and stale-signal warning
@@ -314,10 +315,39 @@ Tracker defaults (non-secret, from settings YAML):
 Tracker troubleshooting:
 
 - If phase is stuck at `milestone_extraction`, check provider health and `SKYNET_MILESTONE_EXTRACTION_*` timeouts.
-- If phase shows stage switches (`codex -> claude_ollama -> cline`), read the latest stage-failure summary in chat/logs.
+- If phase shows repeated `GENERATION_FAILED: codex`, inspect worker Codex setup and write permissions.
 - If phase is `quality_gates`, gate name identifies the blocker (`run_contract`, `lint`, `tests`, `smoke`).
 - If transport is healthy but no stage progress is visible, inspect `telegram.tracker.*` logs in gateway output.
 - If chat shows `coding preflight failed: no control-plane coding agents available`, you are running ACP checks in an SSH-first topology. Set `SKYNET_ORCHESTRATION_MODE=legacy` (or keep ACP and install CLIs in EC2 runtime).
+
+### SSH-First Closed Loop v1 (Default)
+
+Current default policy in this repo is closed-loop orchestration for coding sessions:
+
+- `Planner -> Executor -> Critic -> Memory -> Planner`
+- all coding actions dispatch to worker through SSH (`OPENCLAW_EXECUTION_MODE=ssh_tunnel`)
+- worker is execution plane only (Codex + toolchain + project files)
+- EC2 gateway is control plane only (state/orchestration/telemetry)
+- coding chain is codex-only (`SKYNET_CODING_FALLBACK_CHAIN=codex`)
+- strict gates are mandatory before milestone completion
+
+Closed-loop config flags:
+
+- `SKYNET_CONTROL_LOOP_ENABLED=1`
+- `SKYNET_CONTROL_LOOP_FORCE_FOR_ALL=1`
+- `SKYNET_CONTROL_LOOP_DEFAULT_PROFILE=loop_v1`
+- `SKYNET_CONTROL_LOOP_REPAIR_RETRIES=1`
+- `SKYNET_CONTROL_LOOP_CRITIC_BLOCK_THRESHOLD=high`
+- `SKYNET_CONTROL_LOOP_REVIEW_CRITIC_ENABLED=1`
+- `SKYNET_CONTROL_LOOP_ROUTER_FALLBACK_ENABLED=0` (planner/milestone fallback disabled by default)
+
+Closed-loop persistence tables:
+
+- `task_graphs`
+- `task_nodes`
+- `critic_findings`
+- `project_memory`
+- `task_orchestration_runs` (stage/session telemetry)
 
 ### ACP-First Orchestration (EC2 Agents, Worker SSH)
 

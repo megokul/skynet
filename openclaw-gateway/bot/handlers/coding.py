@@ -42,15 +42,39 @@ from db.store import (
     create_task,
     create_task_gate_result,
     create_task_orchestration_run,
+    create_task_node_event,
     delete_task_gate_results,
     ensure_user,
+    get_active_task_graph,
     get_project,
+    list_critic_findings,
+    list_graph_nodes,
+    list_project_memory,
+    list_task_node_events,
+    list_task_gate_results,
     list_projects,
     list_tasks,
+    query_code_index,
     update_task_status,
 )
 from gateway import is_worker_available, send_action
+from orchestration.arch_critic import evaluate_architecture_refs, load_arch_rules
+from orchestration.completion import validate_completion_contract
+from orchestration.compression import build_context_bundle
+from orchestration.critic import build_review_prompt, is_blocking, parse_critic_response
+from orchestration.failure import (
+    FAIL_CONTRACT,
+    FAIL_ENVIRONMENT,
+    FAIL_STRICT_GATE,
+    FAIL_TEST,
+    classify_gate_failure,
+    classify_generation_error,
+)
+from orchestration.graph import LoopNode
+from orchestration.indexer import index_file
+from orchestration.loop_controller import ClosedLoopController
 from orchestration.openclaw_runner import get_openclaw_runner
+from orchestration.trace import format_timeline_lines, load_trace_timeline
 
 logger = logging.getLogger("skynet.bot.coding")
 
@@ -88,6 +112,8 @@ _QUALITY_PROFILE_STRICT = "strict"
 _CODING_PROFILE_LEGACY = "legacy"
 _CODING_PROFILE_CLAUDE_OLLAMA = "claude_ollama"
 _CODING_PROFILE_CODEX_PRIMARY = "codex_primary"
+_CONTROL_LOOP_PROFILE_LEGACY = "legacy"
+_CONTROL_LOOP_PROFILE_V1 = "loop_v1"
 _ORCHESTRATION_MODE_ACP_FIRST = "acp_first"
 _RUN_CONTRACT_FILE = "skynet_run.json"
 _ALLOWED_INTERPRETERS = {"python", "python3", "node"}
@@ -284,6 +310,10 @@ def _tracker_render_text(state: dict[str, Any]) -> str:
     session_id = str(state.get("session_id") or "").strip()
     runtime_mode = str(state.get("runtime_mode") or "").strip()
     queue_mode = str(state.get("queue_mode") or "").strip()
+    graph_id = str(state.get("graph_id") or "").strip()
+    node_key = str(state.get("node_key") or "").strip()
+    node_type = str(state.get("node_type") or "").strip()
+    critic_name = str(state.get("critic_name") or "").strip()
     created_monotonic = float(state.get("created_monotonic", time.monotonic()) or time.monotonic())
     now = time.monotonic()
     elapsed = _format_elapsed(now - created_monotonic)
@@ -312,6 +342,14 @@ def _tracker_render_text(state: dict[str, Any]) -> str:
             pipeline_parts.append(f"runtime={runtime_mode}")
         if queue_mode:
             pipeline_parts.append(f"queue={queue_mode}")
+        if graph_id:
+            pipeline_parts.append(f"graph={graph_id}")
+        if node_key:
+            pipeline_parts.append(f"node={node_key}")
+        if node_type:
+            pipeline_parts.append(f"type={node_type}")
+        if critic_name:
+            pipeline_parts.append(f"critic={critic_name}")
         pipeline_parts.append(f"transport={transport}")
         pipeline_parts.append(f"run_contract={run_contract}")
         lines.append("Pipeline: " + " | ".join(pipeline_parts))
@@ -359,6 +397,10 @@ async def _tracker_init_message(
             if use_acp
             else ""
         ),
+        "graph_id": "",
+        "node_key": "",
+        "node_type": "",
+        "critic_name": "",
         "message_id": 0,
         "created_monotonic": now,
         "last_edit_monotonic": 0.0,
@@ -415,6 +457,10 @@ async def _tracker_update(
     session_id: str | None = None,
     runtime_mode: str | None = None,
     queue_mode: str | None = None,
+    graph_id: str | None = None,
+    node_key: str | None = None,
+    node_type: str | None = None,
+    critic_name: str | None = None,
     setup_progress: float | None = None,
     extraction_progress: float | None = None,
     execution_progress: float | None = None,
@@ -460,6 +506,14 @@ async def _tracker_update(
         state["runtime_mode"] = str(runtime_mode).strip()
     if queue_mode is not None:
         state["queue_mode"] = str(queue_mode).strip()
+    if graph_id is not None:
+        state["graph_id"] = str(graph_id).strip()
+    if node_key is not None:
+        state["node_key"] = str(node_key).strip()
+    if node_type is not None:
+        state["node_type"] = str(node_type).strip()
+    if critic_name is not None:
+        state["critic_name"] = str(critic_name).strip()
     if heartbeat_elapsed is not None:
         state["last_signal_monotonic"] = now
         if not phase_detail:
@@ -608,6 +662,29 @@ def _effective_coding_profile(project: dict[str, Any] | None) -> str:
     return _coding_profile(project)
 
 
+def _control_loop_profile(project: dict[str, Any] | None) -> str:
+    raw = str(
+        (project or {}).get("control_loop_profile")
+        or getattr(cfg, "CONTROL_LOOP_DEFAULT_PROFILE", _CONTROL_LOOP_PROFILE_V1)
+        or _CONTROL_LOOP_PROFILE_LEGACY
+    ).strip().lower()
+    if raw not in {_CONTROL_LOOP_PROFILE_LEGACY, _CONTROL_LOOP_PROFILE_V1}:
+        return _CONTROL_LOOP_PROFILE_LEGACY
+    return raw
+
+
+def _effective_control_loop_profile(project: dict[str, Any] | None) -> str:
+    if not bool(getattr(cfg, "CONTROL_LOOP_ENABLED", True)):
+        return _CONTROL_LOOP_PROFILE_LEGACY
+    if bool(getattr(cfg, "CONTROL_LOOP_FORCE_FOR_ALL", False)):
+        return _CONTROL_LOOP_PROFILE_V1
+    return _control_loop_profile(project)
+
+
+def _use_control_loop_v1(project: dict[str, Any] | None) -> bool:
+    return _effective_control_loop_profile(project) == _CONTROL_LOOP_PROFILE_V1
+
+
 def _orchestration_mode() -> str:
     return str(cfg.effective_orchestration_mode() or "legacy").strip().lower()
 
@@ -657,6 +734,12 @@ def _build_coding_stage_chain(
     include_legacy: bool = False,
     include_policy_disabled: bool = False,
 ) -> list[str]:
+    if _use_control_loop_v1(project):
+        raw_chain = ["codex"]
+        if include_policy_disabled:
+            return raw_chain
+        filtered_chain, _ = _filter_stage_chain_by_policy(raw_chain)
+        return filtered_chain
     effective = _effective_coding_profile(project)
     raw_chain: list[str] = []
     if effective == _CODING_PROFILE_CODEX_PRIMARY:
@@ -723,6 +806,8 @@ def _stage_payload(
 def _is_strict_project(project: dict[str, Any] | None) -> bool:
     if not cfg.STRICT_QUALITY_GATES_ENABLED:
         return False
+    if _use_control_loop_v1(project):
+        return True
     return _quality_profile(project) == _QUALITY_PROFILE_STRICT
 
 
@@ -934,6 +1019,7 @@ def _agent_is_explicitly_unavailable(report: str, agent: str) -> bool:
 async def _preflight_coding_environment(
     *,
     project: dict[str, Any],
+    working_dir: str | None = None,
 ) -> tuple[bool, str, list[str]]:
     """
     Validate coding prerequisites before milestone execution.
@@ -1053,6 +1139,38 @@ async def _preflight_coding_environment(
             info,
             filtered_chain,
         )
+
+    if _use_control_loop_v1(project) and working_dir:
+        runtime_probe = "node -v" if _project_prefers_node(str(project.get("project_type") or "")) else "python -V"
+        try:
+            runtime_result = await send_action(
+                "exec_command",
+                {"working_dir": working_dir, "command": runtime_probe},
+                timeout=20,
+                confirmed=True,
+            )
+        except Exception as exc:
+            return False, f"Runtime preflight failed ({runtime_probe}): {type(exc).__name__}: {exc}", filtered_chain
+        if runtime_result.get("status") == "error" or _action_exit_code(runtime_result) != 0:
+            detail = _action_error_text(runtime_result, "exec_command")
+            return False, f"Runtime preflight failed ({runtime_probe}): {detail}", filtered_chain
+
+        write_probe = (
+            "python -c \"from pathlib import Path; p=Path('.skynet_write_probe'); "
+            "p.write_text('ok', encoding='utf-8'); p.unlink(missing_ok=True)\""
+        )
+        try:
+            write_result = await send_action(
+                "exec_command",
+                {"working_dir": working_dir, "command": write_probe},
+                timeout=20,
+                confirmed=True,
+            )
+        except Exception as exc:
+            return False, f"CODEX_WRITE_BLOCKED: {type(exc).__name__}: {exc}", filtered_chain
+        if write_result.get("status") == "error" or _action_exit_code(write_result) != 0:
+            detail = _action_error_text(write_result, "exec_command")
+            return False, f"CODEX_WRITE_BLOCKED: {detail}", filtered_chain
 
     return True, policy_note, filtered_chain
 
@@ -3031,6 +3149,10 @@ async def dashboard_handler(
         session_id = str(tracker_state.get("session_id") or "").strip()
         runtime_mode = str(tracker_state.get("runtime_mode") or "").strip()
         queue_mode = str(tracker_state.get("queue_mode") or "").strip()
+        graph_id = str(tracker_state.get("graph_id") or "").strip()
+        node_key = str(tracker_state.get("node_key") or "").strip()
+        node_type = str(tracker_state.get("node_type") or "").strip()
+        critic_name = str(tracker_state.get("critic_name") or "").strip()
         tracker_block = (
             f"\n\nProgress {_render_progress_bar(percent, _tracker_bar_width())} {percent}%\n"
             f"Phase: {phase}{(' - ' + detail) if detail else ''}"
@@ -3045,6 +3167,14 @@ async def dashboard_handler(
             tracker_block += f"\nRuntime: {runtime_mode}"
         if queue_mode:
             tracker_block += f"\nQueue: {queue_mode}"
+        if graph_id:
+            tracker_block += f"\nGraph: {graph_id}"
+        if node_key:
+            tracker_block += f"\nNode: {node_key}"
+        if node_type:
+            tracker_block += f"\nNode Type: {node_type}"
+        if critic_name:
+            tracker_block += f"\nCritic: {critic_name}"
         tracker_block += f"\nTransport: {transport}"
         tracker_block += f"\nRun contract: {run_contract}"
     elif is_running:
@@ -3054,11 +3184,34 @@ async def dashboard_handler(
             "Phase: estimating from task states"
         )
 
+    graph_block = ""
+    active_graph = await get_active_task_graph(db, project_id=project["id"])
+    if active_graph:
+        graph_id = int(active_graph.get("id") or 0)
+        graph_status = str(active_graph.get("status") or "active")
+        graph_nodes = await list_graph_nodes(db, graph_id=graph_id)
+        running_node = next(
+            (row for row in graph_nodes if str(row.get("status") or "") == "running"),
+            None,
+        )
+        queued_count = sum(1 for row in graph_nodes if str(row.get("status") or "") == "queued")
+        done_count = sum(1 for row in graph_nodes if str(row.get("status") or "") == "done")
+        graph_block = (
+            f"\n\nLoop Graph: <code>{graph_id}</code>"
+            f"\nGraph Status: {graph_status}"
+            f"\nNodes: done={done_count}, queued={queued_count}, total={len(graph_nodes)}"
+        )
+        if running_node:
+            graph_block += (
+                f"\nActive Node: {running_node.get('node_key')} "
+                f"({running_node.get('node_type')}, attempt={running_node.get('attempt_count')})"
+            )
+
     text = (
         f"<b>{project['name']}</b> - {project['project_type']}\n"
         f"Folder: <code>{working_dir}</code>\n"
         f"Status: {project['status']}{status_note}\n\n"
-        f"{task_lines}{tracker_block}"
+        f"{task_lines}{tracker_block}{graph_block}"
     )
 
     run_pid = context.bot_data.get(f"run_project_{tg_user.id}")
@@ -3082,6 +3235,896 @@ async def dashboard_handler(
             [[InlineKeyboardButton("Main Menu", callback_data="nav:main_menu")]]
         )
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def trace_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """/trace - show recent loop timeline events for live debugging."""
+    db = context.bot_data.get(KEY_DB)
+    tg_user = update.effective_user
+    user = await ensure_user(
+        db,
+        telegram_user_id=tg_user.id,
+        username=tg_user.username or "",
+        first_name=tg_user.first_name or "",
+        last_name=tg_user.last_name or "",
+    )
+    projects = await list_projects(db, user_id=user["id"])
+    if not projects:
+        await update.message.reply_text("No projects yet.")
+        return
+    project = projects[0]
+    active_graph = await get_active_task_graph(db, project_id=project["id"])
+    if not active_graph:
+        await update.message.reply_text("No active control-loop graph for this project.")
+        return
+    graph_id = int(active_graph.get("id") or 0)
+    events = await load_trace_timeline(
+        db,
+        graph_id=graph_id,
+        limit=30,
+    )
+    if not events:
+        await update.message.reply_text(f"Graph {graph_id} has no trace events yet.")
+        return
+    lines = format_timeline_lines(events)
+    latest_failure = next(
+        (
+            row
+            for row in reversed(events)
+            if str(row.get("failure_type") or "").strip()
+        ),
+        None,
+    )
+    repair_events = [
+        row for row in events if "repair" in str(row.get("event_type") or "").lower()
+    ]
+    header = (
+        f"Graph: <code>{graph_id}</code>\n"
+        f"Status: {html_mod.escape(str(active_graph.get('status') or 'active'))}\n"
+        f"Events shown: {len(lines)}"
+    )
+    if latest_failure:
+        header += (
+            f"\nLatest failure: {html_mod.escape(str(latest_failure.get('failure_type') or 'unknown'))}"
+            f" at #{int(latest_failure.get('id') or 0)}"
+        )
+    if repair_events:
+        header += f"\nRepairs observed: {len(repair_events)}"
+    body = "\n".join(lines[-30:])
+    await update.message.reply_text(
+        f"{header}\n\n<pre>{html_mod.escape(body)}</pre>",
+        parse_mode="HTML",
+    )
+
+
+def _control_loop_stage_chain(stage_chain: list[str]) -> list[str]:
+    filtered = [stage for stage in stage_chain if stage == "codex"]
+    return filtered or ["codex"]
+
+
+def _control_loop_work_prompt(
+    *,
+    project: dict[str, Any],
+    milestone_text: str,
+    working_dir: str,
+) -> str:
+    return (
+        f"Project: {project['name']} ({project['project_type']})\n"
+        f"Working directory: {working_dir}\n\n"
+        f"Task:\n{milestone_text}\n\n"
+        "Implement this task completely.\n"
+        "Requirements:\n"
+        f"- Include {_RUN_CONTRACT_FILE} with a valid command.\n"
+        "- Create or update tests needed to validate behavior.\n"
+        "- Write complete files and ensure they run.\n"
+        "- Do not ask clarifying questions."
+    )
+
+
+def _control_loop_repair_prompt(
+    *,
+    project: dict[str, Any],
+    working_dir: str,
+    findings: list[dict[str, Any]],
+) -> str:
+    lines: list[str] = []
+    for finding in findings:
+        message = str(finding.get("message") or "").strip()
+        severity = str(finding.get("severity") or "medium").strip()
+        code = str(finding.get("code") or "").strip()
+        files = ", ".join(str(item) for item in (finding.get("files") or []) if str(item).strip())
+        suggested = str(finding.get("suggested_fix") or "").strip()
+        line = f"- [{severity}] {code}: {message}"
+        if files:
+            line += f" (files: {files})"
+        if suggested:
+            line += f" | fix: {suggested}"
+        lines.append(line)
+    finding_block = "\n".join(lines) if lines else "- Fix all blocking critic findings."
+    return (
+        f"Project: {project['name']} ({project['project_type']})\n"
+        f"Working directory: {working_dir}\n\n"
+        "Repair task generated by critic findings.\n"
+        "Apply minimal code edits to resolve these issues:\n"
+        f"{finding_block}\n\n"
+        "Requirements:\n"
+        "- Keep existing behavior intact unless findings require changes.\n"
+        "- Ensure lint/tests/smoke pass in strict gates.\n"
+        "- Return complete updated files only."
+    )
+
+
+def _gate_rows_summary(rows: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for row in rows:
+        gate_name = str(row.get("gate_name") or "").strip()
+        status = str(row.get("status") or "").strip()
+        summary = str(row.get("summary") or "").strip()
+        if not gate_name:
+            continue
+        snippet = f"{gate_name}:{status}"
+        if summary:
+            snippet += f" ({summary[:120]})"
+        parts.append(snippet)
+    return "; ".join(parts)
+
+
+async def _run_control_loop_v1(
+    *,
+    app,
+    chat_id: int,
+    user_id: int,
+    db,
+    project: dict[str, Any],
+    milestones: list[str],
+    working_dir: str,
+    strict_mode: bool,
+    active_stage_chain: list[str],
+    run_files_cache_key: str,
+    run_contract_cache_key: str,
+    stop_request_cache_key: str,
+    update_tracker: Callable[..., Awaitable[None]],
+    finalize_tracker: Callable[..., Awaitable[None]],
+) -> None:
+    completion_contract = dict(project.get("_loop_success_contract") or {})
+    if bool(getattr(cfg, "CONTROL_LOOP_COMPLETION_CONTRACT_REQUIRED", True)):
+        required_artifacts = [
+            str(item).strip()
+            for item in (completion_contract.get("required_artifacts") or [])
+            if str(item).strip()
+        ]
+        if _RUN_CONTRACT_FILE not in required_artifacts:
+            required_artifacts.append(_RUN_CONTRACT_FILE)
+        completion_contract["required_artifacts"] = required_artifacts
+    else:
+        completion_contract = {"required_artifacts": []}
+    controller = ClosedLoopController(
+        db=db,
+        project_id=str(project["id"]),
+        goal=str(project.get("description") or project.get("name") or "").strip(),
+        milestones=milestones,
+        repair_retries=max(0, int(getattr(cfg, "CONTROL_LOOP_REPAIR_RETRIES", 1) or 1)),
+        max_parallel_nodes=max(1, int(getattr(cfg, "CONTROL_LOOP_MAX_PARALLEL_NODES", 2) or 2)),
+        memory_enabled=bool(getattr(cfg, "CONTROL_LOOP_MEMORY_ENABLED", True)),
+        max_iterations=max(1, int(getattr(cfg, "CONTROL_LOOP_BUDGET_MAX_ITERATIONS", 40) or 40)),
+        max_runtime_seconds=max(60, int(getattr(cfg, "CONTROL_LOOP_BUDGET_MAX_RUNTIME_SECONDS", 3600) or 3600)),
+        max_repairs=max(0, int(getattr(cfg, "CONTROL_LOOP_BUDGET_MAX_REPAIRS", 1) or 1)),
+        max_tokens=max(1000, int(getattr(cfg, "CONTROL_LOOP_BUDGET_MAX_TOKENS", 250000) or 250000)),
+        deadlock_idle_ticks=max(1, int(getattr(cfg, "CONTROL_LOOP_DEADLOCK_IDLE_TICKS", 3) or 3)),
+        success_contract=completion_contract,
+        node_specs=list(project.get("_loop_node_specs") or []),
+    )
+    graph_id = await controller.bootstrap(planner_summary=str(project.get("description") or ""))
+
+    execution_stage_chain = _control_loop_stage_chain(active_stage_chain)
+    total = len(milestones)
+    successful_milestones = 0
+    failed_milestones = 0
+    skipped_milestones = 0
+    all_written_files: list[str] = []
+    work_context: dict[str, dict[str, Any]] = {}
+    last_valid_run_contract: dict[str, Any] | None = None
+
+    async def _trace_event(
+        *,
+        node: LoopNode | None,
+        event_type: str,
+        status: str = "",
+        failure_type: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        if not bool(getattr(cfg, "CONTROL_LOOP_TRACE_ENABLED", True)):
+            return
+        with contextlib.suppress(Exception):
+            await create_task_node_event(
+                db,
+                graph_id=int(graph_id),
+                node_id=(int(node.node_id) if isinstance(node, LoopNode) else None),
+                node_key=(node.node_key if isinstance(node, LoopNode) else ""),
+                event_type=event_type,
+                status=status,
+                agent=(node.owner if isinstance(node, LoopNode) else ""),
+                stage=(node.node_type if isinstance(node, LoopNode) else ""),
+                failure_type=failure_type,
+                details=details or {},
+            )
+
+    def _as_relative_path(path_value: str) -> str:
+        clean = str(path_value or "").strip().replace("\\", "/")
+        base = str(working_dir or "").strip().replace("\\", "/").rstrip("/")
+        if base and clean.lower().startswith(base.lower() + "/"):
+            return clean[len(base) + 1 :]
+        return clean.lstrip("/")
+
+    async def _read_worker_file(rel_path: str) -> str:
+        rel = _as_relative_path(rel_path)
+        if not rel:
+            return ""
+        result = await send_action(
+            "file_read",
+            {"file": f"{working_dir}/{rel}"},
+            timeout=30,
+            confirmed=True,
+        )
+        if result.get("status") == "error" or _action_exit_code(result) != 0:
+            return ""
+        return str(_action_inner_result(result).get("content") or "")
+
+    async def _index_written_files(node: LoopNode, files_written: list[str]) -> list[dict[str, Any]]:
+        if not bool(getattr(cfg, "CONTROL_LOOP_CODE_INDEX_ENABLED", True)):
+            return []
+        indexed: list[dict[str, Any]] = []
+        for path in files_written:
+            rel = _as_relative_path(path)
+            if not rel:
+                continue
+            content = await _read_worker_file(rel)
+            if not content:
+                continue
+            stats = await index_file(
+                db,
+                project_id=str(project["id"]),
+                path=rel,
+                content=content,
+            )
+            indexed.append({"path": rel, **stats})
+        if indexed:
+            await _trace_event(
+                node=node,
+                event_type="index.updated",
+                status="ok",
+                details={"count": len(indexed), "items": indexed[:8]},
+            )
+        return indexed
+
+    async def _critic_context_bundle(node: LoopNode, milestone_text: str) -> str:
+        if not bool(getattr(cfg, "CONTROL_LOOP_CONTEXT_COMPRESSION_ENABLED", True)):
+            return ""
+        event_rows = await list_task_node_events(
+            db,
+            graph_id=int(graph_id),
+            limit=max(10, int(getattr(cfg, "CONTROL_LOOP_CONTEXT_TOPK", 12) or 12) * 2),
+        )
+        memory_rows = await list_project_memory(
+            db,
+            project_id=str(project["id"]),
+        )
+        finding_rows = await list_critic_findings(
+            db,
+            node_id=int(node.node_id),
+        )
+        index_hits = await query_code_index(
+            db,
+            project_id=str(project["id"]),
+            terms=re.findall(r"[A-Za-z0-9_./:-]{3,}", milestone_text)[:10],
+            top_k=max(5, int(getattr(cfg, "CONTROL_LOOP_CONTEXT_TOPK", 12) or 12)),
+        )
+        return build_context_bundle(
+            objective=str(project.get("description") or project.get("name") or ""),
+            active_node={
+                "node_key": node.node_key,
+                "node_type": node.node_type,
+                "milestone": milestone_text,
+            },
+            last_failure=next(
+                (
+                    row
+                    for row in reversed(event_rows)
+                    if str(row.get("failure_type") or "").strip()
+                ),
+                None,
+            ),
+            required_artifacts=[_RUN_CONTRACT_FILE],
+            memory_rows=memory_rows,
+            event_rows=event_rows,
+            findings=finding_rows,
+            index_hits=index_hits,
+            max_chars=max(1200, int(getattr(cfg, "CONTROL_LOOP_CONTEXT_MAX_CHARS", 12000) or 12000)),
+        )
+
+    async def _run_required_tools(node: LoopNode, files_written: list[str]) -> tuple[bool, str, str]:
+        if not bool(getattr(cfg, "CONTROL_LOOP_TOOL_AWARE_ENABLED", True)):
+            return True, "", ""
+        payload = node.payload or {}
+        tools = [str(item).strip().lower() for item in (payload.get("tools_required") or []) if str(item).strip()]
+        if not tools:
+            return True, "", ""
+        python_project = any(str(path).lower().endswith(".py") for path in files_written)
+        node_project = any(str(path).lower().endswith((".js", ".ts", ".tsx")) for path in files_written)
+        for tool_name in tools:
+            action = ""
+            params: dict[str, Any] = {}
+            timeout = 300
+            if tool_name == "lint":
+                action = "lint_project"
+                params = {"working_dir": working_dir, "linter": ("ruff" if python_project else "eslint")}
+            elif tool_name == "test":
+                action = "run_tests"
+                params = {"working_dir": working_dir, "runner": ("pytest" if python_project else "npm")}
+            elif tool_name == "build":
+                action = "build_project"
+                params = {"working_dir": working_dir, "build_tool": ("python" if python_project else "npm")}
+            elif tool_name == "deps":
+                action = "install_dependencies"
+                params = {"working_dir": working_dir, "manager": ("pip" if python_project else "npm")}
+            elif tool_name == "docker":
+                action = "run_tool_command"
+                params = {"working_dir": working_dir, "command": "docker build -t skynet-loop .", "timeout_seconds": 900}
+                timeout = 900
+            elif tool_name == "terraform":
+                action = "run_tool_command"
+                params = {"working_dir": working_dir, "command": "terraform validate", "timeout_seconds": 300}
+            elif tool_name == "code":
+                continue
+            else:
+                continue
+
+            result = await send_action(
+                action,
+                params,
+                timeout=timeout,
+                confirmed=True,
+            )
+            if result.get("status") == "error" or _action_exit_code(result) != 0:
+                message = _action_error_text(result, action)
+                failure_type = FAIL_ENVIRONMENT if _is_infra_error(message) else FAIL_STRICT_GATE
+                await _trace_event(
+                    node=node,
+                    event_type="tool.failed",
+                    status="failed",
+                    failure_type=failure_type,
+                    details={"tool": tool_name, "action": action, "message": message[:220]},
+                )
+                return False, message[:260], failure_type
+            await _trace_event(
+                node=node,
+                event_type="tool.passed",
+                status="passed",
+                details={"tool": tool_name, "action": action},
+            )
+        return True, "", ""
+
+    async def _stage_tracker_hook_factory(node: LoopNode, milestone_index: int):
+        async def _hook(**payload: Any) -> None:
+            stage_name = str(payload.get("stage") or payload.get("next_stage") or "").strip()
+            detail = str(payload.get("detail") or "").strip()
+            await update_tracker(
+                phase="milestone_execution",
+                phase_detail=detail or f"{node.node_key} {payload.get('event', 'stage')}",
+                milestone_index=milestone_index,
+                milestones_total=total,
+                attempt=int(payload.get("stage_index", 1) or 1),
+                stage=stage_name or node.node_key,
+                runtime_mode=str(payload.get("runtime") or "").strip() or "ssh",
+                queue_mode=str(payload.get("queue_mode") or "").strip(),
+                graph_id=str(graph_id),
+                node_key=node.node_key,
+                node_type=node.node_type,
+            )
+        return _hook
+
+    async def _work_executor(node: LoopNode) -> dict[str, Any]:
+        nonlocal successful_milestones, failed_milestones, skipped_milestones, last_valid_run_contract
+        payload = node.payload or {}
+        milestone_text = str(payload.get("milestone_text") or node.title or "").strip()
+        milestone_index = int(payload.get("index", 0) or 0)
+        if milestone_index <= 0:
+            milestone_index = max(1, successful_milestones + failed_milestones + skipped_milestones + 1)
+        if node.node_type == "work":
+            await update_tracker(
+                phase="milestone_review",
+                phase_detail=f"Waiting for approval on milestone {milestone_index}/{total}",
+                milestone_index=milestone_index,
+                milestones_total=total,
+                stage=node.node_key,
+                graph_id=str(graph_id),
+                node_key=node.node_key,
+                node_type=node.node_type,
+            )
+            event = asyncio.Event()
+            event_key = _MS_EVENT_KEY.format(uid=user_id)
+            decision_key = _MS_DECISION_KEY.format(uid=user_id)
+            app.bot_data[event_key] = event
+            app.bot_data.pop(decision_key, None)
+            await app.bot.send_message(
+                chat_id,
+                f"<b>Milestone {milestone_index}/{total}</b>\n\n{milestone_text}",
+                parse_mode="HTML",
+                reply_markup=milestone_review(),
+            )
+            try:
+                await asyncio.wait_for(event.wait(), timeout=3600)
+            except asyncio.TimeoutError:
+                app.bot_data.pop(event_key, None)
+                skipped_milestones += 1
+                return {"skipped": True, "summary": f"Milestone {milestone_index} approval timed out"}
+            app.bot_data.pop(event_key, None)
+            decision = app.bot_data.pop(decision_key, "skip")
+            if decision == "stop":
+                app.bot_data[stop_request_cache_key] = True
+                return {"stopped": True, "summary": f"Stopped at milestone {milestone_index}"}
+            if decision == "skip":
+                skipped_milestones += 1
+                return {"skipped": True, "summary": f"Milestone {milestone_index} skipped"}
+        if app.bot_data.get(stop_request_cache_key):
+            return {"stopped": True, "summary": "Stop requested"}
+
+        task_title = (
+            f"Milestone {milestone_index}: {milestone_text[:80].splitlines()[0]}"
+            if node.node_type == "work"
+            else f"Repair: {node.node_key}"
+        )
+        task_rec = await create_task(
+            db,
+            project_id=project["id"],
+            title=task_title,
+            description=milestone_text or node.title,
+        )
+        await update_task_status(db, task_rec["id"], status="running")
+
+        prompt = _control_loop_work_prompt(
+            project=project,
+            milestone_text=milestone_text,
+            working_dir=working_dir,
+        )
+        if node.node_type == "repair":
+            prompt = _control_loop_repair_prompt(
+                project=project,
+                working_dir=working_dir,
+                findings=list(payload.get("findings") or []),
+            )
+
+        stage_tracker_hook = await _stage_tracker_hook_factory(node, milestone_index)
+        generation_result = await _run_stage_chain_for_generation(
+            db=db,
+            app=app,
+            chat_id=chat_id,
+            user_id=user_id,
+            project=project,
+            task_id=task_rec["id"],
+            prompt=prompt,
+            working_dir=working_dir,
+            stage_chain=execution_stage_chain,
+            label_prefix=f"control-loop {node.node_key}",
+            require_runnable_files=True,
+            notify_stage_switch=True,
+            tracker_hook=stage_tracker_hook,
+        )
+        if not generation_result.get("ok"):
+            attempted = generation_result.get("attempted_stages") or []
+            error_message = f"GENERATION_FAILED: {','.join(attempted) or 'codex'}"
+            failure_type = classify_generation_error(error_message)
+            await update_task_status(
+                db,
+                task_rec["id"],
+                status="failed",
+                error_message=error_message,
+            )
+            await _trace_event(
+                node=node,
+                event_type="generation.failed",
+                status="failed",
+                failure_type=failure_type,
+                details={"error": error_message, "attempted": attempted},
+            )
+            if node.node_type == "work":
+                failed_milestones += 1
+            return {"ok": False, "error": error_message, "failure_type": failure_type}
+
+        inner = generation_result.get("inner", {})
+        written = _normalize_written_files(inner.get("files_written"))
+        summary = str(inner.get("stdout") or inner.get("stderr") or "").strip()[:500]
+        tools_ok, tools_error, tools_failure_type = await _run_required_tools(node, written)
+        if not tools_ok:
+            await update_task_status(
+                db,
+                task_rec["id"],
+                status="failed",
+                error_message=tools_error or "tool execution failed",
+            )
+            if node.node_type == "work":
+                failed_milestones += 1
+            return {
+                "ok": False,
+                "error": tools_error or "tool execution failed",
+                "failure_type": tools_failure_type or FAIL_STRICT_GATE,
+            }
+
+        if strict_mode:
+            gate_completion: set[str] = set()
+
+            async def _gate_hook(**payload: Any) -> None:
+                gate_name = str(payload.get("gate_name") or "").strip()
+                gate_status = str(payload.get("status") or "").strip().lower()
+                if gate_name and gate_status in {"passed", "failed", "skipped"}:
+                    gate_completion.add(gate_name)
+                await update_tracker(
+                    phase="quality_gates",
+                    phase_detail=f"{gate_name}: {gate_status}",
+                    milestone_index=milestone_index,
+                    milestones_total=total,
+                    gate=gate_name,
+                    stage=node.node_key,
+                    attempt=int(payload.get("attempt", 1) or 1),
+                    gates_progress=_clamp_unit(len(gate_completion) / float(max(1, len(_TRACKER_GATE_ORDER)))),
+                    graph_id=str(graph_id),
+                    node_key=node.node_key,
+                    node_type=node.node_type,
+                )
+
+            gate_result = await _run_strict_quality_gates(
+                db=db,
+                task_id=task_rec["id"],
+                project=project,
+                milestone_text=milestone_text,
+                working_dir=working_dir,
+                tracker_hook=_gate_hook,
+                stage_chain=execution_stage_chain,
+            )
+            if not bool(gate_result.get("passed")):
+                failed_names = gate_result.get("failed_gate_names") or []
+                error_message = str(gate_result.get("error_message") or "STRICT_GATES_FAILED")
+                if failed_names:
+                    error_message = f"STRICT_GATES_FAILED:{','.join(failed_names)}"
+                failure_type = classify_gate_failure(
+                    failed_gate_names=[str(name) for name in failed_names],
+                    error_message=error_message,
+                )
+                await update_task_status(
+                    db,
+                    task_rec["id"],
+                    status="failed",
+                    error_message=error_message,
+                )
+                await _trace_event(
+                    node=node,
+                    event_type="gates.failed",
+                    status="failed",
+                    failure_type=failure_type,
+                    details={"failed_gates": failed_names, "error": error_message},
+                )
+                if node.node_type == "work":
+                    failed_milestones += 1
+                return {
+                    "ok": False,
+                    "error": error_message,
+                    "infra_failed": bool(gate_result.get("infra_failure")),
+                    "failure_type": failure_type,
+                }
+            run_contract = gate_result.get("run_contract")
+            if isinstance(run_contract, dict):
+                last_valid_run_contract = run_contract
+
+        await update_task_status(
+            db,
+            task_rec["id"],
+            status="done",
+            result_summary=summary,
+        )
+        indexed = await _index_written_files(node, written)
+        work_context[node.node_key] = {
+            "task_id": int(task_rec["id"]),
+            "milestone_text": milestone_text,
+            "files_written": written,
+            "summary": summary,
+            "indexed": indexed,
+        }
+        all_written_files.extend(written)
+        if node.node_type == "work":
+            successful_milestones += 1
+        return {"ok": True, "summary": summary}
+
+    async def _critic_executor(node: LoopNode) -> dict[str, Any]:
+        payload = node.payload or {}
+        work_key = str(payload.get("work_node_key") or "").strip()
+        work_data = work_context.get(work_key, {})
+        files_written = [str(p) for p in (work_data.get("files_written") or []) if str(p).strip()]
+        milestone_text = str(payload.get("milestone_text") or work_data.get("milestone_text") or "").strip()
+        gate_summary = ""
+        task_id = work_data.get("task_id")
+        if isinstance(task_id, int):
+            gate_rows = await list_task_gate_results(db, task_id=task_id)
+            gate_summary = _gate_rows_summary(gate_rows)
+
+        prompt = build_review_prompt(
+            project_name=str(project.get("name") or ""),
+            milestone_text=milestone_text or node.title,
+            files_written=files_written,
+            gate_summary=gate_summary,
+        )
+        compressed = await _critic_context_bundle(node, milestone_text or node.title)
+        if compressed:
+            prompt = (
+                f"{prompt}\n\nAdditional compressed context (JSON):\n"
+                f"{compressed}\n"
+            )
+        timeout = max(30, int(getattr(cfg, "CONTROL_LOOP_REVIEW_TIMEOUT_SECONDS", 120) or 120))
+        result = await send_action(
+            "run_coding_agent",
+            {
+                "agent": str(getattr(cfg, "CONTROL_LOOP_CRITIC_AGENT", "codex") or "codex"),
+                "backend": "auto",
+                "prompt": prompt,
+                "working_dir": working_dir,
+                "timeout_seconds": timeout,
+            },
+            timeout=timeout,
+            confirmed=True,
+        )
+        if result.get("status") == "error":
+            return {
+                "ok": False,
+                "parse_error": True,
+                "error": _action_error_text(result, "run_coding_agent"),
+                "critic_name": "review",
+            }
+        if _action_exit_code(result) != 0:
+            return {
+                "ok": False,
+                "parse_error": True,
+                "error": _action_excerpt(result),
+                "critic_name": "review",
+            }
+        raw = str(_action_inner_result(result).get("stdout") or "").strip()
+        try:
+            parsed = parse_critic_response(raw)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "parse_error": True,
+                "error": f"CRITIC_PARSE_ERROR: {exc}",
+                "failure_type": "CRITIC_PARSE_FAILED",
+                "critic_name": "review",
+            }
+        findings = parsed.get("findings", [])
+        if bool(getattr(cfg, "CONTROL_LOOP_ARCH_CRITIC_ENABLED", True)):
+            arch_rules_path = str(getattr(cfg, "CONTROL_LOOP_ARCH_RULES_FILE", "") or "").strip()
+            refs: list[dict[str, Any]] = []
+            if arch_rules_path:
+                async with db.execute(
+                    """
+                    SELECT from_path, to_module, ref_kind
+                    FROM code_index_refs
+                    WHERE project_id = ?
+                    ORDER BY id DESC
+                    LIMIT 500
+                    """,
+                    (str(project["id"]),),
+                ) as cur:
+                    refs = [dict(r) for r in await cur.fetchall()]
+            if refs:
+                arch_findings = evaluate_architecture_refs(
+                    refs=refs,
+                    rules=load_arch_rules(arch_rules_path),
+                )
+                if arch_findings:
+                    if not isinstance(findings, list):
+                        findings = []
+                    findings.extend(arch_findings)
+                    await _trace_event(
+                        node=node,
+                        event_type="critic.architecture",
+                        status="failed",
+                        failure_type=FAIL_STRICT_GATE,
+                        details={"count": len(arch_findings)},
+                    )
+        blocking = is_blocking(
+            findings if isinstance(findings, list) else [],
+            threshold=str(getattr(cfg, "CONTROL_LOOP_CRITIC_BLOCK_THRESHOLD", "high") or "high"),
+        )
+        summary = "critic passed"
+        if blocking:
+            summary = "blocking findings detected"
+        elif findings:
+            summary = "non-blocking findings detected"
+        return {
+            "ok": bool(parsed.get("passed", True)) and not blocking,
+            "blocking": blocking,
+            "findings": findings,
+            "summary": summary,
+            "critic_name": "review",
+            "failure_type": FAIL_STRICT_GATE if blocking else "",
+        }
+
+    async def _gate_executor(node: LoopNode) -> dict[str, Any]:
+        rows = await list_graph_nodes(db, graph_id=int(graph_id))
+        for row in rows:
+            if str(row.get("node_type") or "") == "critic" and str(row.get("status") or "") != "done":
+                return {"ok": False, "summary": "Not all critic nodes passed", "failure_type": FAIL_STRICT_GATE}
+        blocking_count = 0
+        async with db.execute(
+            """
+            SELECT COUNT(1) AS c
+            FROM critic_findings cf
+            JOIN task_nodes tn ON tn.id = cf.node_id
+            WHERE tn.graph_id = ? AND LOWER(cf.severity) IN ('high', 'critical')
+            """,
+            (int(graph_id),),
+        ) as cur:
+            row = await cur.fetchone()
+            if row:
+                blocking_count = int(row[0] or 0)
+        passed, reason = validate_completion_contract(
+            contract=completion_contract,
+            node_rows=rows,
+            has_valid_run_contract=bool(last_valid_run_contract),
+            blocking_findings_count=blocking_count,
+        )
+        if not passed:
+            return {"ok": False, "summary": reason, "failure_type": FAIL_CONTRACT}
+        return {"ok": True, "summary": "All critic nodes passed and completion contract satisfied"}
+
+    async def _on_node_event(node: LoopNode, event: str, payload: dict[str, Any]) -> None:
+        phase = "milestone_execution"
+        if node.node_type == "critic":
+            phase = "quality_gates"
+        if node.node_type == "gate":
+            phase = "finalization"
+        detail = str(payload.get("summary") or payload.get("error") or event).strip()
+        await update_tracker(
+            phase=phase,
+            phase_detail=f"{node.node_key} {event}" + (f": {detail[:140]}" if detail else ""),
+            stage=f"{node.node_key}:{node.node_type}",
+            attempt=max(0, int(node.attempt_count)),
+            graph_id=str(graph_id),
+            node_key=node.node_key,
+            node_type=node.node_type,
+            critic_name=("review" if node.node_type == "critic" else ""),
+        )
+        if event == "needs_changes":
+            await app.bot.send_message(
+                chat_id,
+                f"\u26A0\uFE0F Critic blocked {node.node_key}. Creating repair node...",
+            )
+        await _trace_event(
+            node=node,
+            event_type=f"node.{event}",
+            status=str(payload.get("status") or event),
+            failure_type=str(payload.get("failure_type") or ""),
+            details=payload,
+        )
+
+    run_result = await controller.run(
+        execute_work=_work_executor,
+        execute_critic=_critic_executor,
+        execute_gate=_gate_executor,
+        on_node_event=_on_node_event,
+    )
+
+    unique_written: list[str] = []
+    seen_written: set[str] = set()
+    for path in all_written_files:
+        clean = str(path).strip()
+        if not clean:
+            continue
+        key = clean.lower()
+        if key in seen_written:
+            continue
+        seen_written.add(key)
+        unique_written.append(clean)
+
+    milestone_summary = (
+        f"complete={successful_milestones}, failed={failed_milestones}, skipped={skipped_milestones}"
+    )
+    graph_status = str(run_result.get("status") or "failed").strip().lower()
+    if graph_status != "completed":
+        await _trace_event(
+            node=None,
+            event_type="graph.final",
+            status=graph_status,
+            failure_type=str(run_result.get("failure_type") or ""),
+            details={"summary": milestone_summary, "error": run_result.get("error")},
+        )
+    if graph_status == "completed" and successful_milestones > 0:
+        app.bot_data[f"run_project_{user_id}"] = project["id"]
+        app.bot_data[run_files_cache_key] = unique_written
+        if strict_mode and last_valid_run_contract:
+            app.bot_data[run_contract_cache_key] = last_valid_run_contract
+        elif strict_mode:
+            app.bot_data.pop(run_contract_cache_key, None)
+        await update_tracker(
+            phase="finalization",
+            phase_detail=f"Graph {graph_id} completed",
+            status="completed",
+            final_progress=1.0,
+            stage="",
+            gate="",
+            run_contract_status="validated" if strict_mode else "legacy",
+            graph_id=str(graph_id),
+            node_key="",
+            node_type="",
+            critic_name="",
+        )
+        await finalize_tracker(
+            status="completed",
+            detail=f"Graph {graph_id} completed ({milestone_summary})",
+        )
+        await app.bot.send_message(
+            chat_id,
+            f"\U0001F389 <b>{project['name']}</b> coding session complete!\n"
+            f"Graph: <code>{graph_id}</code>\n"
+            f"\U0001F4C1 <code>{working_dir}</code>\n"
+            f"{milestone_summary}\n\n"
+            "Use /status to review milestones or run the project now.",
+            parse_mode="HTML",
+            reply_markup=run_project(),
+        )
+        return
+
+    if graph_status == "stopped":
+        await update_tracker(
+            phase="finalization",
+            phase_detail=f"Graph {graph_id} stopped",
+            status="stopped",
+            final_progress=1.0,
+            stage="",
+            gate="",
+            graph_id=str(graph_id),
+            node_key="",
+            node_type="",
+            critic_name="",
+        )
+        await finalize_tracker(
+            status="stopped",
+            detail=f"Graph {graph_id} stopped ({milestone_summary})",
+        )
+        await app.bot.send_message(
+            chat_id,
+            f"\u23F9 Session stopped.\nGraph: <code>{graph_id}</code>\n{milestone_summary}",
+            parse_mode="HTML",
+            reply_markup=main_menu(),
+        )
+        return
+
+    app.bot_data.pop(run_contract_cache_key, None)
+    await update_tracker(
+        phase="finalization",
+        phase_detail=f"Graph {graph_id} failed",
+        status="failed",
+        final_progress=1.0,
+        stage="",
+        gate="",
+        graph_id=str(graph_id),
+        node_key="",
+        node_type="",
+        critic_name="",
+    )
+    await finalize_tracker(
+        status="failed",
+        detail=f"Graph {graph_id} failed ({milestone_summary})",
+    )
+    await app.bot.send_message(
+        chat_id,
+        f"\u26A0\uFE0F <b>{project['name']}</b> session failed.\n"
+        f"Graph: <code>{graph_id}</code>\n"
+        f"{milestone_summary}\n\n"
+        "Tap Retry Coding to run again.",
+        parse_mode="HTML",
+        reply_markup=retry_coding(project["id"]),
+    )
 
 
 async def _coding_loop(
@@ -3207,6 +4250,7 @@ async def _coding_loop(
         )
         preflight_ok, preflight_error, preflight_stage_chain = await _preflight_coding_environment(
             project=project,
+            working_dir=working_dir,
         )
         if preflight_stage_chain:
             active_stage_chain = preflight_stage_chain
@@ -3447,6 +4491,36 @@ async def _coding_loop(
         await app.bot.send_message(
             chat_id, f"Found <b>{total} milestone(s)</b>. Let's go!", parse_mode="HTML"
         )
+
+        if _use_control_loop_v1(project) and db is not None:
+            await _update_tracker(
+                phase="milestone_execution",
+                phase_detail="Running closed orchestration loop",
+                milestone_index=0,
+                milestones_total=total,
+                stage="loop_v1",
+            )
+            await _run_control_loop_v1(
+                app=app,
+                chat_id=chat_id,
+                user_id=user_id,
+                db=db,
+                project=project,
+                milestones=milestones,
+                working_dir=working_dir,
+                strict_mode=strict_mode,
+                active_stage_chain=active_stage_chain,
+                run_files_cache_key=run_files_cache_key,
+                run_contract_cache_key=run_contract_cache_key,
+                stop_request_cache_key=stop_request_cache_key,
+                update_tracker=_update_tracker,
+                finalize_tracker=_finalize_tracker,
+            )
+            return
+        if _use_control_loop_v1(project) and db is None:
+            logger.warning(
+                "Control loop requested but DB handle missing; falling back to legacy milestone loop."
+            )
 
         successful_milestones = 0
         failed_milestones = 0
@@ -4705,23 +5779,85 @@ def _parse_json_string_list(raw: str) -> list[str] | None:
     return None
 
 
+def _parse_planner_task_graph_payload(raw: str) -> dict[str, Any] | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    nodes_raw = parsed.get("nodes")
+    if not isinstance(nodes_raw, list):
+        return None
+    milestones: list[str] = []
+    normalized_nodes: list[dict[str, Any]] = []
+    for node in nodes_raw:
+        if not isinstance(node, dict):
+            continue
+        node_type = str(node.get("node_type") or node.get("type") or "").strip().lower()
+        title = str(node.get("title") or "").strip()
+        if not title:
+            continue
+        if node_type and node_type not in {"work", "milestone"}:
+            continue
+        deps = [str(dep).strip() for dep in (node.get("deps") or []) if str(dep).strip()]
+        try:
+            priority = int(node.get("priority") or 200)
+        except Exception:
+            priority = 200
+        normalized = {
+            "node_key": str(node.get("node_key") or "").strip(),
+            "title": title,
+            "node_type": "work",
+            "owner": str(node.get("owner") or "codex").strip() or "codex",
+            "deps": deps,
+            "priority": priority,
+            "tools_required": list(node.get("tools_required") or []),
+            "acceptance": list(node.get("acceptance") or []),
+            "risk": dict(node.get("risk") or {}),
+        }
+        milestones.append(title)
+        normalized_nodes.append(normalized)
+    if not milestones:
+        return None
+    return {
+        "milestones": milestones,
+        "nodes": normalized_nodes,
+        "success_contract": parsed.get("success_contract") if isinstance(parsed.get("success_contract"), dict) else {},
+        "execution_strategy": parsed.get("execution_strategy") if isinstance(parsed.get("execution_strategy"), dict) else {},
+    }
+
+
 async def _extract_milestones_codex_then_router(
     *,
     router,
     project: dict[str, Any],
     working_dir: str,
 ) -> list[str]:
+    allow_router_fallback = bool(getattr(cfg, "CONTROL_LOOP_ROUTER_FALLBACK_ENABLED", False))
     if str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router")).strip().lower() != "codex":
-        return await _extract_milestones_router(router, project)
+        if allow_router_fallback:
+            return await _extract_milestones_router(router, project)
+        raise RuntimeError("Milestone extraction requires codex when router fallback is disabled.")
 
     plan = project.get("description", "")
     if not plan:
         return []
 
     prompt = (
-        "You are a project planner. Extract coding milestones from the plan.\n"
-        "Return ONLY a JSON array of strings.\n"
-        "No markdown, no explanation.\n\n"
+        "You are a project planner. Build an execution DAG for coding milestones.\n"
+        "Return ONLY valid JSON, no markdown.\n"
+        "Preferred schema:\n"
+        "{\"nodes\":[{\"node_key\":\"work_1\",\"title\":\"...\",\"node_type\":\"work\",\"owner\":\"codex\","
+        "\"deps\":[],\"priority\":200,\"tools_required\":[\"code\",\"test\"],\"acceptance\":[],\"risk\":{\"level\":\"medium\"}}],"
+        "\"success_contract\":{\"required_nodes\":[\"work_1\"],\"required_artifacts\":[\"skynet_run.json\"]},"
+        "\"execution_strategy\":{\"mode\":\"adaptive_parallel_x2\"}}\n"
+        "Fallback schema: JSON array of milestone strings.\n\n"
         f"Project: {project['name']}\n"
         f"Plan:\n{plan}\n"
     )
@@ -4767,17 +5903,25 @@ async def _extract_milestones_codex_then_router(
                 raise RuntimeError(_action_excerpt(result))
             output = str(_action_inner_result(result).get("stdout") or "").strip()
 
-        parsed = _parse_json_string_list(output)
-        if parsed:
-            return parsed
-        raise RuntimeError("Codex milestone output was not valid JSON list")
+        parsed_graph = _parse_planner_task_graph_payload(output)
+        if parsed_graph:
+            project["_loop_success_contract"] = parsed_graph.get("success_contract") or {}
+            project["_loop_execution_strategy"] = parsed_graph.get("execution_strategy") or {}
+            project["_loop_node_specs"] = parsed_graph.get("nodes") or []
+            return [str(item).strip() for item in (parsed_graph.get("milestones") or []) if str(item).strip()]
+        parsed_list = _parse_json_string_list(output)
+        if parsed_list:
+            return parsed_list
+        raise RuntimeError("Codex milestone output was not valid planner JSON")
     except Exception as exc:
         logger.warning(
             "milestone.primary.failover project_id=%s stage=codex error=%s",
             project.get("id"),
             str(exc)[:220],
         )
-        return await _extract_milestones_router(router, project)
+        if allow_router_fallback:
+            return await _extract_milestones_router(router, project)
+        raise
 
 
 async def _extract_milestones(

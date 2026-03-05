@@ -26,6 +26,7 @@ async def test_planner_codex_success_skips_router_fallback():
 
     with (
         patch("bot.handlers.project.cfg.PLANNER_PRIMARY_AGENT", "codex"),
+        patch("bot.handlers.project.cfg.CONTROL_LOOP_ROUTER_FALLBACK_ENABLED", True),
         patch("bot.handlers.project.is_worker_available", return_value=True),
         patch("bot.handlers.project.send_action", new=AsyncMock(side_effect=_send_action)),
     ):
@@ -57,6 +58,7 @@ async def test_planner_codex_failure_falls_back_to_router():
 
     with (
         patch("bot.handlers.project.cfg.PLANNER_PRIMARY_AGENT", "codex"),
+        patch("bot.handlers.project.cfg.CONTROL_LOOP_ROUTER_FALLBACK_ENABLED", True),
         patch("bot.handlers.project.is_worker_available", return_value=True),
         patch("bot.handlers.project.send_action", new=AsyncMock(side_effect=_send_action)),
     ):

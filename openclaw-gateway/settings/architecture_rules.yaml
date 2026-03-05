@@ -1,0 +1,24 @@
+{
+  "layers": [
+    {
+      "name": "frontend",
+      "path_prefixes": ["frontend", "ui", "web"],
+      "can_import_layers": ["frontend", "shared"]
+    },
+    {
+      "name": "backend",
+      "path_prefixes": ["backend", "api", "server"],
+      "can_import_layers": ["backend", "shared", "infra"]
+    },
+    {
+      "name": "infra",
+      "path_prefixes": ["infra", "terraform", "deploy"],
+      "can_import_layers": ["infra", "shared"]
+    },
+    {
+      "name": "shared",
+      "path_prefixes": ["shared", "common", "lib"],
+      "can_import_layers": ["shared"]
+    }
+  ]
+}

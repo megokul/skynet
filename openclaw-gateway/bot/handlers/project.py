@@ -192,6 +192,7 @@ async def _planner_via_codex_then_router(
     user_id: int,
 ) -> str:
     use_codex = str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router")).strip().lower() == "codex"
+    allow_router_fallback = bool(getattr(cfg, "CONTROL_LOOP_ROUTER_FALLBACK_ENABLED", False))
     if use_codex:
         sandbox_dir = _planner_sandbox_dir(user_id)
         planner_prompt = (
@@ -265,7 +266,11 @@ async def _planner_via_codex_then_router(
                 user_id,
                 str(exc)[:220],
             )
+            if not allow_router_fallback:
+                raise
 
+    if not allow_router_fallback and use_codex:
+        raise RuntimeError("Planner fallback is disabled and codex path did not return a response.")
     response = await router.chat(
         messages=messages,
         system=system,
@@ -506,6 +511,16 @@ async def approve_plan(
         quality_profile = (
             default_profile if cfg.STRICT_QUALITY_GATES_ENABLED else "legacy"
         )
+        if bool(getattr(cfg, "CONTROL_LOOP_FORCE_FOR_ALL", False)):
+            control_loop_profile = "loop_v1"
+        elif bool(getattr(cfg, "CONTROL_LOOP_ENABLED", True)):
+            control_loop_profile = str(
+                getattr(cfg, "CONTROL_LOOP_DEFAULT_PROFILE", "loop_v1") or "loop_v1"
+            ).strip().lower()
+            if control_loop_profile not in {"legacy", "loop_v1"}:
+                control_loop_profile = "loop_v1"
+        else:
+            control_loop_profile = "legacy"
         user = await ensure_user(
             db,
             telegram_user_id=tg_user.id,
@@ -521,6 +536,7 @@ async def approve_plan(
             description=project_description,
             coding_profile=coding_default,
             quality_profile=quality_profile,
+            control_loop_profile=control_loop_profile,
         )
     except Exception:
         logger.exception("Failed to save project name=%r type=%r", name, type_label)

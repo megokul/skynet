@@ -35,6 +35,16 @@ from bot.keyboards import (
 from bot.state import KEY_DB
 
 
+@pytest.fixture(autouse=True)
+def _legacy_defaults(monkeypatch):
+    monkeypatch.setattr("bot.handlers.coding.cfg.CONTROL_LOOP_ENABLED", False)
+    monkeypatch.setattr("bot.handlers.coding.cfg.CONTROL_LOOP_FORCE_FOR_ALL", False)
+    monkeypatch.setattr(
+        "bot.handlers.coding.cfg.CODING_FALLBACK_CHAIN",
+        "codex,claude_ollama,cline",
+    )
+
+
 def _callbacks(markup) -> list[list[str]]:
     return [[btn.callback_data for btn in row] for row in markup.inline_keyboard]
 

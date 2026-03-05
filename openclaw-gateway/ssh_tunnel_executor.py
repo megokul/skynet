@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import re
+import shlex
 import stat
 import base64
 import threading
@@ -2283,7 +2284,64 @@ class SSHTunnelExecutor:
             remote_cwd = _norm_remote_path(cwd, self.remote_os)
             return self._run_command(client, parts, cwd=remote_cwd)
 
+        if action == "run_tool_command":
+            cwd = self._require_str(params, "working_dir")
+            command = self._require_str(params, "command")
+            parts = self._parse_tool_command(command)
+            if not parts:
+                return {"returncode": 1, "stdout": "", "stderr": "Empty tool command."}
+            ok, reason = self._allow_tool_command(parts)
+            if not ok:
+                return {"returncode": 1, "stdout": "", "stderr": f"Command not allowed: {reason}"}
+            timeout = int(params.get("timeout_seconds") or 600)
+            remote_cwd = _norm_remote_path(cwd, self.remote_os)
+            return self._run_command(client, parts, cwd=remote_cwd, timeout=max(30, min(timeout, 3600)))
+
         return {"returncode": 1, "stdout": "", "stderr": f"Action '{action}' is not supported in SSH tunnel mode."}
+
+    @staticmethod
+    def _parse_tool_command(command: str) -> list[str]:
+        raw = str(command or "").strip()
+        if not raw:
+            return []
+        if any(token in raw for token in ("&&", "||", ";", "|", ">", "<")):
+            return []
+        try:
+            return shlex.split(raw, posix=False)
+        except Exception:
+            return raw.split()
+
+    @staticmethod
+    def _allow_tool_command(parts: list[str]) -> tuple[bool, str]:
+        if not parts:
+            return False, "empty"
+        p0 = parts[0].lower()
+        p1 = parts[1].lower() if len(parts) > 1 else ""
+        p2 = parts[2].lower() if len(parts) > 2 else ""
+
+        if p0 in {"pytest"}:
+            return True, ""
+        if p0 in {"python", "python3"} and p1 == "-m" and p2 == "pytest":
+            return True, ""
+        if p0 == "npm" and p1 == "test":
+            return True, ""
+        if p0 == "npm" and p1 == "run" and p2 == "build":
+            return True, ""
+        if p0 in {"pip", "pip3"} and p1 == "install" and len(parts) >= 4 and parts[2] == "-r":
+            return True, ""
+        if p0 == "python" and p1 == "-m" and p2 == "pip":
+            if len(parts) >= 6 and parts[3] == "install" and parts[4] == "-r":
+                return True, ""
+            return False, "python -m pip only allows install -r"
+        if p0 == "docker":
+            if p1 == "build":
+                return True, ""
+            if p1 == "compose":
+                return True, ""
+            return False, "docker allows only build/compose"
+        if p0 == "terraform" and p1 in {"validate", "plan"}:
+            return True, ""
+        return False, "not in allowlist"
 
     def _ensure_git_safe_directory(self, client: paramiko.SSHClient, cwd: str) -> None:
         """
