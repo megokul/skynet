@@ -45,6 +45,20 @@ Accepted evidence markers include at least one of:
 
 Trace evidence must include enough context to correlate logs to the changed behavior.
 
+## Live E2E Debug Policy Requirements
+
+When the issue is a live `telegram_real` failure, `docs/DEBUG_PLAYBOOK.md` mandatory loop applies.
+
+Required before declaring fix complete:
+
+- failure classified to one primary category
+- bug explanation documented (`symptom -> root cause -> impact`)
+- mitigation plan written before edits
+- debug-cycle commit created and pushed successfully
+- rerun evidence showing end-to-end pass
+- artifact verification (`.py` files + valid `skynet_run.json` + run exit `0`)
+- trace evidence for both failed run and passing run
+
 ## Merge and Handoff Evidence
 
 `docs/AGENT_HANDOFF.md` must contain non-empty sections:
@@ -66,6 +80,8 @@ Copy/paste for handoff entries:
 - [ ] Documentation updated for behavior/interface/ops changes.
 - [ ] Tests run, commands listed, and outcomes recorded.
 - [ ] Trace evidence recorded for behavior changes (request/task/trace markers).
+- [ ] For live `telegram_real` failures, followed `DEBUG_PLAYBOOK` loop with mitigation plan + failed/pass trace evidence.
+- [ ] For live `telegram_real` failures, commit and push succeeded before rerunning live E2E.
 - [ ] `NoTestJustification` provided if tests were not run.
 - [ ] Guard scripts executed (`check_stale_paths`, `check_control_plane_boundary`, `check_engineering_policy`).
 ```

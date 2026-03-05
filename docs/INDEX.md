@@ -10,6 +10,9 @@ This index is the primary entrypoint for coding agents and engineers working in 
 4. Read `docs/KNOWN_DRIFT_AND_TEST_MATRIX.md` to avoid stale assumptions.
 5. Read `docs/ENGINEERING_POLICY.md` before writing code, tests, or docs.
 
+For live Telegram E2E failures, the `DEBUG_PLAYBOOK` loop is mandatory policy, not optional guidance.  
+Push-gate rule: rerun live E2E only after debug-cycle commit + successful push.
+
 ## Authoritative Sources
 
 - System contract: `docs/SKYNET_OPENCLAW_CONTRACT.md`

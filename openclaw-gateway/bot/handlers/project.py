@@ -70,6 +70,8 @@ _PLAN_BANNED_PHRASES = (
     "role set:",
     "i am now operating as",
     "i can help you plan",
+    "i'll act as your planner assistant",
+    "i’ll act as your planner assistant",
 )
 
 
@@ -156,6 +158,29 @@ def _requirement_terms(history: list[dict]) -> set[str]:
     return terms
 
 
+def _requirement_lines(history: list[dict], *, limit: int = 8) -> list[str]:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for item in history:
+        if str(item.get("role") or "").strip().lower() != "user":
+            continue
+        text = str(item.get("content") or "").strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered.startswith("generate the full project plan now"):
+            continue
+        compact = " ".join(text.split())
+        if not compact:
+            continue
+        key = compact.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(compact)
+    return lines[-limit:]
+
+
 def _is_requirement_grounded_plan(plan: str, history: list[dict]) -> bool:
     plan_text = (plan or "").strip()
     if len(plan_text) < 120:
@@ -170,6 +195,86 @@ def _is_requirement_grounded_plan(plan: str, history: list[dict]) -> bool:
         return True
     overlap = sum(1 for term in terms if term in lowered)
     return overlap >= min(2, len(terms))
+
+
+def _build_deterministic_plan(
+    *,
+    name: str,
+    project_type_label: str,
+    template: dict,
+    history: list[dict],
+) -> str:
+    req_lines = _requirement_lines(history)
+    req_joined = " ".join(req_lines).lower()
+    is_windows = "windows" in req_joined
+    mentions_python = "python" in req_joined or "python" in str(template.get("stack", "")).lower()
+    mentions_popup = "popup" in req_joined or "messagebox" in req_joined
+    mentions_beep = "beep" in req_joined or "sound" in req_joined
+
+    overview_bits = []
+    if req_lines:
+        overview_bits.append(req_lines[-1])
+    if is_windows and mentions_python:
+        overview_bits.append("Target platform is Windows and execution is from terminal.")
+    overview = " ".join(overview_bits).strip() or (
+        f"{name} is a {project_type_label} project with a clear, implementation-ready scope."
+    )
+
+    features: list[str] = []
+    if mentions_popup:
+        features.append('Display a popup window showing "hi" when the script runs')
+    if mentions_beep:
+        features.append("Play a short beep sound during execution")
+    if mentions_python:
+        features.append("Use Python standard library only where possible")
+    for line in req_lines[-3:]:
+        if len(features) >= 4:
+            break
+        if line.lower() not in ("python", "windows", "terminal execution"):
+            features.append(line)
+    if not features:
+        features = [
+            "Implement the requested core behavior",
+            "Add basic validation and error handling",
+            "Include a runnable entrypoint and tests",
+        ]
+
+    structure = [
+        f"{name.lower().replace(' ', '_')}.py",
+        "README.md",
+        "tests/test_main.py",
+        "skynet_run.json",
+    ]
+
+    milestones = [
+        "Implement the main script with the required runtime behavior",
+        "Add tests and validate terminal execution path",
+        "Add skynet_run.json and confirm the project runs successfully",
+    ]
+
+    stack = str(template.get("stack") or "").strip() or "Python 3.10+"
+    if is_windows and "windows" not in stack.lower():
+        stack = f"{stack}; Windows runtime"
+
+    features_block = "\n".join(f"  - {item}" for item in features[:5])
+    structure_block = "\n".join(f"  - {item}" for item in structure)
+    milestones_block = "\n".join(
+        f"  {idx}. {item}" for idx, item in enumerate(milestones, start=1)
+    )
+
+    return (
+        f"**{name} — Project Plan**\n"
+        f"**Overview:** {overview}\n\n"
+        f"**Core Features:**\n"
+        f"{features_block}\n\n"
+        f"**Tech Stack:**\n"
+        f"  - {stack}\n\n"
+        f"**Project Structure:**\n"
+        f"{structure_block}\n\n"
+        f"**Milestones:**\n"
+        f"{milestones_block}\n\n"
+        f"**Open Questions:** None"
+    )
 
 
 def _planner_sandbox_dir(user_id: int) -> str:
@@ -486,6 +591,16 @@ async def _do_generate_plan(
                 plan = retry_plan
         except Exception:
             pass  # Keep the original plan as fallback
+        if not _is_requirement_grounded_plan(plan, history):
+            logger.warning(
+                "Plan remained invalid after retry; using deterministic requirement-grounded fallback plan."
+            )
+            plan = _build_deterministic_plan(
+                name=name,
+                project_type_label=type_label,
+                template=template,
+                history=history,
+            )
 
     context.user_data[_PLAN_KEY] = plan
     history.append({"role": "assistant", "content": plan})

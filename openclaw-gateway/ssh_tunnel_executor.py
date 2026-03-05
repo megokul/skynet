@@ -8,6 +8,7 @@ Runs allowlisted actions directly on a remote laptop over SSH.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -16,6 +17,7 @@ import stat
 import base64
 import threading
 import time
+import uuid
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -312,7 +314,8 @@ def _build_windows_command(
     - Return value typed as `str` when available; otherwise side effects only.
     """
 
-    cmd = " ".join(_ps_quote(str(a)) for a in args)
+    if not args:
+        raise ValueError("args must not be empty")
     script_lines = [
         "$ErrorActionPreference = 'Stop'",
         "$ProgressPreference = 'SilentlyContinue'",
@@ -322,7 +325,17 @@ def _build_windows_command(
     if env:
         for key, value in env.items():
             script_lines.append(f"$env:{key} = {_ps_quote(str(value))}")
-    script_lines.append(f"& {cmd}")
+    script_lines.append("$__args = @()")
+    for arg in args:
+        b64 = base64.b64encode(str(arg).encode("utf-8")).decode("ascii")
+        script_lines.append(
+            "$__args += [System.Text.Encoding]::UTF8.GetString("
+            f"[System.Convert]::FromBase64String('{b64}'))"
+        )
+    script_lines.append("$__cmd = $__args[0]")
+    script_lines.append("$__rest = @()")
+    script_lines.append("if ($__args.Length -gt 1) { $__rest = $__args[1..($__args.Length-1)] }")
+    script_lines.append("& $__cmd @__rest")
     script_lines.append("$code = $LASTEXITCODE")
     script_lines.append("if ($null -eq $code) { $code = 0 }")
     script_lines.append("exit $code")
@@ -1138,6 +1151,85 @@ class SSHTunnelExecutor:
         rc = stdout.channel.recv_exit_status()
         return {"returncode": int(rc), "stdout": out, "stderr": err}
 
+    def _run_windows_command_with_prompt_file(
+        self,
+        *,
+        client: paramiko.SSHClient,
+        args_without_prompt: list[str],
+        prompt: str,
+        cwd: str | None,
+        timeout: int,
+        env: dict[str, str] | None = None,
+        use_pty: bool = False,
+    ) -> dict[str, Any]:
+        temp_parent = cwd or "E:\\SKYNET-SANDBOX\\temp"
+        prompt_path = str(PureWindowsPath(temp_parent) / f".skynet_prompt_{uuid.uuid4().hex}.txt")
+
+        sftp = client.open_sftp()
+        try:
+            self._sftp_makedirs(sftp, str(PureWindowsPath(prompt_path).parent))
+            with sftp.open(prompt_path, "w") as fh:
+                fh.write(prompt)
+        except Exception as exc:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+            return {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": f"Cannot write prompt file: {exc}",
+            }
+        finally:
+            with contextlib.suppress(Exception):
+                sftp.close()
+
+        script_lines = [
+            "$ErrorActionPreference = 'Stop'",
+            "$ProgressPreference = 'SilentlyContinue'",
+        ]
+        if cwd:
+            script_lines.append(f"Set-Location -LiteralPath {_ps_quote(cwd)}")
+        if env:
+            for key, value in env.items():
+                script_lines.append(f"$env:{key} = {_ps_quote(str(value))}")
+
+        script_lines.append("$__args = @()")
+        for arg in args_without_prompt:
+            b64 = base64.b64encode(str(arg).encode("utf-8")).decode("ascii")
+            script_lines.append(
+                "$__args += [System.Text.Encoding]::UTF8.GetString("
+                f"[System.Convert]::FromBase64String('{b64}'))"
+            )
+        script_lines.append(f"$__promptPath = {_ps_quote(prompt_path)}")
+        script_lines.append("$__prompt = Get-Content -LiteralPath $__promptPath -Raw")
+        script_lines.append("$__cmd = $__args[0]")
+        script_lines.append("$__rest = @()")
+        script_lines.append("if ($__args.Length -gt 1) { $__rest = $__args[1..($__args.Length-1)] }")
+        script_lines.append("& $__cmd @__rest $__prompt")
+        script_lines.append("$code = $LASTEXITCODE")
+        script_lines.append("if ($null -eq $code) { $code = 0 }")
+        script_lines.append("Remove-Item -LiteralPath $__promptPath -Force -ErrorAction SilentlyContinue")
+        script_lines.append("exit $code")
+
+        script = "\n".join(script_lines)
+        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        command = (
+            "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+            f"-EncodedCommand {encoded}"
+        )
+        _, stdout, stderr = client.exec_command(
+            command,
+            timeout=timeout or self.command_timeout,
+            get_pty=use_pty,
+        )
+        out = stdout.read().decode("utf-8", errors="replace")[:8192]
+        err = stderr.read().decode("utf-8", errors="replace")[:4096]
+        out = _sanitize_powershell_output(out)
+        err = _sanitize_powershell_output(err)
+        rc = stdout.channel.recv_exit_status()
+        return {"returncode": int(rc), "stdout": out, "stderr": err}
+
     def _persist_generated_files_from_blocks(
         self,
         *,
@@ -1692,7 +1784,7 @@ class SSHTunnelExecutor:
             f"target {int(bot_cfg.CLAUDE_OLLAMA_MIN_CONTEXT)}."
         )
 
-    def _build_codex_command_args(self, *, binary: str, prompt: str) -> list[str]:
+    def _build_codex_command_base_args(self, *, binary: str) -> list[str]:
         args = [binary, *self._coding_prefix["codex"], "--skip-git-repo-check"]
         if self._codex_write_mode == "danger_full_access":
             args.append("--dangerously-bypass-approvals-and-sandbox")
@@ -1700,6 +1792,10 @@ class SSHTunnelExecutor:
             args.extend(["--sandbox", "workspace-write"])
         elif self._codex_write_mode == "read_only":
             args.extend(["--sandbox", "read-only"])
+        return args
+
+    def _build_codex_command_args(self, *, binary: str, prompt: str) -> list[str]:
+        args = self._build_codex_command_base_args(binary=binary)
         args.append(prompt)
         return args
 
@@ -1752,10 +1848,21 @@ class SSHTunnelExecutor:
             run = self._run_command(client, args, cwd=cwd, timeout=timeout, use_pty=True)
         else:
             if agent == "codex":
-                args = self._build_codex_command_args(binary=binary, prompt=prompt)
+                args = self._build_codex_command_base_args(binary=binary)
+                if self.remote_os == "windows":
+                    initial = self._run_windows_command_with_prompt_file(
+                        client=client,
+                        args_without_prompt=args,
+                        prompt=prompt,
+                        cwd=cwd,
+                        timeout=timeout,
+                    )
+                else:
+                    args.append(prompt)
+                    initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
             else:
                 args = [binary, *self._coding_prefix[agent], prompt]
-            initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
+                initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
             if agent != "cline":
                 run = initial
             elif initial["returncode"] == 0:

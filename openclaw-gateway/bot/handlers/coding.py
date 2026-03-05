@@ -4903,7 +4903,27 @@ async def _coding_loop(
                     reply_markup=retry_coding(project["id"]),
                 )
                 return
-            raise
+            await _update_tracker(
+                phase="milestone_extraction",
+                phase_detail=f"Milestone extraction failed: {err[:120]}",
+                status="failed",
+                extraction_progress=1.0,
+            )
+            await _finalize_tracker(
+                status="failed",
+                detail=f"Milestone extraction failed: {err}",
+            )
+            await app.bot.send_message(
+                chat_id,
+                (
+                    "Could not extract milestones from the approved plan.\n"
+                    f"<code>{html_mod.escape(err)}</code>\n\n"
+                    "Please refine or regenerate the plan, then try coding again."
+                ),
+                parse_mode="HTML",
+                reply_markup=retry_coding(project["id"]),
+            )
+            return
         total = len(milestones)
         milestones_total_local = total
 
@@ -6288,11 +6308,57 @@ async def _extract_milestones_codex_then_router(
     project: dict[str, Any],
     working_dir: str,
 ) -> list[str]:
+    def _deterministic_fallback() -> list[str]:
+        plan_text = str(project.get("description") or "").strip()
+        from_numbered = _parse_milestones_fallback(plan_text)
+        if from_numbered:
+            return from_numbered
+
+        bullets: list[str] = []
+        for line in plan_text.splitlines():
+            match = re.match(r"^\s*[-*]\s+(.+?)\s*$", line)
+            if not match:
+                continue
+            item = match.group(1).strip()
+            if not item:
+                continue
+            lowered = item.lower()
+            if lowered in {"none", "n/a"}:
+                continue
+            if lowered.startswith("original user requirements"):
+                continue
+            bullets.append(item)
+        if bullets:
+            deduped: list[str] = []
+            seen: set[str] = set()
+            for item in bullets:
+                key = item.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(item)
+            return deduped[:4]
+
+        project_name = str(project.get("name") or "project").strip() or "project"
+        return [
+            f"Implement core functionality for {project_name} from approved requirements",
+            "Add tests plus skynet_run.json and verify successful run output",
+        ]
+
+    def _reset_loop_graph_hints() -> None:
+        project["_loop_success_contract"] = {}
+        project["_loop_execution_strategy"] = {}
+        project["_loop_parallel_lanes"] = []
+        project["_loop_risk_assessment"] = []
+        project["_loop_node_specs"] = []
+
     allow_router_fallback = bool(getattr(cfg, "CONTROL_LOOP_ROUTER_FALLBACK_ENABLED", False))
     if str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router")).strip().lower() != "codex":
         if allow_router_fallback:
             return await _extract_milestones_router(router, project)
-        raise RuntimeError("Milestone extraction requires codex when router fallback is disabled.")
+        fallback = _deterministic_fallback()
+        _reset_loop_graph_hints()
+        return fallback
 
     plan = project.get("description", "")
     if not plan:
@@ -6362,14 +6428,31 @@ async def _extract_milestones_codex_then_router(
             return [str(item).strip() for item in (parsed_graph.get("milestones") or []) if str(item).strip()]
         parsed_list = _parse_json_string_list(output)
         if parsed_list:
+            _reset_loop_graph_hints()
             return parsed_list
-        raise RuntimeError("Codex milestone output was not valid planner JSON")
+        fallback = _deterministic_fallback()
+        _reset_loop_graph_hints()
+        logger.warning(
+            "milestone.primary.codex_invalid_json project_id=%s fallback_count=%s",
+            project.get("id"),
+            len(fallback),
+        )
+        return fallback
     except Exception as exc:
         logger.warning(
             "milestone.primary.failover project_id=%s stage=codex error=%s",
             project.get("id"),
             str(exc)[:220],
         )
+        fallback = _deterministic_fallback()
+        if fallback:
+            _reset_loop_graph_hints()
+            logger.warning(
+                "milestone.primary.local_fallback project_id=%s fallback_count=%s",
+                project.get("id"),
+                len(fallback),
+            )
+            return fallback
         if allow_router_fallback:
             return await _extract_milestones_router(router, project)
         raise

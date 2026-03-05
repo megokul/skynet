@@ -10,6 +10,70 @@ Triage-first operational playbook for runtime issues.
 4. Inspect task/event/audit trails before patching behavior.
 5. Reproduce with smallest command/test path and keep evidence in handoff.
 
+## Live E2E Debug Policy (Mandatory Loop)
+
+Use this policy for every `telegram_real` failure. Do not stop at first symptom.
+
+1. Run live E2E once and capture:
+   - trace file path
+   - failing step name
+   - last bot message
+   - project slug/folder
+2. Extract root cause evidence before any fix:
+   - gateway stacktrace for the same timestamp window
+   - relevant `/status` or `/trace` output
+   - task/event rows for the affected project/task
+   - write a clear bug explanation for operators: `symptom -> root cause -> impact`
+3. Classify failure category (single primary category):
+   - `ENV_MISCONFIG`
+   - `SSH_INFRA`
+   - `PLANNER_PARSE`
+   - `MILESTONE_EXTRACTION`
+   - `GENERATION`
+   - `STRICT_GATES`
+   - `LOOP_CRASH`
+   - `TEST_HARNESS`
+4. Write a mitigation plan (required before edits):
+   - root cause statement
+   - why this fix is durable (not a quick patch)
+   - files to change
+   - regression tests to add/update
+   - rollback behavior
+5. Implement fix + tests.
+6. Commit and push before rerunning live E2E:
+   - create commit for the debug cycle
+   - push must succeed on remote branch
+   - if push fails, resolve push failure first (do not run live E2E yet)
+7. Re-run live E2E and verify deliverables:
+   - coding reaches completion path
+   - generated files exist in project folder
+   - `skynet_run.json` is present and valid
+   - run action exits `0`
+8. If fail again, repeat from step 2 with a new mitigation plan version (`v2`, `v3`, ...).
+
+### Completion Rule (Do Not Close Early)
+
+A live E2E incident is only considered resolved when all are true:
+
+1. Latest live E2E run passes end-to-end (`hi -> project -> coding -> run`).
+2. Generated project artifacts exist on disk (not only chat status).
+3. `skynet_run.json` is valid and run exits `0`.
+4. Debug-cycle commit exists and remote push succeeded before the passing live E2E run.
+5. Failure category from previous run has mitigation evidence and regression coverage.
+6. Handoff includes trace links for the failing run and the fixed run.
+
+### Mitigation Plan Template
+
+Use this exact structure in debug notes/handoff:
+
+1. `Failure`: one-line symptom from trace.
+2. `Root Cause`: concrete exception or deterministic behavior.
+3. `Bug Explanation`: short operator-facing summary (`symptom -> cause -> impact`).
+4. `Impact`: what user-visible behavior breaks.
+5. `Fix Plan`: numbered code changes.
+6. `Validation`: tests + live E2E command and expected outputs.
+7. `Result`: pass/fail with artifact links.
+
 ## Connectivity Failures
 
 Gateway <-> control plane:

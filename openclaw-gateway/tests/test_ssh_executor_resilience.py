@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import base64
 import time
 from unittest.mock import MagicMock
 
 import paramiko
 import pytest
 
-from ssh_tunnel_executor import SSHTunnelExecutor
+from ssh_tunnel_executor import SSHTunnelExecutor, _build_windows_command
 
 
 @pytest.fixture
@@ -147,3 +148,103 @@ def test_codex_read_only_signature_is_promoted_to_setup_error(
     )
     assert int(result.get("returncode", 0)) == 1
     assert "CODEX_WRITE_BLOCKED" in str(result.get("stderr", ""))
+
+
+def test_build_windows_command_uses_base64_argument_transport() -> None:
+    prompt = (
+        "Build milestones from this plan.\n"
+        "feature idea, bug, release goal, dependencies, and scope.\n"
+        "{\"nodes\":[{\"title\":\"Implement core\"}]}"
+    )
+    cmd = _build_windows_command(["codex", "exec", prompt], cwd="E:/SKYNET-SANDBOX/Projects/tmp")
+    assert "-EncodedCommand " in cmd
+    # Raw multiline prompt should never be embedded directly in the shell command.
+    assert "feature idea, bug" not in cmd
+
+    encoded = cmd.split("-EncodedCommand ", 1)[1].strip()
+    script = base64.b64decode(encoded).decode("utf-16le")
+    assert "FromBase64String" in script
+    assert "$__args = @()" in script
+    assert "& $__cmd @__rest" in script
+
+
+def test_build_windows_command_requires_args() -> None:
+    with pytest.raises(ValueError, match="args must not be empty"):
+        _build_windows_command([])
+
+
+def test_windows_prompt_file_runner_avoids_raw_prompt_in_command(
+    ssh_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = SSHTunnelExecutor()
+    executor.remote_os = "windows"
+
+    class _FakeSftpWriter:
+        def __init__(self):
+            self.content = ""
+
+        def write(self, text):
+            self.content += text
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeSftp:
+        def __init__(self):
+            self.writer = _FakeSftpWriter()
+
+        def open(self, _path, _mode):
+            return self.writer
+
+        def close(self):
+            return None
+
+    class _FakeStdout:
+        def __init__(self, data: bytes, rc: int):
+            self._data = data
+
+            class _Chan:
+                def recv_exit_status(self_nonlocal):
+                    return rc
+
+            self.channel = _Chan()
+
+        def read(self):
+            return self._data
+
+    class _FakeStderr:
+        def __init__(self, data: bytes):
+            self._data = data
+
+        def read(self):
+            return self._data
+
+    class _FakeClient:
+        def __init__(self):
+            self.command = ""
+            self.sftp = _FakeSftp()
+
+        def open_sftp(self):
+            return self.sftp
+
+        def exec_command(self, command, timeout=None, get_pty=False):
+            del timeout, get_pty
+            self.command = command
+            return None, _FakeStdout(b"ok", 0), _FakeStderr(b"")
+
+    fake_client = _FakeClient()
+    monkeypatch.setattr(executor, "_sftp_makedirs", lambda *_args, **_kwargs: None)
+    prompt = "line1\nfeature idea and dependencies\nline3"
+    result = executor._run_windows_command_with_prompt_file(
+        client=fake_client,
+        args_without_prompt=["codex", "exec", "--skip-git-repo-check"],
+        prompt=prompt,
+        cwd="E:/SKYNET-SANDBOX/Projects/tmp",
+        timeout=120,
+    )
+    assert result["returncode"] == 0
+    assert "feature idea and dependencies" not in fake_client.command
