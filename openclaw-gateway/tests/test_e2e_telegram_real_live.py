@@ -354,6 +354,8 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
             "coding preflight failed",
             "no control-plane coding agents available",
             "no coding agents available for chain",
+            "codex_write_blocked",
+            "generation_failed: codex",
         )
 
         for idx in range(80):

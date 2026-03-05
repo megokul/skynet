@@ -472,10 +472,21 @@ class SSHTunnelExecutor:
             "cline": bot_cfg.get_str("OPENCLAW_SSH_CLINE_BIN", "cline"),
         }
         self._coding_prefix = {
-            "codex": ["exec", "--skip-git-repo-check"],
+            "codex": ["exec"],
             "claude": ["-p"],
             "cline": ["-p"],
         }
+        configured_codex_write_mode = bot_cfg.get_str(
+            "SKYNET_CODEX_WRITE_MODE",
+            str(getattr(bot_cfg, "CODEX_WRITE_MODE", "danger_full_access") or "danger_full_access"),
+        ).strip().lower()
+        if configured_codex_write_mode not in {"danger_full_access", "workspace_write", "read_only"}:
+            _log.warning(
+                "Invalid SKYNET_CODEX_WRITE_MODE=%r, defaulting to danger_full_access",
+                configured_codex_write_mode,
+            )
+            configured_codex_write_mode = "danger_full_access"
+        self._codex_write_mode = configured_codex_write_mode
         self._closeable_apps = {
             "chrome": "chrome.exe",
             "firefox": "firefox.exe",
@@ -1680,6 +1691,30 @@ class SSHTunnelExecutor:
             f"target {int(bot_cfg.CLAUDE_OLLAMA_MIN_CONTEXT)}."
         )
 
+    def _build_codex_command_args(self, *, binary: str, prompt: str) -> list[str]:
+        args = [binary, *self._coding_prefix["codex"], "--skip-git-repo-check"]
+        if self._codex_write_mode == "danger_full_access":
+            args.append("--dangerously-bypass-approvals-and-sandbox")
+        elif self._codex_write_mode == "workspace_write":
+            args.extend(["--sandbox", "workspace-write"])
+        elif self._codex_write_mode == "read_only":
+            args.extend(["--sandbox", "read-only"])
+        args.append(prompt)
+        return args
+
+    def _codex_write_blocked(self, run: dict[str, Any]) -> bool:
+        text = f"{run.get('stdout', '')}\n{run.get('stderr', '')}".lower()
+        patterns = (
+            "sandbox: read-only",
+            "read-only sandbox",
+            "cannot write",
+            "can't write",
+            "unable to write",
+            "approval policy is never",
+            "must ask for approval",
+        )
+        return any(pattern in text for pattern in patterns)
+
     def _run_coding_agent_native(
         self,
         *,
@@ -1715,7 +1750,10 @@ class SSHTunnelExecutor:
             # Claude CLI can block indefinitely on SSH non-PTY channels.
             run = self._run_command(client, args, cwd=cwd, timeout=timeout, use_pty=True)
         else:
-            args = [binary, *self._coding_prefix[agent], prompt]
+            if agent == "codex":
+                args = self._build_codex_command_args(binary=binary, prompt=prompt)
+            else:
+                args = [binary, *self._coding_prefix[agent], prompt]
             initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
             if agent != "cline":
                 run = initial
@@ -1740,7 +1778,7 @@ class SSHTunnelExecutor:
 
         parsed_written: list[str] = []
         parse_errors: list[str] = []
-        if agent == "claude":
+        if agent in {"claude", "codex"}:
             generated = str(run.get("stdout") or "")
             parsed_written, parse_errors = self._persist_generated_files_from_blocks(
                 client=client,
@@ -1756,6 +1794,10 @@ class SSHTunnelExecutor:
                 combined.append(path)
         if combined:
             run["files_written"] = combined
+        if agent == "codex" and not combined and self._codex_write_blocked(run):
+            detail = str(run.get("stderr") or run.get("stdout") or "").strip()
+            run["returncode"] = 1
+            run["stderr"] = f"CODEX_WRITE_BLOCKED: {detail[:700]}".strip()
         if parse_errors:
             warning = "; ".join(parse_errors)[:1200]
             current_err = str(run.get("stderr") or "").strip()

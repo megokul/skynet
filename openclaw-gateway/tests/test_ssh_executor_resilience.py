@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from unittest.mock import MagicMock
 
 import paramiko
 import pytest
@@ -91,3 +92,58 @@ async def test_health_check_short_circuits_when_breaker_open(ssh_env: None, monk
     ok, detail = await executor.health_check()
     assert not ok
     assert "circuit open" in detail.lower()
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_tokens"),
+    [
+        ("danger_full_access", ["--dangerously-bypass-approvals-and-sandbox"]),
+        ("workspace_write", ["--sandbox", "workspace-write"]),
+        ("read_only", ["--sandbox", "read-only"]),
+    ],
+)
+def test_codex_command_args_follow_write_mode(
+    ssh_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    expected_tokens: list[str],
+) -> None:
+    monkeypatch.setenv("SKYNET_CODEX_WRITE_MODE", mode)
+    executor = SSHTunnelExecutor()
+    args = executor._build_codex_command_args(binary="codex", prompt="hello world")
+    assert args[:3] == ["codex", "exec", "--skip-git-repo-check"]
+    for token in expected_tokens:
+        assert token in args
+    assert args[-1] == "hello world"
+
+
+def test_codex_read_only_signature_is_promoted_to_setup_error(
+    ssh_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SKYNET_CODEX_WRITE_MODE", "workspace_write")
+    executor = SSHTunnelExecutor()
+    executor.remote_os = "linux"
+
+    monkeypatch.setattr(executor, "_snapshot_working_tree", lambda **kwargs: [])
+    monkeypatch.setattr(executor, "_diff_snapshots", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        executor,
+        "_run_command",
+        lambda *_args, **_kwargs: {
+            "returncode": 0,
+            "stdout": "approval: never\nsandbox: read-only\ncannot write files in this mode",
+            "stderr": "",
+        },
+    )
+
+    result = executor._run_coding_agent_native(
+        client=MagicMock(),
+        agent="codex",
+        prompt="implement feature",
+        cwd="E:/SKYNET-SANDBOX/Projects/tmp",
+        timeout=120,
+        model="",
+    )
+    assert int(result.get("returncode", 0)) == 1
+    assert "CODEX_WRITE_BLOCKED" in str(result.get("stderr", ""))

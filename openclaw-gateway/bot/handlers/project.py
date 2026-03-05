@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 import config as cfg
 from telegram import Update
@@ -63,6 +64,13 @@ _PLAN_KEY     = "project_plan"
 
 # Max turns kept in requirements conversation history
 _MAX_REQS_TURNS = 30
+_PLAN_REQUIRED_MARKERS = ("overview", "core features", "tech stack", "project structure", "milestones")
+_PLAN_BANNED_PHRASES = (
+    "planner assistant mode is active",
+    "role set:",
+    "i am now operating as",
+    "i can help you plan",
+)
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
@@ -128,6 +136,42 @@ def _build_project_description(plan: str, history: list[dict]) -> str:
     return "\n\n".join(part for part in pieces if part).strip()
 
 
+def _requirement_terms(history: list[dict]) -> set[str]:
+    stopwords = {
+        "with", "from", "that", "this", "your", "have", "what", "when", "where",
+        "which", "would", "could", "should", "into", "about", "there", "their",
+        "project", "build", "building", "please", "need", "want", "using",
+    }
+    terms: set[str] = set()
+    for item in history:
+        if str(item.get("role") or "").strip().lower() != "user":
+            continue
+        text = str(item.get("content") or "").strip().lower()
+        if not text or text.startswith("generate the full project plan now"):
+            continue
+        for token in re.findall(r"[a-z0-9][a-z0-9_+.-]{2,}", text):
+            if token.isdigit() or token in stopwords:
+                continue
+            terms.add(token)
+    return terms
+
+
+def _is_requirement_grounded_plan(plan: str, history: list[dict]) -> bool:
+    plan_text = (plan or "").strip()
+    if len(plan_text) < 120:
+        return False
+    lowered = plan_text.lower()
+    if any(marker not in lowered for marker in _PLAN_REQUIRED_MARKERS):
+        return False
+    if any(phrase in lowered for phrase in _PLAN_BANNED_PHRASES):
+        return False
+    terms = _requirement_terms(history)
+    if not terms:
+        return True
+    overlap = sum(1 for term in terms if term in lowered)
+    return overlap >= min(2, len(terms))
+
+
 def _planner_sandbox_dir(user_id: int) -> str:
     return f"{cfg.WORKER_PROJECTS_DIR}/_planner_sessions/{user_id}"
 
@@ -147,7 +191,7 @@ async def _planner_via_codex_then_router(
     task_type: str,
     user_id: int,
 ) -> str:
-    use_codex = str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "codex")).strip().lower() == "codex"
+    use_codex = str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router")).strip().lower() == "codex"
     if use_codex:
         sandbox_dir = _planner_sandbox_dir(user_id)
         planner_prompt = (
@@ -402,16 +446,15 @@ async def _do_generate_plan(
         return GATHERING_REQUIREMENTS
 
     # Validate plan looks like a real plan (not a meta-response from the AI).
-    _plan_markers = ("milestone", "feature", "project structure", "tech stack", "overview")
-    plan_lower = plan.lower()
-    is_real_plan = any(marker in plan_lower for marker in _plan_markers) and len(plan) > 100
+    is_real_plan = _is_requirement_grounded_plan(plan, history)
     if not is_real_plan:
         # Retry once with a more explicit prompt.
         logger.warning("Plan looks invalid (no milestones/structure) — retrying")
         retry_msg = (
             "You MUST generate the full project plan now. "
             "Include: Overview, Core Features, Tech Stack, Project Structure, and "
-            "a numbered Milestones list. Do NOT ask more questions."
+            "a numbered Milestones list. Ground each section in the user's stated requirements. "
+            "Do NOT ask more questions and do NOT return role/meta text."
         )
         history.append({"role": "user", "content": retry_msg})
         try:
@@ -424,7 +467,7 @@ async def _do_generate_plan(
                 user_id=message.chat.id,
             )
             retry_plan = retry_plan.strip()
-            if retry_plan and len(retry_plan) > 100:
+            if _is_requirement_grounded_plan(retry_plan, history):
                 plan = retry_plan
         except Exception:
             pass  # Keep the original plan as fallback

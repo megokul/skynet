@@ -47,6 +47,15 @@ def test_parse_coding_fallback_chain_filters_invalid_values():
     assert default_chain == ["codex", "claude_ollama", "cline"]
 
 
+def test_build_coding_stage_chain_filters_policy_disabled_claude():
+    project = {"coding_profile": "codex_primary"}
+    with (
+        patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", True),
+        patch("bot.handlers.coding.cfg.CLAUDE_OLLAMA_STAGE_ENABLED", False),
+    ):
+        assert _build_coding_stage_chain(project) == ["codex", "cline"]
+
+
 def test_effective_coding_profile_force_all_override():
     project = {"coding_profile": "legacy"}
     with patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", True):
@@ -84,7 +93,7 @@ async def test_preflight_all_chain_agents_unavailable_fails():
 
     assert ok is False
     assert "No coding agents available for chain" in message
-    assert stage_chain == ["codex", "claude_ollama", "cline"]
+    assert stage_chain == ["codex", "cline"]
 
 
 @pytest.mark.asyncio
@@ -109,6 +118,7 @@ async def test_preflight_primary_unavailable_uses_fallback():
 
     with (
         patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", True),
+        patch("bot.handlers.coding.cfg.CLAUDE_OLLAMA_STAGE_ENABLED", True),
         patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)),
     ):
         ok, message, stage_chain = await _preflight_coding_environment(project=project)
@@ -271,6 +281,7 @@ async def test_coding_preflight_blocks_when_claude_cli_missing():
         patch("bot.handlers.coding.is_worker_available", return_value=True),
         patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)),
         patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", False),
+        patch("bot.handlers.coding.cfg.CLAUDE_OLLAMA_STAGE_ENABLED", True),
         patch("bot.handlers.coding.create_task", new=AsyncMock()) as mock_create_task,
         patch("bot.handlers.coding.update_task_status", new=AsyncMock()) as mock_update_status,
     ):

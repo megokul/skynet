@@ -340,6 +340,7 @@ async def _tracker_init_message(
         return
 
     now = time.monotonic()
+    use_acp = _use_acp_orchestration()
     state: dict[str, Any] = {
         "project_id": project_id,
         "project_name": str(project.get("name") or "").strip(),
@@ -348,8 +349,16 @@ async def _tracker_init_message(
         "transport": str(getattr(cfg, "CODING_TRANSPORT", "auto") or "auto"),
         "run_contract_status": "pending" if strict_mode else "legacy",
         "session_id": "",
-        "runtime_mode": str(getattr(cfg, "OPENCLAW_RUNTIME", "acp") or "acp"),
-        "queue_mode": str(getattr(cfg, "OPENCLAW_QUEUE_MODE", "require_empty_queue") or "require_empty_queue"),
+        "runtime_mode": (
+            str(getattr(cfg, "OPENCLAW_RUNTIME", "acp") or "acp")
+            if use_acp
+            else "ssh"
+        ),
+        "queue_mode": (
+            str(getattr(cfg, "OPENCLAW_QUEUE_MODE", "require_empty_queue") or "require_empty_queue")
+            if use_acp
+            else ""
+        ),
         "message_id": 0,
         "created_monotonic": now,
         "last_edit_monotonic": 0.0,
@@ -611,6 +620,21 @@ def _uses_claude_ollama(project: dict[str, Any] | None) -> bool:
     return _effective_coding_profile(project) == _CODING_PROFILE_CLAUDE_OLLAMA
 
 
+def _claude_ollama_stage_enabled() -> bool:
+    return bool(getattr(cfg, "CLAUDE_OLLAMA_STAGE_ENABLED", False))
+
+
+def _filter_stage_chain_by_policy(stage_chain: list[str]) -> tuple[list[str], list[str]]:
+    filtered: list[str] = []
+    disabled: list[str] = []
+    for stage in stage_chain:
+        if stage == "claude_ollama" and not _claude_ollama_stage_enabled():
+            disabled.append(stage)
+            continue
+        filtered.append(stage)
+    return filtered, disabled
+
+
 def _parse_coding_fallback_chain(raw: str) -> list[str]:
     seen: set[str] = set()
     parsed: list[str] = []
@@ -631,17 +655,27 @@ def _build_coding_stage_chain(
     project: dict[str, Any] | None,
     *,
     include_legacy: bool = False,
+    include_policy_disabled: bool = False,
 ) -> list[str]:
     effective = _effective_coding_profile(project)
+    raw_chain: list[str] = []
     if effective == _CODING_PROFILE_CODEX_PRIMARY:
         if _use_acp_orchestration():
-            return _parse_coding_fallback_chain(getattr(cfg, "OPENCLAW_STAGE_CHAIN", cfg.CODING_FALLBACK_CHAIN))
-        return _parse_coding_fallback_chain(cfg.CODING_FALLBACK_CHAIN)
-    if effective == _CODING_PROFILE_CLAUDE_OLLAMA:
-        return ["claude_ollama"]
-    if include_legacy:
-        return ["claude_ollama"]
-    return []
+            raw_chain = _parse_coding_fallback_chain(
+                getattr(cfg, "OPENCLAW_STAGE_CHAIN", cfg.CODING_FALLBACK_CHAIN),
+            )
+        else:
+            raw_chain = _parse_coding_fallback_chain(cfg.CODING_FALLBACK_CHAIN)
+    elif effective == _CODING_PROFILE_CLAUDE_OLLAMA:
+        raw_chain = ["claude_ollama"]
+    elif include_legacy:
+        raw_chain = ["claude_ollama"]
+    else:
+        raw_chain = []
+    if include_policy_disabled:
+        return raw_chain
+    filtered_chain, _ = _filter_stage_chain_by_policy(raw_chain)
+    return filtered_chain
 
 
 def _parse_agent_availability(report: str) -> dict[str, bool]:
@@ -907,7 +941,18 @@ async def _preflight_coding_environment(
     For codex-primary/claude_ollama profiles, inspect coding agent telemetry and
     ensure at least one stage from the configured chain is available.
     """
-    stage_chain = _build_coding_stage_chain(project)
+    raw_stage_chain = _build_coding_stage_chain(project, include_policy_disabled=True)
+    stage_chain, disabled_stages = _filter_stage_chain_by_policy(raw_stage_chain)
+    policy_note = ""
+    if disabled_stages:
+        policy_note = (
+            "Policy-disabled stage(s): "
+            + ",".join(disabled_stages)
+            + "."
+        )
+    if raw_stage_chain and not stage_chain:
+        disabled_hint = policy_note or f"Configured chain: {','.join(raw_stage_chain)}"
+        return False, f"No enabled coding stages after policy filtering. {disabled_hint}", raw_stage_chain
     if not stage_chain:
         return True, "", []
 
@@ -919,18 +964,23 @@ async def _preflight_coding_environment(
                 f"{stage} ({reason})"
                 for stage, reason in unavailable.items()
             )[:320]
+            if policy_note:
+                detail = f"{policy_note} {detail}".strip()
             return (
                 False,
                 f"No control-plane coding agents available for chain {','.join(stage_chain)}. {detail}",
                 stage_chain,
             )
         if available_chain != stage_chain:
+            info = f"Filtered unavailable control-plane stages. Active chain: {','.join(available_chain)}."
+            if policy_note:
+                info = f"{policy_note} {info}"
             return (
                 True,
-                f"Filtered unavailable control-plane stages. Active chain: {','.join(available_chain)}.",
+                info,
                 available_chain,
             )
-        return True, "", available_chain
+        return True, policy_note, available_chain
 
     try:
         result = await send_action(
@@ -971,6 +1021,8 @@ async def _preflight_coding_environment(
             hint = f" ({env_hint})" if env_hint else ""
             detail_parts.append(f"{line}{hint}")
         detail = "; ".join(detail_parts)[:320]
+        if policy_note:
+            detail = f"{policy_note} {detail}".strip()
         return (
             False,
             f"No coding agents available for chain {','.join(stage_chain)}. {detail}",
@@ -983,20 +1035,26 @@ async def _preflight_coding_environment(
             "",
         )
         if fallback_stage:
+            info = f"Primary stage {first_stage} unavailable; continuing with fallback {fallback_stage}."
+            if policy_note:
+                info = f"{policy_note} {info}"
             return (
                 True,
-                f"Primary stage {first_stage} unavailable; continuing with fallback {fallback_stage}.",
+                info,
                 filtered_chain,
             )
 
     if any_known and filtered_chain != stage_chain:
+        info = f"Filtered unavailable coding stages. Active chain: {','.join(filtered_chain)}."
+        if policy_note:
+            info = f"{policy_note} {info}"
         return (
             True,
-            f"Filtered unavailable coding stages. Active chain: {','.join(filtered_chain)}.",
+            info,
             filtered_chain,
         )
 
-    return True, "", filtered_chain
+    return True, policy_note, filtered_chain
 
 
 async def _record_gate_result(
@@ -2828,8 +2886,9 @@ async def approve_milestone_handler(
                 gate="",
             )
     else:
-        await update.callback_query.message.reply_text(
-            "No active milestone waiting for approval."
+        logger.debug(
+            "Ignoring stale milestone approval callback for user_id=%s (no active event).",
+            user_id,
         )
 
 
@@ -3611,6 +3670,8 @@ async def _coding_loop(
                     ).strip()
                     detail = str(payload.get("detail") or "").strip()
                     stage_index = int(payload.get("stage_index", 0) or 0)
+                    runtime_value = str(payload.get("runtime") or "").strip() or None
+                    queue_value = str(payload.get("queue_mode") or "").strip() or None
                     if event_name == "stage_switch":
                         logger.info(
                             "telegram.tracker.stage.switch project_id=%s task_id=%s stage=%s next_stage=%s reason=%s",
@@ -3635,8 +3696,8 @@ async def _coding_loop(
                         attempt=stage_index if stage_index > 0 else 1,
                         stage=stage_name,
                         session_id=str(payload.get("session_id") or ""),
-                        runtime_mode=str(payload.get("runtime") or ""),
-                        queue_mode=str(payload.get("queue_mode") or ""),
+                        runtime_mode=runtime_value,
+                        queue_mode=queue_value,
                         execution_progress=_execution_progress_value(
                             successful=successful_milestones,
                             failed=failed_milestones,
@@ -4650,7 +4711,7 @@ async def _extract_milestones_codex_then_router(
     project: dict[str, Any],
     working_dir: str,
 ) -> list[str]:
-    if str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "codex")).strip().lower() != "codex":
+    if str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router")).strip().lower() != "codex":
         return await _extract_milestones_router(router, project)
 
     plan = project.get("description", "")
