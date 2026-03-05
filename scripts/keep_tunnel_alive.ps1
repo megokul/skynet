@@ -14,6 +14,7 @@ param(
     [string]$Ec2Host = $env:OPENCLAW_TUNNEL_EC2_HOST,
     [string]$Ec2User = $env:OPENCLAW_TUNNEL_EC2_USER,
     [string]$SshKey = $env:OPENCLAW_TUNNEL_SSH_KEY,
+    [string]$RemoteBindHost = $(if ($env:OPENCLAW_TUNNEL_REMOTE_BIND_HOST) { $env:OPENCLAW_TUNNEL_REMOTE_BIND_HOST } else { "0.0.0.0" }),
     [int]$RemotePort = $(if ($env:OPENCLAW_TUNNEL_REMOTE_PORT) { [int]$env:OPENCLAW_TUNNEL_REMOTE_PORT } else { 2222 }),
     [int]$LocalPort = $(if ($env:OPENCLAW_TUNNEL_LOCAL_PORT) { [int]$env:OPENCLAW_TUNNEL_LOCAL_PORT } else { 22 }),
     [int]$RetryDelaySeconds = $(if ($env:OPENCLAW_TUNNEL_RETRY_DELAY) { [int]$env:OPENCLAW_TUNNEL_RETRY_DELAY } else { 10 }),
@@ -29,7 +30,19 @@ $ErrorActionPreference = "Stop"
 
 if (-not $Ec2Host) { $Ec2Host = "ec2-3-212-193-68.compute-1.amazonaws.com" }
 if (-not $Ec2User) { $Ec2User = "ubuntu" }
-if (-not $SshKey) { $SshKey = "$env:USERPROFILE\.ssh\protech-bot-key.pem" }
+if (-not $SshKey) { $SshKey = $env:OPENCLAW_SSH_KEY_PATH }
+if (-not $SshKey) {
+    $canonicalKeyPath = "E:\MyProjects\skynet-key.pem"
+    if (Test-Path -LiteralPath $canonicalKeyPath) {
+        $SshKey = $canonicalKeyPath
+    }
+}
+if (-not $SshKey) {
+    throw "Missing SSH key. Set OPENCLAW_TUNNEL_SSH_KEY or OPENCLAW_SSH_KEY_PATH."
+}
+if (-not (Test-Path -LiteralPath $SshKey)) {
+    throw "SSH key does not exist at '$SshKey'."
+}
 
 function Rotate-Log {
     param([string]$Path, [int]$MaxMb = 10, [int]$Keep = 5)
@@ -71,7 +84,14 @@ function Test-RemoteBind {
         $remoteCheck
     )
     try {
-        $output = & ssh @checkArgs 2>$null
+        $output = & ssh @checkArgs 2>&1
+        $joined = (($output | Out-String) -replace "\r?\n", " ").Trim()
+        if ($LASTEXITCODE -ne 0) {
+            if ($joined) {
+                Write-Log "Remote bind check failed: $joined"
+            }
+            return "UNKNOWN"
+        }
         if ($LASTEXITCODE -eq 0) {
             $line = ($output | Select-Object -First 1)
             if ($line -and $line.ToString().Trim().ToUpperInvariant() -eq "LISTEN") {
@@ -97,7 +117,7 @@ try {
     Write-Log "=== OpenClaw reverse tunnel keepalive started ==="
     Write-Log "TaskName=OpenClawReverseTunnel"
     Write-Log "Endpoint=$Ec2User@$Ec2Host"
-    Write-Log "Tunnel=EC2:$RemotePort -> localhost:$LocalPort"
+    Write-Log "Tunnel=EC2:${RemoteBindHost}:$RemotePort -> localhost:$LocalPort"
     Write-Log "SSH key=$SshKey"
     Write-Log "LogFile=$LogFile"
 
@@ -105,6 +125,9 @@ try {
         $bind = Test-RemoteBind
         Write-Log "Pre-connect remote bind check: $bind"
 
+        $outFile = Join-Path -Path $env:TEMP -ChildPath "openclaw_tunnel_ssh_stdout.log"
+        $errFile = Join-Path -Path $env:TEMP -ChildPath "openclaw_tunnel_ssh_stderr.log"
+        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
         $sshArgs = @(
             "-N",
             "-o", "BatchMode=yes",
@@ -115,12 +138,12 @@ try {
             "-o", "ServerAliveCountMax=3",
             "-o", "TCPKeepAlive=yes",
             "-i", $SshKey,
-            "-R", "${RemotePort}:localhost:${LocalPort}",
+            "-R", "${RemoteBindHost}:${RemotePort}:localhost:${LocalPort}",
             "${Ec2User}@${Ec2Host}"
         )
 
         Write-Log "Connecting tunnel..."
-        $proc = Start-Process -FilePath "ssh" -ArgumentList $sshArgs -PassThru -NoNewWindow
+        $proc = Start-Process -FilePath "ssh" -ArgumentList $sshArgs -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile
         $startedAt = Get-Date
         while (-not $proc.HasExited) {
             Start-Sleep -Seconds $HealthIntervalSeconds
@@ -131,6 +154,12 @@ try {
         }
 
         $exitCode = $proc.ExitCode
+        if (Test-Path -LiteralPath $errFile) {
+            $stderrTail = ((Get-Content -LiteralPath $errFile -Tail 5 -ErrorAction SilentlyContinue) -join " | ").Trim()
+            if ($stderrTail) {
+                Write-Log "SSH stderr tail: $stderrTail"
+            }
+        }
         Write-Log "SSH exited (code $exitCode). Retrying in ${RetryDelaySeconds}s..."
         Start-Sleep -Seconds $RetryDelaySeconds
     }

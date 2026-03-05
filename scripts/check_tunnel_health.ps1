@@ -13,6 +13,7 @@ param(
     [string]$Ec2Host = $env:OPENCLAW_TUNNEL_EC2_HOST,
     [string]$Ec2User = $env:OPENCLAW_TUNNEL_EC2_USER,
     [string]$SshKey = $env:OPENCLAW_TUNNEL_SSH_KEY,
+    [string]$RemoteBindHost = $(if ($env:OPENCLAW_TUNNEL_REMOTE_BIND_HOST) { $env:OPENCLAW_TUNNEL_REMOTE_BIND_HOST } else { "0.0.0.0" }),
     [int]$RemotePort = $(if ($env:OPENCLAW_TUNNEL_REMOTE_PORT) { [int]$env:OPENCLAW_TUNNEL_REMOTE_PORT } else { 2222 }),
     [int]$ConnectTimeoutSeconds = $(if ($env:OPENCLAW_TUNNEL_CONNECT_TIMEOUT) { [int]$env:OPENCLAW_TUNNEL_CONNECT_TIMEOUT } else { 10 }),
     [string]$CanonicalScriptPath = "$PSScriptRoot\keep_tunnel_alive.ps1"
@@ -36,12 +37,20 @@ function Emit-HealthResult {
 
 if (-not $Ec2Host) { $Ec2Host = "ec2-3-212-193-68.compute-1.amazonaws.com" }
 if (-not $Ec2User) { $Ec2User = "ubuntu" }
+if (-not $SshKey) { $SshKey = $env:OPENCLAW_SSH_KEY_PATH }
+if (-not $SshKey) {
+    $canonicalKeyPath = "E:\MyProjects\skynet-key.pem"
+    if (Test-Path -LiteralPath $canonicalKeyPath) {
+        $SshKey = $canonicalKeyPath
+    }
+}
 
 Write-Host "=== OpenClaw Tunnel Health Check ==="
 Write-Host "TaskName: $TaskName"
 Write-Host "Endpoint: $Ec2User@$Ec2Host"
+Write-Host "Expected bind: ${RemoteBindHost}:$RemotePort"
 Write-Host "RemotePort: $RemotePort"
-Write-Host "SSH Key: $SshKey"
+Write-Host "SSH Key (effective): $SshKey"
 Write-Host "Canonical Script: $CanonicalScriptPath"
 
 if (-not $SshKey) {
@@ -108,8 +117,9 @@ if ($ownerMismatch) {
     Emit-HealthResult -Category "owner_mismatch" -Detail $ownerDetail -ExitCode 1
 }
 
+$reversePattern = "-R\\s+\\S*${RemotePort}:"
 $sshProcs = Get-CimInstance Win32_Process -Filter "Name = 'ssh.exe'" |
-    Where-Object { $_.CommandLine -match "-R\\s+${RemotePort}:" }
+    Where-Object { $_.CommandLine -match $reversePattern -or $_.CommandLine -match "${RemotePort}:localhost:" }
 if ($sshProcs) {
     foreach ($proc in $sshProcs) {
         Write-Host "ssh.exe pid=$($proc.ProcessId) cmd=$($proc.CommandLine)"
@@ -159,7 +169,7 @@ if ($text) {
 }
 
 if ($rc -eq 0 -and $state -eq "LISTEN") {
-    Emit-HealthResult -Category "healthy" -Detail "Tunnel bind is active on EC2 port $RemotePort." -ExitCode 0
+    Emit-HealthResult -Category "healthy" -Detail "Tunnel bind is active on EC2 ${RemoteBindHost}:$RemotePort." -ExitCode 0
 }
 
 if ($text -match "permission denied|publickey|authentication failed") {

@@ -239,6 +239,11 @@ For CI/CD deployments, prefer key auth with GitHub Secrets:
 
 The workflow will decode the key on the runner and mount it into the gateway container automatically.
 
+Canonical worker tunnel key (laptop scripts):
+
+- `OPENCLAW_TUNNEL_SSH_KEY=E:\MyProjects\skynet-key.pem`
+- `OPENCLAW_SSH_KEY_PATH=E:\MyProjects\skynet-key.pem` (fallback for tunnel scripts)
+
 Recommended reverse tunnel from laptop to EC2:
 
 ```powershell
@@ -381,12 +386,24 @@ powershell -ExecutionPolicy Bypass -File .\scripts\register_tunnel_task.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\check_tunnel_health.ps1
 ```
 
+Recommended worker env before registration:
+
+```powershell
+$env:OPENCLAW_TUNNEL_SSH_KEY = "E:\MyProjects\skynet-key.pem"
+$env:OPENCLAW_SSH_KEY_PATH = "E:\MyProjects\skynet-key.pem"
+$env:OPENCLAW_TUNNEL_REMOTE_BIND_HOST = "0.0.0.0"
+```
+
 Canonical scheduled task name: `OpenClawReverseTunnel`.
 
 Tunnel owner policy:
 
 - Only `OpenClawReverseTunnel` pointing to `scripts/keep_tunnel_alive.ps1` is supported.
 - Legacy launchers (for example `E:\MyProjects\openclaw-tunnel.ps1`) are treated as owner mismatch and must be disabled.
+- `scripts/keep_tunnel_alive.ps1` resolves key precedence as:
+  - `OPENCLAW_TUNNEL_SSH_KEY`
+  - `OPENCLAW_SSH_KEY_PATH`
+  - `E:\MyProjects\skynet-key.pem` (canonical default)
 
 One-command repair:
 

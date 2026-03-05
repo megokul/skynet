@@ -472,7 +472,7 @@ class SSHTunnelExecutor:
             "cline": bot_cfg.get_str("OPENCLAW_SSH_CLINE_BIN", "cline"),
         }
         self._coding_prefix = {
-            "codex": ["exec"],
+            "codex": ["exec", "--skip-git-repo-check"],
             "claude": ["-p"],
             "cline": ["-p"],
         }

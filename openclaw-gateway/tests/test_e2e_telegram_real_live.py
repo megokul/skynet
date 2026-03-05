@@ -442,6 +442,14 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                         failed_count = int(lowered.split("failed=", 1)[1].split(",", 1)[0].strip())
                     except Exception:
                         failed_count = failed_count
+                if complete_count is not None and complete_count < 1:
+                    trace(
+                        "coding.session.no_completion",
+                        complete_count=complete_count,
+                        failed_count=failed_count,
+                        text_preview=text[:220],
+                    )
+                    break
 
             if any("run project" in b.lower() for b in btns):
                 saw_run_button = True

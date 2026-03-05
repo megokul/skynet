@@ -66,7 +66,7 @@ _CODING_AGENT_BINARIES: dict[str, str] = {
     "cline": os.environ.get("SKYNET_CLINE_BIN") or os.environ.get("OPENCLAW_CLINE_BIN") or "cline",
 }
 _CODING_AGENT_PREFIX_ARGS: dict[str, list[str]] = {
-    "codex": ["exec"],
+    "codex": ["exec", "--skip-git-repo-check"],
     "claude": ["-p"],
     "cline": ["-p"],
 }

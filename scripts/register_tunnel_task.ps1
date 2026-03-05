@@ -7,6 +7,12 @@
 param(
     [string]$TaskName = "OpenClawReverseTunnel",
     [string]$ScriptPath = "$PSScriptRoot\keep_tunnel_alive.ps1",
+    [string]$Ec2Host = $env:OPENCLAW_TUNNEL_EC2_HOST,
+    [string]$Ec2User = $env:OPENCLAW_TUNNEL_EC2_USER,
+    [string]$SshKey = $env:OPENCLAW_TUNNEL_SSH_KEY,
+    [string]$RemoteBindHost = $(if ($env:OPENCLAW_TUNNEL_REMOTE_BIND_HOST) { $env:OPENCLAW_TUNNEL_REMOTE_BIND_HOST } else { "0.0.0.0" }),
+    [int]$RemotePort = $(if ($env:OPENCLAW_TUNNEL_REMOTE_PORT) { [int]$env:OPENCLAW_TUNNEL_REMOTE_PORT } else { 2222 }),
+    [int]$LocalPort = $(if ($env:OPENCLAW_TUNNEL_LOCAL_PORT) { [int]$env:OPENCLAW_TUNNEL_LOCAL_PORT } else { 22 }),
     [bool]$StartNow = $true
 )
 
@@ -34,11 +40,33 @@ if ($resolvedInput -ne $resolvedCanonical) {
 }
 $ScriptPath = $resolvedCanonical
 
+if (-not $Ec2Host) { $Ec2Host = "ec2-3-212-193-68.compute-1.amazonaws.com" }
+if (-not $Ec2User) { $Ec2User = "ubuntu" }
+if (-not $SshKey) { $SshKey = $env:OPENCLAW_SSH_KEY_PATH }
+if (-not $SshKey) {
+    $canonicalKeyPath = "E:\MyProjects\skynet-key.pem"
+    if (Test-Path -LiteralPath $canonicalKeyPath) {
+        $SshKey = $canonicalKeyPath
+    }
+}
+if (-not $SshKey) {
+    throw "Missing SSH key. Set OPENCLAW_TUNNEL_SSH_KEY or OPENCLAW_SSH_KEY_PATH."
+}
+if (-not (Test-Path -LiteralPath $SshKey)) {
+    throw "SSH key does not exist at '$SshKey'."
+}
+
 $arguments = @(
     "-NoProfile",
     "-NonInteractive",
     "-ExecutionPolicy", "Bypass",
-    "-File", "`"$ScriptPath`""
+    "-File", "`"$ScriptPath`"",
+    "-Ec2Host", "`"$Ec2Host`"",
+    "-Ec2User", "`"$Ec2User`"",
+    "-SshKey", "`"$SshKey`"",
+    "-RemoteBindHost", "`"$RemoteBindHost`"",
+    "-RemotePort", "$RemotePort",
+    "-LocalPort", "$LocalPort"
 ) -join " "
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
@@ -64,6 +92,7 @@ Register-ScheduledTask `
     -Force | Out-Null
 
 Write-Host "Registered task '$TaskName' -> $ScriptPath"
+Write-Host "Tunnel args: ec2=$Ec2User@$Ec2Host bind=${RemoteBindHost}:$RemotePort key=$SshKey"
 
 $staleTasks = Get-ScheduledTask | Where-Object {
     $_.TaskName -like "*OpenClaw*Tunnel*" -and $_.TaskName -ne $TaskName
