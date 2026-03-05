@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -70,3 +71,43 @@ async def test_planner_codex_failure_falls_back_to_router():
 
     assert reply == "Router fallback reply"
     router.chat.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_planner_ssh_mode_forces_send_action_path():
+    router = MagicMock()
+    router.chat = AsyncMock()
+    runner = MagicMock()
+
+    async def _send_action(action, params, **kwargs):
+        del params, kwargs
+        if action == "create_directory":
+            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
+        if action == "run_coding_agent":
+            return {
+                "status": "success",
+                "result": {"returncode": 0, "stdout": "Codex planner over SSH", "stderr": ""},
+            }
+        raise AssertionError(f"Unexpected action: {action}")
+
+    with (
+        patch.dict(os.environ, {"OPENCLAW_EXECUTION_MODE": "ssh_tunnel"}, clear=False),
+        patch("bot.handlers.project.cfg.PLANNER_PRIMARY_AGENT", "codex"),
+        patch("bot.handlers.project.cfg.ORCHESTRATION_MODE", "acp_first"),
+        patch("bot.handlers.project.cfg.ORCHESTRATION_ALLOW_ACP_WITH_SSH", False),
+        patch("bot.handlers.project.is_worker_available", return_value=True),
+        patch("bot.handlers.project.get_openclaw_runner", return_value=runner),
+        patch("bot.handlers.project.send_action", new=AsyncMock(side_effect=_send_action)),
+    ):
+        reply = await _planner_via_codex_then_router(
+            router=router,
+            messages=[{"role": "user", "content": "plan this"}],
+            system="planner system",
+            max_tokens=512,
+            task_type="planning",
+            user_id=42,
+        )
+
+    assert reply == "Codex planner over SSH"
+    runner.start_session.assert_not_called()
+    runner.run_prompt.assert_not_called()

@@ -278,7 +278,11 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
             timeout_s=120,
             trace_fn=trace,
             step="await_requirements_prompt",
-            predicate=lambda text, _btns: "what are you building" in text.lower(),
+            predicate=lambda text, btns: (
+                "what are you building" in text.lower()
+                or "what does this app do" in text.lower()
+                or any("generate plan" in b.lower() for b in btns)
+            ),
         )
         last_id = int(msg.id)
         await client.send_message(bot, requirement)
@@ -346,6 +350,11 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         tracker_message_id: int | None = None
         tracker_last_text = ""
         tracker_edit_count = 0
+        preflight_fail_markers = (
+            "coding preflight failed",
+            "no control-plane coding agents available",
+            "no coding agents available for chain",
+        )
 
         for idx in range(80):
             msg = await _wait_for_bot_message(
@@ -368,8 +377,19 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 text_preview=text[:220],
                 buttons=btns,
             )
+            lowered = text.lower()
 
-            if "coding progress [" in text.lower():
+            if any(marker in lowered for marker in preflight_fail_markers):
+                trace(
+                    "coding.preflight.failure",
+                    message_id=last_id,
+                    text_preview=text[:320],
+                )
+                raise AssertionError(
+                    f"Live Telegram E2E encountered terminal preflight failure: {text[:260]}"
+                )
+
+            if "coding progress [" in lowered:
                 if tracker_message_id is None:
                     tracker_message_id = int(getattr(msg, "id", 0))
                     tracker_last_text = text
@@ -402,7 +422,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                             text_preview=current_tracker_text[:220],
                         )
 
-            if "github repo created and pushed" in text.lower():
+            if "github repo created and pushed" in lowered:
                 saw_no_github_push = False
                 break
 
@@ -410,9 +430,8 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 await _click_button_contains(msg, "Run It", trace_fn=trace, step="click_milestone_run_it")
                 continue
 
-            if "session finished" in text.lower() or "complete=" in text.lower():
+            if "session finished" in lowered or "complete=" in lowered:
                 saw_finish_summary = True
-                lowered = text.lower()
                 if "complete=" in lowered:
                     try:
                         complete_count = int(lowered.split("complete=", 1)[1].split(",", 1)[0].strip())

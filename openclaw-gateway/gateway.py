@@ -46,7 +46,7 @@ agent_connected = asyncio.Event()
 
 def _is_acp_control_plane_mode() -> bool:
     return (
-        str(getattr(cfg, "ORCHESTRATION_MODE", "legacy") or "legacy").strip().lower() == "acp_first"
+        str(cfg.effective_orchestration_mode() or "legacy").strip().lower() == "acp_first"
         and str(getattr(cfg, "OPENCLAW_AGENT_HOSTING", "ec2_control") or "ec2_control").strip().lower() == "ec2_control"
     )
 
@@ -179,7 +179,7 @@ async def send_action(
         logger.info(
             "Routing action via local OpenClaw orchestration adapter (action=%s mode=%s)",
             action,
-            getattr(cfg, "ORCHESTRATION_MODE", "legacy"),
+            cfg.effective_orchestration_mode(),
         )
         return await _run_local_orchestration_action(action, params or {})
 

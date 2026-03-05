@@ -600,7 +600,7 @@ def _effective_coding_profile(project: dict[str, Any] | None) -> str:
 
 
 def _orchestration_mode() -> str:
-    return str(getattr(cfg, "ORCHESTRATION_MODE", "legacy") or "legacy").strip().lower()
+    return str(cfg.effective_orchestration_mode() or "legacy").strip().lower()
 
 
 def _use_acp_orchestration() -> bool:
@@ -3167,7 +3167,7 @@ async def _coding_loop(
                 (
                     "\u26A0\uFE0F Coding preflight failed.\n"
                     f"<code>{html_mod.escape(preflight_error[:320])}</code>\n\n"
-                    "Fix worker setup and tap Retry Coding."
+                    "Fix control-plane/worker setup and tap Retry Coding."
                 ),
                 parse_mode="HTML",
                 reply_markup=retry_coding(project["id"]),

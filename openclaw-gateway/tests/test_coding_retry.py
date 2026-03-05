@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -115,6 +116,44 @@ async def test_preflight_primary_unavailable_uses_fallback():
     assert ok is True
     assert "fallback" in message.lower()
     assert stage_chain == ["claude_ollama"]
+
+
+@pytest.mark.asyncio
+async def test_preflight_ssh_mode_skips_local_acp_stage_probe():
+    project = {"id": "proj_pf_ssh_mode", "coding_profile": "codex_primary"}
+    runner = MagicMock()
+    runner.available_stages = MagicMock(return_value=([], {"codex": "missing binary: codex"}))
+
+    async def _send_action_side_effect(action, params, **kwargs):
+        del params, kwargs
+        assert action == "check_coding_agents"
+        return {
+            "status": "success",
+            "result": {
+                "returncode": 0,
+                "stdout": (
+                    "codex: available (codex)\n"
+                    "claude: unavailable (expected binary: claude)\n"
+                    "cline: unavailable (expected binary: cline)"
+                ),
+                "stderr": "",
+            },
+        }
+
+    with (
+        patch.dict(os.environ, {"OPENCLAW_EXECUTION_MODE": "ssh_tunnel"}, clear=False),
+        patch("bot.handlers.coding.cfg.ORCHESTRATION_MODE", "acp_first"),
+        patch("bot.handlers.coding.cfg.ORCHESTRATION_ALLOW_ACP_WITH_SSH", False),
+        patch("bot.handlers.coding.get_openclaw_runner", return_value=runner),
+        patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)) as mock_send,
+    ):
+        ok, message, stage_chain = await _preflight_coding_environment(project=project)
+
+    assert ok is True
+    assert stage_chain == ["codex"]
+    assert "fallback" in message.lower() or "filtered" in message.lower()
+    runner.available_stages.assert_not_called()
+    mock_send.assert_awaited_once()
 
 
 @pytest.mark.asyncio

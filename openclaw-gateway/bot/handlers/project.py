@@ -160,7 +160,7 @@ async def _planner_via_codex_then_router(
         )
         timeout = max(30, int(getattr(cfg, "PLANNER_CODEX_TIMEOUT_SECONDS", 120) or 120))
         try:
-            orchestration_mode = str(getattr(cfg, "ORCHESTRATION_MODE", "legacy") or "legacy").strip().lower()
+            orchestration_mode = str(cfg.effective_orchestration_mode() or "legacy").strip().lower()
             if orchestration_mode == "acp_first":
                 runner = get_openclaw_runner()
                 session = await runner.start_session(

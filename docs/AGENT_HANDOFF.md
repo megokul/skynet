@@ -6,6 +6,27 @@ Last updated (UTC): 2026-03-05 12:30
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
 
+### 2026-03-05 SSH/ACP Precedence Guard Update
+
+- Added orchestration precedence guard in `openclaw-gateway/config.py`:
+  - new flag: `SKYNET_ORCHESTRATION_ALLOW_ACP_WITH_SSH` (default `0`)
+  - new helpers:
+    - `is_ssh_execution_mode()`
+    - `effective_orchestration_mode()`
+- Behavior lock:
+  - when `OPENCLAW_EXECUTION_MODE` is `ssh|ssh_tunnel|tunnel|ssh-only`, effective orchestration mode is forced to `legacy` unless override flag is set.
+- Switched ACP mode checks to effective mode in:
+  - `openclaw-gateway/bot/handlers/coding.py`
+  - `openclaw-gateway/bot/handlers/project.py`
+  - `openclaw-gateway/gateway.py`
+- Live Telegram E2E now fails fast on terminal preflight failures instead of timing out in polling loop:
+  - `openclaw-gateway/tests/test_e2e_telegram_real_live.py`
+- Deployment/env alignment updates:
+  - `.github/workflows/deploy-ec2-skynet.yml`
+  - `.env.ec2-gateway.example`
+  - `.env.example`
+  - `openclaw-gateway/settings/settings.example.yaml`
+
 ### 2026-03-05 ACP-First OpenClaw Orchestration Update
 
 - Added control-plane orchestration config in `openclaw-gateway/config.py`:

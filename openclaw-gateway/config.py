@@ -175,6 +175,7 @@ def get_bool(name: str, default: bool = False) -> bool:
 
 
 SETTINGS_FILE, _SETTINGS = _load_settings_map()
+SSH_EXECUTION_MODES = {"ssh", "ssh_tunnel", "tunnel", "ssh-only"}
 
 # Telegram
 TELEGRAM_BOT_TOKEN: str = _s("TELEGRAM_BOT_TOKEN")
@@ -270,6 +271,10 @@ CODING_FALLBACK_CHAIN: str = _s(
     "SKYNET_CODING_FALLBACK_CHAIN", "codex,claude_ollama,cline"
 ).lower()
 ORCHESTRATION_MODE: str = _s("SKYNET_ORCHESTRATION_MODE", "legacy").lower()
+ORCHESTRATION_ALLOW_ACP_WITH_SSH: bool = _b(
+    "SKYNET_ORCHESTRATION_ALLOW_ACP_WITH_SSH",
+    False,
+)
 OPENCLAW_RUNTIME: str = _s("SKYNET_OPENCLAW_RUNTIME", "acp").lower()
 OPENCLAW_QUEUE_MODE: str = _s("SKYNET_OPENCLAW_QUEUE_MODE", "require_empty_queue").lower()
 OPENCLAW_RETRY_TRANSIENT: bool = _b("SKYNET_OPENCLAW_RETRY_TRANSIENT", True)
@@ -337,3 +342,19 @@ CLAUDE_OLLAMA_AUTO_PULL: bool = _b(
     _OPENCLAW_OLLAMA_AUTO_PULL_DEFAULT,
 )
 CLAUDE_OLLAMA_MIN_CONTEXT: int = _i("SKYNET_CLAUDE_OLLAMA_MIN_CONTEXT", 64000)
+
+
+def is_ssh_execution_mode() -> bool:
+    mode = _s("OPENCLAW_EXECUTION_MODE", "").strip().lower()
+    return mode in SSH_EXECUTION_MODES
+
+
+def effective_orchestration_mode() -> str:
+    mode = str(ORCHESTRATION_MODE or "legacy").strip().lower() or "legacy"
+    if (
+        mode == "acp_first"
+        and is_ssh_execution_mode()
+        and not bool(ORCHESTRATION_ALLOW_ACP_WITH_SSH)
+    ):
+        return "legacy"
+    return mode

@@ -16,6 +16,24 @@ class _StubSSHExecutor:
         return {"status": "ok", "action": action, "result": {"returncode": 0}}
 
 
+def test_is_acp_control_plane_mode_disabled_by_ssh_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENCLAW_EXECUTION_MODE", "ssh_tunnel")
+    monkeypatch.setattr(gateway.cfg, "ORCHESTRATION_MODE", "acp_first")
+    monkeypatch.setattr(gateway.cfg, "ORCHESTRATION_ALLOW_ACP_WITH_SSH", False)
+    monkeypatch.setattr(gateway.cfg, "OPENCLAW_AGENT_HOSTING", "ec2_control")
+    assert gateway._is_acp_control_plane_mode() is False
+
+
+def test_is_acp_control_plane_mode_override_allows_ssh_plus_acp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENCLAW_EXECUTION_MODE", "ssh_tunnel")
+    monkeypatch.setattr(gateway.cfg, "ORCHESTRATION_MODE", "acp_first")
+    monkeypatch.setattr(gateway.cfg, "ORCHESTRATION_ALLOW_ACP_WITH_SSH", True)
+    monkeypatch.setattr(gateway.cfg, "OPENCLAW_AGENT_HOSTING", "ec2_control")
+    assert gateway._is_acp_control_plane_mode() is True
+
+
 @pytest.mark.asyncio
 async def test_send_action_ssh_mode_requires_configured_executor(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENCLAW_EXECUTION_MODE", "ssh_tunnel")

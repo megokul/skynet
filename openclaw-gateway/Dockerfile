@@ -8,7 +8,16 @@ WORKDIR /app
 # Install system dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
+
+# Install control-plane coding agent CLIs used by ACP-first orchestration.
+RUN npm install -g --omit=dev \
+    @openai/codex@latest \
+    @anthropic-ai/claude-code@latest \
+    cline@latest \
+    && npm cache clean --force
 
 # Install Python dependencies first (cache layer).
 COPY requirements.txt .

@@ -71,6 +71,7 @@ jobs:
       OPENCLAW_OLLAMA_MODEL: ${{ secrets.OPENCLAW_OLLAMA_MODEL }}
       OPENCLAW_OLLAMA_AUTO_PULL: ${{ secrets.OPENCLAW_OLLAMA_AUTO_PULL }}
       SKYNET_CLAUDE_OLLAMA_AUTH_TOKEN: ${{ secrets.SKYNET_CLAUDE_OLLAMA_AUTH_TOKEN }}
+      SKYNET_ORCHESTRATION_ALLOW_ACP_WITH_SSH: ${{ secrets.SKYNET_ORCHESTRATION_ALLOW_ACP_WITH_SSH }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -141,6 +142,13 @@ jobs:
       - name: Build deployment env file
         shell: bash
         run: |
+          MODE_NORMALIZED="$(printf '%s' "${OPENCLAW_EXECUTION_MODE:-}" | tr '[:upper:]' '[:lower:]')"
+          ORCH_DEFAULT="acp_first"
+          case "$MODE_NORMALIZED" in
+            ssh|ssh_tunnel|tunnel|ssh-only)
+              ORCH_DEFAULT="legacy"
+              ;;
+          esac
           {
             printf 'SKYNET_SETTINGS_FILE=%s\n' "/app/settings/settings.yaml"
             printf 'OPENCLAW_GATEWAY_URL=%s\n' "${OPENCLAW_GATEWAY_URL:-http://openclaw-gateway:8766}"
@@ -209,7 +217,8 @@ jobs:
             printf 'SKYNET_CODING_DEFAULT_PROFILE=%s\n' "${SKYNET_CODING_DEFAULT_PROFILE:-codex_primary}"
             printf 'SKYNET_CODING_FORCE_PRIMARY_FOR_ALL=%s\n' "${SKYNET_CODING_FORCE_PRIMARY_FOR_ALL:-1}"
             printf 'SKYNET_CODING_FALLBACK_CHAIN=%s\n' "${SKYNET_CODING_FALLBACK_CHAIN:-codex,claude_ollama,cline}"
-            printf 'SKYNET_ORCHESTRATION_MODE=%s\n' "${SKYNET_ORCHESTRATION_MODE:-acp_first}"
+            printf 'SKYNET_ORCHESTRATION_MODE=%s\n' "${SKYNET_ORCHESTRATION_MODE:-$ORCH_DEFAULT}"
+            printf 'SKYNET_ORCHESTRATION_ALLOW_ACP_WITH_SSH=%s\n' "${SKYNET_ORCHESTRATION_ALLOW_ACP_WITH_SSH:-0}"
             printf 'SKYNET_OPENCLAW_RUNTIME=%s\n' "${SKYNET_OPENCLAW_RUNTIME:-acp}"
             printf 'SKYNET_OPENCLAW_QUEUE_MODE=%s\n' "${SKYNET_OPENCLAW_QUEUE_MODE:-require_empty_queue}"
             printf 'SKYNET_OPENCLAW_RETRY_TRANSIENT=%s\n' "${SKYNET_OPENCLAW_RETRY_TRANSIENT:-1}"

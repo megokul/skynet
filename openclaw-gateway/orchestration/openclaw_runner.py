@@ -281,7 +281,8 @@ class OpenClawRunner:
     ) -> list[str]:
         stage_name = str(stage or "").strip().lower()
         if stage_name == "codex":
-            return [binary, "exec", prompt]
+            # Codex may run from non-git working dirs during milestone generation.
+            return [binary, "exec", "--skip-git-repo-check", prompt]
         if stage_name in {"claude", "claude_ollama"}:
             args = [binary]
             selected_model = str(model or "").strip()

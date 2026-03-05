@@ -266,6 +266,12 @@ Use the correct env profile for the runtime context:
 - EC2 Dockerized gateway: `.env.ec2-gateway.example`
 - Local host-run live E2E: `.env.local-e2e.example`
 
+Mode precedence:
+
+- If `OPENCLAW_EXECUTION_MODE` is `ssh|ssh_tunnel|tunnel|ssh-only`, effective orchestration mode is forced to `legacy`.
+- Override only when explicitly needed via `SKYNET_ORCHESTRATION_ALLOW_ACP_WITH_SSH=1`.
+- This prevents ACP-local agent checks from running in SSH-primary deployments.
+
 Always run live E2E with an explicit env file:
 
 ```powershell
@@ -306,6 +312,7 @@ Tracker troubleshooting:
 - If phase shows stage switches (`codex -> claude_ollama -> cline`), read the latest stage-failure summary in chat/logs.
 - If phase is `quality_gates`, gate name identifies the blocker (`run_contract`, `lint`, `tests`, `smoke`).
 - If transport is healthy but no stage progress is visible, inspect `telegram.tracker.*` logs in gateway output.
+- If chat shows `coding preflight failed: no control-plane coding agents available`, you are running ACP checks in an SSH-first topology. Set `SKYNET_ORCHESTRATION_MODE=legacy` (or keep ACP and install CLIs in EC2 runtime).
 
 ### ACP-First Orchestration (EC2 Agents, Worker SSH)
 
@@ -329,6 +336,15 @@ Behavior:
 - strict gates remain blocking before milestone `done`
 - strict run remains manifest-driven (`skynet_run.json`)
 - stage/session telemetry is persisted in `task_orchestration_runs`
+
+Runtime matrix:
+
+- SSH-first (`OPENCLAW_EXECUTION_MODE=ssh_tunnel`):
+  - agent CLIs are required on the worker host.
+  - gateway dispatches coding/planner actions over SSH.
+- ACP-first (`SKYNET_ORCHESTRATION_MODE=acp_first` with no SSH override):
+  - agent CLIs are required in the EC2 control-plane runtime/container.
+  - worker remains execution/file target for run/lint/tests/smoke.
 
 For real Telegram-network E2E, set:
 
