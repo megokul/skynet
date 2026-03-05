@@ -45,6 +45,7 @@ from bot.project_templates import get_template
 from bot.state import KEY_DB, KEY_ROUTER
 from db.store import create_project, ensure_user
 from gateway import is_worker_available, send_action
+from orchestration.openclaw_runner import get_openclaw_runner
 
 logger = logging.getLogger("skynet.bot.project")
 
@@ -147,7 +148,7 @@ async def _planner_via_codex_then_router(
     user_id: int,
 ) -> str:
     use_codex = str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "codex")).strip().lower() == "codex"
-    if use_codex and is_worker_available():
+    if use_codex:
         sandbox_dir = _planner_sandbox_dir(user_id)
         planner_prompt = (
             "You are the planner assistant for a Telegram product workflow.\n"
@@ -159,32 +160,58 @@ async def _planner_via_codex_then_router(
         )
         timeout = max(30, int(getattr(cfg, "PLANNER_CODEX_TIMEOUT_SECONDS", 120) or 120))
         try:
-            await send_action(
-                "create_directory",
-                {"directory": sandbox_dir},
-                timeout=20,
-                confirmed=True,
-            )
-            result = await send_action(
-                "run_coding_agent",
-                {
-                    "agent": "codex",
-                    "backend": "auto",
-                    "prompt": planner_prompt,
-                    "working_dir": sandbox_dir,
-                    "timeout_seconds": timeout,
-                },
-                timeout=timeout,
-                confirmed=True,
-            )
-            if result.get("status") == "error":
-                raise RuntimeError(str(result.get("error") or "run_coding_agent failed"))
-            inner = result.get("result", result)
-            return_code = int(inner.get("returncode", inner.get("exit_code", 0)) or 0)
-            if return_code != 0:
-                detail = str(inner.get("stderr") or inner.get("stdout") or "planner codex failed")
-                raise RuntimeError(detail)
-            text = _planner_action_text(result)
+            orchestration_mode = str(getattr(cfg, "ORCHESTRATION_MODE", "legacy") or "legacy").strip().lower()
+            if orchestration_mode == "acp_first":
+                runner = get_openclaw_runner()
+                session = await runner.start_session(
+                    phase="planner",
+                    project_id=f"user-{user_id}",
+                    task_id=None,
+                    stage="codex",
+                    runtime=str(getattr(cfg, "OPENCLAW_RUNTIME", "acp") or "acp"),
+                    queue_mode="soft",
+                )
+                run_result = await runner.run_prompt(
+                    session_id=str(session.get("session_id") or ""),
+                    prompt=planner_prompt,
+                    timeout_seconds=timeout,
+                    stage="codex",
+                    backend="native",
+                )
+                return_code = int(run_result.get("returncode", 1) or 1)
+                if return_code != 0:
+                    detail = str(run_result.get("stderr") or run_result.get("stdout") or "planner codex failed")
+                    raise RuntimeError(detail)
+                text = str(run_result.get("stdout") or "").strip()
+            else:
+                if not is_worker_available():
+                    raise RuntimeError("Worker unavailable for planner codex call")
+                await send_action(
+                    "create_directory",
+                    {"directory": sandbox_dir},
+                    timeout=20,
+                    confirmed=True,
+                )
+                result = await send_action(
+                    "run_coding_agent",
+                    {
+                        "agent": "codex",
+                        "backend": "auto",
+                        "prompt": planner_prompt,
+                        "working_dir": sandbox_dir,
+                        "timeout_seconds": timeout,
+                    },
+                    timeout=timeout,
+                    confirmed=True,
+                )
+                if result.get("status") == "error":
+                    raise RuntimeError(str(result.get("error") or "run_coding_agent failed"))
+                inner = result.get("result", result)
+                return_code = int(inner.get("returncode", inner.get("exit_code", 0)) or 0)
+                if return_code != 0:
+                    detail = str(inner.get("stderr") or inner.get("stdout") or "planner codex failed")
+                    raise RuntimeError(detail)
+                text = _planner_action_text(result)
             if not text:
                 raise RuntimeError("planner codex returned empty output")
             return text

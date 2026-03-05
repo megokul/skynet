@@ -349,6 +349,14 @@ def _run_telegram_real_flow(trace: LiveTrace) -> None:
         print(completed.stderr, file=sys.stderr, end="" if completed.stderr.endswith("\n") else "\n")
 
     output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+    tracker_detected = len(re.findall(r"\"event\"\\s*:\\s*\"tracker\\.message\\.detected\"", output))
+    tracker_edited = len(re.findall(r"\"event\"\\s*:\\s*\"tracker\\.message\\.edited\"", output))
+    if tracker_detected or tracker_edited:
+        trace.log(
+            "telegram_real.tracker.summary",
+            tracker_detected=tracker_detected,
+            tracker_edited=tracker_edited,
+        )
     match_passed = re.search(r"(\d+)\s+passed", output, flags=re.IGNORECASE)
     match_skipped = re.search(r"(\d+)\s+skipped", output, flags=re.IGNORECASE)
     passed = int(match_passed.group(1)) if match_passed else 0

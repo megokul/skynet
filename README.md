@@ -280,6 +280,56 @@ Live E2E flow modes:
 - `SKYNET_LIVE_E2E_FLOW=telegram_real`
   - Fully real Telegram-network conversation using a Telethon user session (real messages + inline button clicks).
 
+### Telegram Coding Tracker
+
+During coding sessions, SKYNET now maintains one live tracker message with:
+
+- phase (`setup`, `milestone_extraction`, `milestone_review`, `milestone_execution`, `quality_gates`, `finalization`)
+- stage switches (`codex`, `claude_ollama`, `cline`)
+- OpenClaw orchestration session context (`session`, `runtime`, `queue`)
+- strict gate progression (`infra_preflight`, `run_contract`, `lint`, `tests`, `smoke`)
+- monotonic percent progress and stale-signal warning
+
+Tracker defaults (non-secret, from settings YAML):
+
+- `SKYNET_TELEGRAM_TRACKER_ENABLED=true`
+- `SKYNET_TELEGRAM_TRACKER_EDIT_INTERVAL_SECONDS=3`
+- `SKYNET_TELEGRAM_TRACKER_STALE_WARN_SECONDS=90`
+- `SKYNET_TELEGRAM_TRACKER_BAR_WIDTH=20`
+- `SKYNET_TELEGRAM_TRACKER_VERBOSE_PIPELINE=true`
+
+`/status` surfaces the same tracker state (progress bar, phase, stage/gate, transport, run-contract status).
+
+Tracker troubleshooting:
+
+- If phase is stuck at `milestone_extraction`, check provider health and `SKYNET_MILESTONE_EXTRACTION_*` timeouts.
+- If phase shows stage switches (`codex -> claude_ollama -> cline`), read the latest stage-failure summary in chat/logs.
+- If phase is `quality_gates`, gate name identifies the blocker (`run_contract`, `lint`, `tests`, `smoke`).
+- If transport is healthy but no stage progress is visible, inspect `telegram.tracker.*` logs in gateway output.
+
+### ACP-First Orchestration (EC2 Agents, Worker SSH)
+
+`acp_first` mode runs coding/planner/milestone generation on the control plane and keeps the worker as an SSH execution/file target.
+
+Key non-secret flags:
+
+- `SKYNET_ORCHESTRATION_MODE=acp_first`
+- `SKYNET_OPENCLAW_RUNTIME=acp`
+- `SKYNET_OPENCLAW_QUEUE_MODE=require_empty_queue`
+- `SKYNET_OPENCLAW_RETRY_TRANSIENT=1`
+- `SKYNET_OPENCLAW_SESSION_TIMEOUT_SECONDS=1800`
+- `SKYNET_OPENCLAW_STAGE_CHAIN=codex,claude,cline`
+- `SKYNET_OPENCLAW_AGENT_HOSTING=ec2_control`
+- `SKYNET_OPENCLAW_TRACE_ENABLED=1`
+- `OPENCLAW_CODEX_BIN`, `OPENCLAW_CLAUDE_BIN`, `OPENCLAW_CLINE_BIN`
+
+Behavior:
+
+- coding fallback chain remains deterministic (`codex -> claude -> cline`)
+- strict gates remain blocking before milestone `done`
+- strict run remains manifest-driven (`skynet_run.json`)
+- stage/session telemetry is persisted in `task_orchestration_runs`
+
 For real Telegram-network E2E, set:
 
 - `SKYNET_E2E_TELEGRAM_API_ID`

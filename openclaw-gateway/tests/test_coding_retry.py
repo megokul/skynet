@@ -79,10 +79,11 @@ async def test_preflight_all_chain_agents_unavailable_fails():
         patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", True),
         patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)),
     ):
-        ok, message = await _preflight_coding_environment(project=project)
+        ok, message, stage_chain = await _preflight_coding_environment(project=project)
 
     assert ok is False
     assert "No coding agents available for chain" in message
+    assert stage_chain == ["codex", "claude_ollama", "cline"]
 
 
 @pytest.mark.asyncio
@@ -109,10 +110,11 @@ async def test_preflight_primary_unavailable_uses_fallback():
         patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", True),
         patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)),
     ):
-        ok, message = await _preflight_coding_environment(project=project)
+        ok, message, stage_chain = await _preflight_coding_environment(project=project)
 
     assert ok is True
     assert "fallback" in message.lower()
+    assert stage_chain == ["claude_ollama"]
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import time
@@ -342,6 +343,9 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         saw_run_success = False
         complete_count: int | None = None
         failed_count: int | None = None
+        tracker_message_id: int | None = None
+        tracker_last_text = ""
+        tracker_edit_count = 0
 
         for idx in range(80):
             msg = await _wait_for_bot_message(
@@ -364,6 +368,39 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 text_preview=text[:220],
                 buttons=btns,
             )
+
+            if "coding progress [" in text.lower():
+                if tracker_message_id is None:
+                    tracker_message_id = int(getattr(msg, "id", 0))
+                    tracker_last_text = text
+                    trace(
+                        "tracker.message.detected",
+                        message_id=tracker_message_id,
+                        text_preview=text[:220],
+                    )
+                elif tracker_message_id == int(getattr(msg, "id", 0)) and text != tracker_last_text:
+                    tracker_edit_count += 1
+                    tracker_last_text = text
+                    trace(
+                        "tracker.message.edited",
+                        message_id=tracker_message_id,
+                        edits=tracker_edit_count,
+                        text_preview=text[:220],
+                    )
+
+            if tracker_message_id is not None:
+                with contextlib.suppress(Exception):
+                    tracker_msg = await client.get_messages(bot, ids=tracker_message_id)
+                    current_tracker_text = str(getattr(tracker_msg, "message", "") or "")
+                    if current_tracker_text and current_tracker_text != tracker_last_text:
+                        tracker_edit_count += 1
+                        tracker_last_text = current_tracker_text
+                        trace(
+                            "tracker.message.edited",
+                            message_id=tracker_message_id,
+                            edits=tracker_edit_count,
+                            text_preview=current_tracker_text[:220],
+                        )
 
             if "github repo created and pushed" in text.lower():
                 saw_no_github_push = False
@@ -410,6 +447,8 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 break
 
         assert saw_no_github_push, "Live Telegram E2E unexpectedly created/pushed a GitHub repo."
+        assert tracker_message_id is not None, "Live Telegram E2E did not observe tracker message."
+        assert tracker_edit_count >= 1, "Live Telegram E2E did not observe tracker edits."
         assert saw_finish_summary, "Live Telegram E2E did not reach session summary."
         assert complete_count is None or complete_count >= 1, (
             f"Live Telegram E2E did not complete any milestones (complete={complete_count}, failed={failed_count})."
@@ -421,5 +460,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
             saw_run_success=saw_run_success,
             complete_count=complete_count,
             failed_count=failed_count,
+            tracker_message_id=tracker_message_id,
+            tracker_edit_count=tracker_edit_count,
         )
         print(f"[LIVE TRACE] {trace_path}")

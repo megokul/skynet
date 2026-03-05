@@ -1,0 +1,32 @@
+# OpenClaw orchestration profiles (non-secret policy defaults).
+# Secrets stay in environment variables.
+
+planner_profile:
+  description: "Read-only planner/specialist profile."
+  allow_write: false
+  allow_exec: false
+  allow_git_push: false
+
+milestone_profile:
+  description: "Read-only milestone extraction profile."
+  allow_write: false
+  allow_exec: false
+  allow_git_push: false
+
+coding_profile:
+  description: "Coding profile for implementation and local validation."
+  allow_write: true
+  allow_exec: true
+  allow_git_push: false
+
+release_profile:
+  description: "Restricted release profile (explicit user action only)."
+  allow_write: true
+  allow_exec: true
+  allow_git_push: true
+
+bindings:
+  coder: codex
+  fixer: claude
+  lastresort: cline
+

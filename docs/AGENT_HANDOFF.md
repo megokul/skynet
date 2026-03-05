@@ -1,10 +1,72 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-04 17:20
+Last updated (UTC): 2026-03-05 12:30
 
 ## Current Goal
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-05 ACP-First OpenClaw Orchestration Update
+
+- Added control-plane orchestration config in `openclaw-gateway/config.py`:
+  - `SKYNET_ORCHESTRATION_MODE`
+  - `SKYNET_OPENCLAW_RUNTIME`
+  - `SKYNET_OPENCLAW_QUEUE_MODE`
+  - `SKYNET_OPENCLAW_RETRY_TRANSIENT`
+  - `SKYNET_OPENCLAW_SESSION_TIMEOUT_SECONDS`
+  - `SKYNET_OPENCLAW_STAGE_CHAIN`
+  - `SKYNET_OPENCLAW_AGENT_HOSTING`
+  - `SKYNET_OPENCLAW_TRACE_ENABLED`
+  - `SKYNET_OPENCLAW_CLI_BIN`
+  - `OPENCLAW_CODEX_BIN`, `OPENCLAW_CLAUDE_BIN`, `OPENCLAW_CLINE_BIN`
+- Added orchestration adapter module:
+  - `openclaw-gateway/orchestration/openclaw_runner.py`
+  - session lifecycle methods: `start_session`, `run_prompt`, `wait`, `cancel`, `collect_trace`
+- Added orchestration policy file:
+  - `openclaw-gateway/settings/openclaw_profiles.yaml`
+- Added orchestration telemetry persistence:
+  - new table `task_orchestration_runs` in `openclaw-gateway/db/schema.py`
+  - store methods in `openclaw-gateway/db/store.py`:
+    - `create_task_orchestration_run`
+    - `list_task_orchestration_runs`
+- Wired coding stage chain to orchestration adapter in `openclaw-gateway/bot/handlers/coding.py` for `acp_first`:
+  - stage execution now supports control-plane generation with worker `file_write` application.
+  - stage start/success/fail are persisted to `task_orchestration_runs`.
+  - preflight now supports control-plane stage availability checks.
+- Wired planner and milestone extraction to orchestration-first path:
+  - `openclaw-gateway/bot/handlers/project.py`
+  - `openclaw-gateway/bot/handlers/coding.py`
+- Added local coding-action routing for ACP-first mode in `openclaw-gateway/gateway.py`:
+  - coding actions can resolve via local orchestration adapter when configured.
+- Extended tracker visibility:
+  - tracker pipeline now includes `session`, `runtime`, and `queue`.
+- Updated deploy and settings templates for orchestration flags:
+  - `.github/workflows/deploy-ec2-skynet.yml`
+  - `openclaw-gateway/settings/settings.yaml`
+  - `openclaw-gateway/settings/settings.example.yaml`
+  - `.env.example`
+  - `.env.local-e2e.example`
+
+### 2026-03-04 Telegram Tracker + Pipeline Visibility Update
+
+- Added Telegram coding tracker config flags in `openclaw-gateway/config.py`:
+  - `SKYNET_TELEGRAM_TRACKER_ENABLED`
+  - `SKYNET_TELEGRAM_TRACKER_EDIT_INTERVAL_SECONDS`
+  - `SKYNET_TELEGRAM_TRACKER_STALE_WARN_SECONDS`
+  - `SKYNET_TELEGRAM_TRACKER_BAR_WIDTH`
+  - `SKYNET_TELEGRAM_TRACKER_VERBOSE_PIPELINE`
+- Added matching non-secret defaults in:
+  - `openclaw-gateway/settings/settings.yaml`
+  - `openclaw-gateway/settings/settings.example.yaml`
+  - optional env overrides in `.env.example` and `.env.local-e2e.example`.
+- Completed coding-loop tracker wiring in `openclaw-gateway/bot/handlers/coding.py`:
+  - setup, extraction, approval wait, execution, stage-chain switching, strict gates, and finalization.
+  - stage hook events now surface stage transitions in tracker state.
+  - strict gate hook events now surface gate-level progress and run-contract status.
+- `/status` now reads tracker state and shows progress/phase/stage/gate/transport/run-contract details.
+- Real Telegram E2E test upgraded to assert tracker visibility and observed tracker edits:
+  - `openclaw-gateway/tests/test_e2e_telegram_real_live.py`
+  - `openclaw-gateway/tests/e2e_live.py` now logs tracker summary counts from live output.
 
 ### 2026-03-04 Settings/Secrets Trim Update
 

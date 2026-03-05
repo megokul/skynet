@@ -61,6 +61,19 @@ CREATE TABLE IF NOT EXISTS task_gate_results (
     created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS task_orchestration_runs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+    phase      TEXT    NOT NULL DEFAULT '',
+    stage      TEXT    NOT NULL DEFAULT '',
+    session_id TEXT    NOT NULL DEFAULT '',
+    runtime    TEXT    NOT NULL DEFAULT '',
+    queue_mode TEXT    NOT NULL DEFAULT '',
+    status     TEXT    NOT NULL DEFAULT '',
+    summary    TEXT    NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 -- ── Provider usage ────────────────────────────────────────────────────────────
 -- Daily quota tracking — one row per provider per day.
 CREATE TABLE IF NOT EXISTS provider_usage (
@@ -79,6 +92,8 @@ CREATE INDEX IF NOT EXISTS idx_users_telegram_id  ON users(telegram_user_id);
 CREATE INDEX IF NOT EXISTS idx_provider_usage_day ON provider_usage(provider_name, date);
 CREATE INDEX IF NOT EXISTS idx_task_gate_results_lookup
     ON task_gate_results(task_id, attempt, gate_name);
+CREATE INDEX IF NOT EXISTS idx_task_orchestration_runs_lookup
+    ON task_orchestration_runs(task_id, created_at, stage);
 """
 
 # Clean tasks DDL used when recreating the table from a legacy schema.
@@ -156,6 +171,8 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
         "CREATE INDEX IF NOT EXISTS idx_tasks_project  ON tasks(project_id, status)",
         "CREATE INDEX IF NOT EXISTS idx_task_gate_results_lookup "
         "ON task_gate_results(task_id, attempt, gate_name)",
+        "CREATE INDEX IF NOT EXISTS idx_task_orchestration_runs_lookup "
+        "ON task_orchestration_runs(task_id, created_at, stage)",
     ]:
         try:
             await db.execute(idx_sql)

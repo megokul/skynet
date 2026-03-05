@@ -28,3 +28,32 @@ async def test_send_action_ssh_mode_requires_configured_executor(monkeypatch: py
     with pytest.raises(RuntimeError, match="forces SSH"):
         await gateway.send_action("git_status", {})
 
+
+@pytest.mark.asyncio
+async def test_send_action_routes_coding_to_local_orchestration_when_acp_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gateway, "_agent_ws", None)
+    monkeypatch.setenv("OPENCLAW_EXECUTION_MODE", "agent")
+    monkeypatch.setattr(gateway.cfg, "ORCHESTRATION_MODE", "acp_first")
+    monkeypatch.setattr(gateway.cfg, "OPENCLAW_AGENT_HOSTING", "ec2_control")
+
+    called = {}
+
+    async def _local(action, params):
+        called["action"] = action
+        called["params"] = params
+        return {"status": "success", "result": {"returncode": 0, "stdout": "ok", "stderr": ""}}
+
+    monkeypatch.setattr(gateway, "_run_local_orchestration_action", _local)
+
+    import ssh_tunnel_executor
+
+    monkeypatch.setattr(ssh_tunnel_executor, "get_ssh_executor", lambda: _StubSSHExecutor(configured=True))
+
+    result = await gateway.send_action(
+        "run_coding_agent",
+        {"agent": "codex", "prompt": "hello", "timeout_seconds": 60},
+    )
+    assert called["action"] == "run_coding_agent"
+    assert result["status"] == "success"

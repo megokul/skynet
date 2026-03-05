@@ -13,6 +13,8 @@ if ROOT not in sys.path:
 os.environ.setdefault("TELEGRAM_BOT_TOKEN",          "1234567890:test_token_for_ci")
 os.environ.setdefault("SKYNET_AUTH_TOKEN",            "test-auth-token")
 os.environ.setdefault("OPENCLAW_PROJECT_BASE_DIR",    "E:/SKYNET-SANDBOX/Projects")
+os.environ.setdefault("SKYNET_ORCHESTRATION_MODE",    "legacy")
+os.environ.setdefault("SKYNET_OPENCLAW_AGENT_HOSTING", "ec2_control")
 
 # ── Shared mock-builder helpers (imported by test modules) ──────────────────
 

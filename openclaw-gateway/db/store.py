@@ -255,6 +255,60 @@ async def delete_task_gate_results(
     await db.commit()
 
 
+async def create_task_orchestration_run(
+    db: aiosqlite.Connection,
+    *,
+    task_id: int | None,
+    phase: str,
+    stage: str,
+    session_id: str,
+    runtime: str,
+    queue_mode: str,
+    status: str,
+    summary: str = "",
+) -> dict[str, Any]:
+    async with db.execute(
+        """
+        INSERT INTO task_orchestration_runs
+            (task_id, phase, stage, session_id, runtime, queue_mode, status, summary)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(task_id) if isinstance(task_id, int) else None,
+            phase.strip(),
+            stage.strip(),
+            session_id.strip(),
+            runtime.strip(),
+            queue_mode.strip(),
+            status.strip(),
+            summary.strip(),
+        ),
+    ) as cur:
+        run_id = cur.lastrowid
+    await db.commit()
+    async with db.execute(
+        "SELECT * FROM task_orchestration_runs WHERE id = ?",
+        (run_id,),
+    ) as cur:
+        return _row(await cur.fetchone())
+
+
+async def list_task_orchestration_runs(
+    db: aiosqlite.Connection,
+    *,
+    task_id: int,
+) -> list[dict[str, Any]]:
+    async with db.execute(
+        """
+        SELECT * FROM task_orchestration_runs
+        WHERE task_id = ?
+        ORDER BY id ASC
+        """,
+        (int(task_id),),
+    ) as cur:
+        return [dict(r) for r in await cur.fetchall()]
+
+
 async def record_provider_usage(
     db: aiosqlite.Connection,
     *,

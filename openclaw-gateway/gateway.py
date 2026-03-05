@@ -24,6 +24,7 @@ import websockets
 from websockets.asyncio.server import ServerConnection
 
 import config as cfg
+from orchestration.openclaw_runner import get_openclaw_runner
 
 logger = logging.getLogger("skynet.gateway")
 
@@ -41,6 +42,100 @@ _pending_lock = asyncio.Lock()
 
 # Event that signals at least one agent is connected.
 agent_connected = asyncio.Event()
+
+
+def _is_acp_control_plane_mode() -> bool:
+    return (
+        str(getattr(cfg, "ORCHESTRATION_MODE", "legacy") or "legacy").strip().lower() == "acp_first"
+        and str(getattr(cfg, "OPENCLAW_AGENT_HOSTING", "ec2_control") or "ec2_control").strip().lower() == "ec2_control"
+    )
+
+
+def _parse_stage_chain(raw: str) -> list[str]:
+    stages: list[str] = []
+    for token in str(raw or "").split(","):
+        stage = token.strip().lower()
+        if not stage:
+            continue
+        if stage == "claude_ollama":
+            stage = "claude"
+        if stage not in {"codex", "claude", "cline"}:
+            continue
+        if stage in stages:
+            continue
+        stages.append(stage)
+    return stages or ["codex", "claude", "cline"]
+
+
+async def _run_local_orchestration_action(
+    action: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    runner = get_openclaw_runner()
+
+    if action == "check_coding_agents":
+        chain = _parse_stage_chain(getattr(cfg, "OPENCLAW_STAGE_CHAIN", "codex,claude,cline"))
+        available, reasons = runner.available_stages(chain)
+        binary_by_stage = {
+            "codex": str(getattr(cfg, "OPENCLAW_CODEX_BIN", "codex") or "codex"),
+            "claude": str(getattr(cfg, "OPENCLAW_CLAUDE_BIN", "claude") or "claude"),
+            "cline": str(getattr(cfg, "OPENCLAW_CLINE_BIN", "cline") or "cline"),
+        }
+        lines: list[str] = []
+        for stage in chain:
+            binary = binary_by_stage.get(stage, stage)
+            if stage in available:
+                lines.append(f"{stage}: available ({binary})")
+            else:
+                lines.append(f"{stage}: unavailable ({reasons.get(stage, f'expected binary: {binary}')})")
+        return {"status": "success", "result": {"returncode": 0, "stdout": "\n".join(lines), "stderr": ""}}
+
+    if action == "configure_coding_agent":
+        return {
+            "status": "success",
+            "result": {
+                "returncode": 0,
+                "stdout": "Control-plane ACP mode does not require runtime provider reconfiguration via gateway.",
+                "stderr": "",
+            },
+        }
+
+    if action == "run_coding_agent":
+        agent = str(params.get("agent") or "").strip().lower()
+        stage = "claude" if agent == "claude" else agent
+        timeout_seconds = int(params.get("timeout_seconds", getattr(cfg, "OPENCLAW_SESSION_TIMEOUT_SECONDS", 1800)) or 1800)
+        prompt = str(params.get("prompt") or "")
+        model = str(params.get("model") or "").strip()
+        backend = str(params.get("backend") or "native").strip().lower()
+        if stage not in {"codex", "claude", "cline"}:
+            return {
+                "status": "error",
+                "error": f"Unsupported control-plane stage '{stage}'.",
+            }
+
+        session = await runner.start_session(
+            phase="gateway_action",
+            project_id=str(params.get("project_id") or ""),
+            task_id=None,
+            stage=stage,
+            runtime=str(getattr(cfg, "OPENCLAW_RUNTIME", "acp") or "acp"),
+            queue_mode=str(getattr(cfg, "OPENCLAW_QUEUE_MODE", "require_empty_queue") or "require_empty_queue"),
+        )
+        result = await runner.run_prompt(
+            session_id=str(session.get("session_id") or ""),
+            prompt=prompt,
+            timeout_seconds=timeout_seconds,
+            stage=stage,
+            model=model,
+            backend=backend,
+        )
+        result = dict(result or {})
+        result.setdefault("session_id", str(session.get("session_id") or ""))
+        result.setdefault("runtime", str(getattr(cfg, "OPENCLAW_RUNTIME", "acp") or "acp"))
+        result.setdefault("queue_mode", str(getattr(cfg, "OPENCLAW_QUEUE_MODE", "require_empty_queue") or "require_empty_queue"))
+        return {"status": "success", "result": result}
+
+    return {"status": "error", "error": f"Unsupported local orchestration action '{action}'."}
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +170,19 @@ async def send_action(
         "ssh", "ssh_tunnel", "tunnel", "ssh-only",
     )
     _coding_actions = {"run_coding_agent", "check_coding_agents", "configure_coding_agent"}
+    _use_local_orchestration = (
+        _is_acp_control_plane_mode()
+        and action in _coding_actions
+        and not _force_ssh
+    )
+    if _use_local_orchestration:
+        logger.info(
+            "Routing action via local OpenClaw orchestration adapter (action=%s mode=%s)",
+            action,
+            getattr(cfg, "ORCHESTRATION_MODE", "legacy"),
+        )
+        return await _run_local_orchestration_action(action, params or {})
+
     _prefer_ssh_for_coding = (
         cfg.CODING_TRANSPORT == "ssh_first"
         and action in _coding_actions
