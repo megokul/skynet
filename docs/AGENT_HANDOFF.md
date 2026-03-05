@@ -1,10 +1,37 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-05 12:30
+Last updated (UTC): 2026-03-05 10:16
 
 ## Current Goal
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-05 Reverse Tunnel Key/Bind + Codex Trust Fix
+
+- Updated reverse tunnel scripts to use canonical worker key precedence:
+  - `OPENCLAW_TUNNEL_SSH_KEY`
+  - `OPENCLAW_SSH_KEY_PATH`
+  - fallback `E:\MyProjects\skynet-key.pem`
+- Removed invalid fallback to `protech-bot-key.pem` from:
+  - `scripts/keep_tunnel_alive.ps1`
+- Added explicit reverse-bind host support and set canonical bind shape:
+  - `-R 0.0.0.0:2222:localhost:22`
+- Hardened task registration to pass explicit tunnel args (key/host/bind/ports):
+  - `scripts/register_tunnel_task.ps1`
+- Hardened tunnel health diagnostics:
+  - effective key path output
+  - bind expectation output
+  - improved ssh process matching for `-R` argument forms
+  - `scripts/check_tunnel_health.ps1`
+- Updated env/docs for canonical tunnel key:
+  - `.env.ec2-gateway.example`
+  - `.env.example`
+  - `.env.local-e2e.example`
+  - `README.md`
+- Added codex SSH invocation trust bypass (`--skip-git-repo-check`) in:
+  - `openclaw-gateway/ssh_tunnel_executor.py`
+  - `openclaw-agent/executor/actions.py`
+- Live Telegram E2E currently progresses through full conversation and SSH preflight, but milestone generation still fails on deployed runtime until latest gateway image is redeployed.
 
 ### 2026-03-05 SSH/ACP Precedence Guard Update
 
