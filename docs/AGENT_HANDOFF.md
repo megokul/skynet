@@ -6,6 +6,37 @@ Last updated (UTC): 2026-03-05 10:16
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
 
+### 2026-03-05 SSH-First Hierarchical Closed Loop v1.2 Update
+
+- Added `loop_v2` profile defaults and force-all behavior:
+  - `SKYNET_CONTROL_LOOP_DEFAULT_PROFILE=loop_v2`
+  - `SKYNET_CONTROL_LOOP_FORCE_FOR_ALL=1`
+- Added v1.2 config flags in `openclaw-gateway/config.py` and settings templates:
+  - director/architect toggles
+  - blocking architecture contract controls
+  - worker-pool selection controls
+  - learning policy controls
+  - dedicated director/architect/planner timeouts
+- Added additive DB schema for hierarchical orchestration state:
+  - `architecture_states`
+  - `task_strategy`
+  - `worker_registry`
+  - `node_worker_assignments`
+  - `learning_events`
+  - `prompt_policies`
+  - plus `task_nodes.worker_id`, `task_nodes.tools_required_json`, `task_nodes.risk_level`
+- Added store APIs for architecture versioning, worker assignment, learning events, and prompt policies in `openclaw-gateway/db/store.py`.
+- Added orchestration modules:
+  - `openclaw-gateway/orchestration/director.py`
+  - `openclaw-gateway/orchestration/architect.py`
+  - `openclaw-gateway/orchestration/worker_pool.py`
+  - `openclaw-gateway/orchestration/learning.py`
+- Wired coding loop path to treat `loop_v2` as active control-loop mode while preserving SSH-first execution and codex-only stage chain.
+- Added loop-v2 telemetry fields to tracker/status surfaces:
+  - architecture version
+  - worker assignment id
+  - learning policy activation trace events.
+
 ### 2026-03-05 SSH-First Closed Loop v1 Update
 
 - Added closed-loop config surface in `openclaw-gateway/config.py`:

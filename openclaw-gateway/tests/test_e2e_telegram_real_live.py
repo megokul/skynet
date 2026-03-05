@@ -489,6 +489,9 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         saw_finish_summary = False
         saw_no_github_push = True
         saw_run_success = False
+        saw_director_phase = False
+        saw_architect_phase = False
+        saw_worker_assignment_marker = False
         complete_count: int | None = None
         failed_count: int | None = None
         tracker_message_id: int | None = None
@@ -524,6 +527,12 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 buttons=btns,
             )
             lowered = text.lower()
+            if "phase: director" in lowered:
+                saw_director_phase = True
+            if "phase: architect" in lowered:
+                saw_architect_phase = True
+            if "worker=" in lowered or "worker:" in lowered:
+                saw_worker_assignment_marker = True
 
             if any(marker in lowered for marker in preflight_fail_markers):
                 trace(
@@ -561,6 +570,13 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                     if current_tracker_text and current_tracker_text != tracker_last_text:
                         tracker_edit_count += 1
                         tracker_last_text = current_tracker_text
+                        lowered_tracker = current_tracker_text.lower()
+                        if "phase: director" in lowered_tracker:
+                            saw_director_phase = True
+                        if "phase: architect" in lowered_tracker:
+                            saw_architect_phase = True
+                        if "worker=" in lowered_tracker or "worker:" in lowered_tracker:
+                            saw_worker_assignment_marker = True
                         trace(
                             "tracker.message.edited",
                             message_id=tracker_message_id,
@@ -625,6 +641,15 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         assert saw_no_github_push, "Live Telegram E2E unexpectedly created/pushed a GitHub repo."
         assert tracker_message_id is not None, "Live Telegram E2E did not observe tracker message."
         assert tracker_edit_count >= 1, "Live Telegram E2E did not observe tracker edits."
+        assert saw_director_phase or "arch=" in tracker_last_text.lower(), (
+            "Live Telegram E2E did not observe director/architecture tracker phase."
+        )
+        assert saw_architect_phase or "arch=" in tracker_last_text.lower(), (
+            "Live Telegram E2E did not observe architect/architecture tracker phase."
+        )
+        assert saw_worker_assignment_marker or "worker=" in tracker_last_text.lower(), (
+            "Live Telegram E2E did not observe worker assignment marker in tracker."
+        )
         assert saw_finish_summary, "Live Telegram E2E did not reach session summary."
         assert complete_count is None or complete_count >= 1, (
             f"Live Telegram E2E did not complete any milestones (complete={complete_count}, failed={failed_count})."

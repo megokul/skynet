@@ -203,7 +203,17 @@ async def _planner_via_codex_then_router(
             f"System instructions:\n{system}\n\n"
             f"Conversation history JSON:\n{json.dumps(messages, ensure_ascii=True)}\n"
         )
-        timeout = max(30, int(getattr(cfg, "PLANNER_CODEX_TIMEOUT_SECONDS", 120) or 120))
+        timeout = max(
+            30,
+            int(
+                getattr(
+                    cfg,
+                    "CONTROL_LOOP_PLANNER_TIMEOUT_SECONDS",
+                    getattr(cfg, "PLANNER_CODEX_TIMEOUT_SECONDS", 120),
+                )
+                or 120
+            ),
+        )
         try:
             orchestration_mode = str(cfg.effective_orchestration_mode() or "legacy").strip().lower()
             if orchestration_mode == "acp_first":
@@ -512,13 +522,13 @@ async def approve_plan(
             default_profile if cfg.STRICT_QUALITY_GATES_ENABLED else "legacy"
         )
         if bool(getattr(cfg, "CONTROL_LOOP_FORCE_FOR_ALL", False)):
-            control_loop_profile = "loop_v1"
+            control_loop_profile = "loop_v2"
         elif bool(getattr(cfg, "CONTROL_LOOP_ENABLED", True)):
             control_loop_profile = str(
-                getattr(cfg, "CONTROL_LOOP_DEFAULT_PROFILE", "loop_v1") or "loop_v1"
+                getattr(cfg, "CONTROL_LOOP_DEFAULT_PROFILE", "loop_v2") or "loop_v2"
             ).strip().lower()
-            if control_loop_profile not in {"legacy", "loop_v1"}:
-                control_loop_profile = "loop_v1"
+            if control_loop_profile not in {"legacy", "loop_v1", "loop_v2"}:
+                control_loop_profile = "loop_v2"
         else:
             control_loop_profile = "legacy"
         user = await ensure_user(

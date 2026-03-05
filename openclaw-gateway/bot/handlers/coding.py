@@ -39,6 +39,10 @@ from bot.keyboards import (
 )
 from bot.state import KEY_DB, KEY_ROUTER
 from db.store import (
+    create_architecture_state,
+    create_learning_event,
+    create_node_worker_assignment,
+    create_task_strategy,
     create_task,
     create_task_gate_result,
     create_task_orchestration_run,
@@ -46,7 +50,11 @@ from db.store import (
     delete_task_gate_results,
     ensure_user,
     get_active_task_graph,
+    get_active_architecture_state,
+    get_active_prompt_policy,
     get_project,
+    list_active_workers,
+    list_learning_events,
     list_critic_findings,
     list_graph_nodes,
     list_project_memory,
@@ -55,13 +63,26 @@ from db.store import (
     list_projects,
     list_tasks,
     query_code_index,
+    supersede_architecture_state,
+    update_task_node_worker,
     update_task_status,
+    upsert_project_memory,
+    upsert_prompt_policy,
+    upsert_worker_registry,
 )
 from gateway import is_worker_available, send_action
 from orchestration.arch_critic import evaluate_architecture_refs, load_arch_rules
+from orchestration.architect import (
+    build_architect_prompt,
+    default_architecture_state,
+    evaluate_architecture_contract,
+    next_architecture_version,
+    parse_architecture_state,
+)
 from orchestration.completion import validate_completion_contract
 from orchestration.compression import build_context_bundle
 from orchestration.critic import build_review_prompt, is_blocking, parse_critic_response
+from orchestration.director import build_director_prompt, default_director_contract, parse_director_contract
 from orchestration.failure import (
     FAIL_CONTRACT,
     FAIL_ENVIRONMENT,
@@ -72,9 +93,15 @@ from orchestration.failure import (
 )
 from orchestration.graph import LoopNode
 from orchestration.indexer import index_file
+from orchestration.learning import (
+    apply_prompt_policy,
+    build_conservative_prompt_policy,
+    build_pattern_key,
+)
 from orchestration.loop_controller import ClosedLoopController
 from orchestration.openclaw_runner import get_openclaw_runner
 from orchestration.trace import format_timeline_lines, load_trace_timeline
+from orchestration.worker_pool import select_worker
 
 logger = logging.getLogger("skynet.bot.coding")
 
@@ -114,6 +141,7 @@ _CODING_PROFILE_CLAUDE_OLLAMA = "claude_ollama"
 _CODING_PROFILE_CODEX_PRIMARY = "codex_primary"
 _CONTROL_LOOP_PROFILE_LEGACY = "legacy"
 _CONTROL_LOOP_PROFILE_V1 = "loop_v1"
+_CONTROL_LOOP_PROFILE_V2 = "loop_v2"
 _ORCHESTRATION_MODE_ACP_FIRST = "acp_first"
 _RUN_CONTRACT_FILE = "skynet_run.json"
 _ALLOWED_INTERPRETERS = {"python", "python3", "node"}
@@ -314,6 +342,8 @@ def _tracker_render_text(state: dict[str, Any]) -> str:
     node_key = str(state.get("node_key") or "").strip()
     node_type = str(state.get("node_type") or "").strip()
     critic_name = str(state.get("critic_name") or "").strip()
+    arch_version = str(state.get("arch_version") or "").strip()
+    worker_id = str(state.get("worker_id") or "").strip()
     created_monotonic = float(state.get("created_monotonic", time.monotonic()) or time.monotonic())
     now = time.monotonic()
     elapsed = _format_elapsed(now - created_monotonic)
@@ -344,10 +374,14 @@ def _tracker_render_text(state: dict[str, Any]) -> str:
             pipeline_parts.append(f"queue={queue_mode}")
         if graph_id:
             pipeline_parts.append(f"graph={graph_id}")
+        if arch_version:
+            pipeline_parts.append(f"arch={arch_version}")
         if node_key:
             pipeline_parts.append(f"node={node_key}")
         if node_type:
             pipeline_parts.append(f"type={node_type}")
+        if worker_id:
+            pipeline_parts.append(f"worker={worker_id}")
         if critic_name:
             pipeline_parts.append(f"critic={critic_name}")
         pipeline_parts.append(f"transport={transport}")
@@ -398,8 +432,10 @@ async def _tracker_init_message(
             else ""
         ),
         "graph_id": "",
+        "arch_version": "",
         "node_key": "",
         "node_type": "",
+        "worker_id": "",
         "critic_name": "",
         "message_id": 0,
         "created_monotonic": now,
@@ -458,8 +494,10 @@ async def _tracker_update(
     runtime_mode: str | None = None,
     queue_mode: str | None = None,
     graph_id: str | None = None,
+    arch_version: str | None = None,
     node_key: str | None = None,
     node_type: str | None = None,
+    worker_id: str | None = None,
     critic_name: str | None = None,
     setup_progress: float | None = None,
     extraction_progress: float | None = None,
@@ -508,10 +546,14 @@ async def _tracker_update(
         state["queue_mode"] = str(queue_mode).strip()
     if graph_id is not None:
         state["graph_id"] = str(graph_id).strip()
+    if arch_version is not None:
+        state["arch_version"] = str(arch_version).strip()
     if node_key is not None:
         state["node_key"] = str(node_key).strip()
     if node_type is not None:
         state["node_type"] = str(node_type).strip()
+    if worker_id is not None:
+        state["worker_id"] = str(worker_id).strip()
     if critic_name is not None:
         state["critic_name"] = str(critic_name).strip()
     if heartbeat_elapsed is not None:
@@ -665,10 +707,14 @@ def _effective_coding_profile(project: dict[str, Any] | None) -> str:
 def _control_loop_profile(project: dict[str, Any] | None) -> str:
     raw = str(
         (project or {}).get("control_loop_profile")
-        or getattr(cfg, "CONTROL_LOOP_DEFAULT_PROFILE", _CONTROL_LOOP_PROFILE_V1)
+        or getattr(cfg, "CONTROL_LOOP_DEFAULT_PROFILE", _CONTROL_LOOP_PROFILE_V2)
         or _CONTROL_LOOP_PROFILE_LEGACY
     ).strip().lower()
-    if raw not in {_CONTROL_LOOP_PROFILE_LEGACY, _CONTROL_LOOP_PROFILE_V1}:
+    if raw not in {
+        _CONTROL_LOOP_PROFILE_LEGACY,
+        _CONTROL_LOOP_PROFILE_V1,
+        _CONTROL_LOOP_PROFILE_V2,
+    }:
         return _CONTROL_LOOP_PROFILE_LEGACY
     return raw
 
@@ -677,12 +723,19 @@ def _effective_control_loop_profile(project: dict[str, Any] | None) -> str:
     if not bool(getattr(cfg, "CONTROL_LOOP_ENABLED", True)):
         return _CONTROL_LOOP_PROFILE_LEGACY
     if bool(getattr(cfg, "CONTROL_LOOP_FORCE_FOR_ALL", False)):
-        return _CONTROL_LOOP_PROFILE_V1
+        return _CONTROL_LOOP_PROFILE_V2
     return _control_loop_profile(project)
 
 
 def _use_control_loop_v1(project: dict[str, Any] | None) -> bool:
-    return _effective_control_loop_profile(project) == _CONTROL_LOOP_PROFILE_V1
+    return _effective_control_loop_profile(project) in {
+        _CONTROL_LOOP_PROFILE_V1,
+        _CONTROL_LOOP_PROFILE_V2,
+    }
+
+
+def _use_control_loop_v2(project: dict[str, Any] | None) -> bool:
+    return _effective_control_loop_profile(project) == _CONTROL_LOOP_PROFILE_V2
 
 
 def _orchestration_mode() -> str:
@@ -3150,8 +3203,10 @@ async def dashboard_handler(
         runtime_mode = str(tracker_state.get("runtime_mode") or "").strip()
         queue_mode = str(tracker_state.get("queue_mode") or "").strip()
         graph_id = str(tracker_state.get("graph_id") or "").strip()
+        arch_version = str(tracker_state.get("arch_version") or "").strip()
         node_key = str(tracker_state.get("node_key") or "").strip()
         node_type = str(tracker_state.get("node_type") or "").strip()
+        worker_id = str(tracker_state.get("worker_id") or "").strip()
         critic_name = str(tracker_state.get("critic_name") or "").strip()
         tracker_block = (
             f"\n\nProgress {_render_progress_bar(percent, _tracker_bar_width())} {percent}%\n"
@@ -3169,10 +3224,14 @@ async def dashboard_handler(
             tracker_block += f"\nQueue: {queue_mode}"
         if graph_id:
             tracker_block += f"\nGraph: {graph_id}"
+        if arch_version:
+            tracker_block += f"\nArchitecture Version: {arch_version}"
         if node_key:
             tracker_block += f"\nNode: {node_key}"
         if node_type:
             tracker_block += f"\nNode Type: {node_type}"
+        if worker_id:
+            tracker_block += f"\nWorker: {worker_id}"
         if critic_name:
             tracker_block += f"\nCritic: {critic_name}"
         tracker_block += f"\nTransport: {transport}"
@@ -3206,6 +3265,17 @@ async def dashboard_handler(
                 f"\nActive Node: {running_node.get('node_key')} "
                 f"({running_node.get('node_type')}, attempt={running_node.get('attempt_count')})"
             )
+        arch_state = await get_active_architecture_state(db, project_id=project["id"])
+        if arch_state:
+            graph_block += f"\nActive Architecture: v{int(arch_state.get('version') or 0)}"
+        learning_policy = await get_active_prompt_policy(
+            db,
+            scope="project",
+            project_id=project["id"],
+            policy_kind="repair",
+        )
+        if learning_policy:
+            graph_block += "\nLearning Policy: active (repair)"
 
     text = (
         f"<b>{project['name']}</b> - {project['project_type']}\n"
@@ -3418,6 +3488,219 @@ async def _run_control_loop_v1(
         node_specs=list(project.get("_loop_node_specs") or []),
     )
     graph_id = await controller.bootstrap(planner_summary=str(project.get("description") or ""))
+    loop_v2_enabled = _use_control_loop_v2(project)
+    director_contract = default_director_contract(
+        goal=str(project.get("description") or project.get("name") or "").strip()
+    )
+    architecture_state = await get_active_architecture_state(
+        db,
+        project_id=str(project["id"]),
+    )
+    architecture_version = str((architecture_state or {}).get("version") or "")
+    active_worker_id = str(
+        getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "worker-primary") or "worker-primary"
+    ).strip()
+    learning_policy: dict[str, Any] | None = None
+
+    if loop_v2_enabled and bool(getattr(cfg, "CONTROL_LOOP_DIRECTOR_ENABLED", True)):
+        await update_tracker(
+            phase="director",
+            phase_detail="Building director contract",
+            graph_id=str(graph_id),
+            arch_version=architecture_version,
+            setup_progress=0.7,
+        )
+        director_prompt = build_director_prompt(
+            project_name=str(project.get("name") or ""),
+            project_type=str(project.get("project_type") or ""),
+            goal=str(project.get("description") or project.get("name") or ""),
+            constraints=[
+                "SSH-first transport",
+                "Codex-only coding stage",
+                "Strict quality gates mandatory",
+            ],
+            memory_snapshot={
+                "project_id": str(project.get("id") or ""),
+                "quality_profile": str(project.get("quality_profile") or ""),
+            },
+        )
+        try:
+            result = await send_action(
+                "run_coding_agent",
+                {
+                    "agent": str(getattr(cfg, "CONTROL_LOOP_PLANNER_AGENT", "codex") or "codex"),
+                    "backend": "auto",
+                    "prompt": director_prompt,
+                    "working_dir": working_dir,
+                    "timeout_seconds": max(
+                        30,
+                        int(getattr(cfg, "CONTROL_LOOP_DIRECTOR_TIMEOUT_SECONDS", 120) or 120),
+                    ),
+                },
+                timeout=max(30, int(getattr(cfg, "CONTROL_LOOP_DIRECTOR_TIMEOUT_SECONDS", 120) or 120)),
+                confirmed=True,
+            )
+            if result.get("status") != "error" and _action_exit_code(result) == 0:
+                raw_contract = str(_action_inner_result(result).get("stdout") or "").strip()
+                director_contract = parse_director_contract(raw_contract)
+                await create_task_node_event(
+                    db,
+                    graph_id=int(graph_id),
+                    node_id=None,
+                    node_key="director",
+                    event_type="director.done",
+                    status="done",
+                    agent="codex",
+                    stage="director",
+                    details={"objective": str(director_contract.get("objective") or "")[:160]},
+                )
+            else:
+                raise RuntimeError(_action_error_text(result, "run_coding_agent"))
+        except Exception as exc:
+            await create_task_node_event(
+                db,
+                graph_id=int(graph_id),
+                node_id=None,
+                node_key="director",
+                event_type="director.failed",
+                status="failed",
+                agent="codex",
+                stage="director",
+                failure_type=FAIL_ENVIRONMENT,
+                details={"error": str(exc)[:220], "fallback": "default_director_contract"},
+            )
+        await upsert_project_memory(
+            db,
+            project_id=str(project["id"]),
+            tier="decisions",
+            memory_key="director_contract",
+            memory_value=director_contract,
+            source_node_id=None,
+        )
+
+    if loop_v2_enabled and bool(getattr(cfg, "CONTROL_LOOP_ARCHITECT_ENABLED", True)):
+        await update_tracker(
+            phase="architect",
+            phase_detail="Refreshing architecture state",
+            graph_id=str(graph_id),
+            arch_version=architecture_version,
+            setup_progress=0.85,
+        )
+        architect_prompt = build_architect_prompt(
+            project_name=str(project.get("name") or ""),
+            goal=str(project.get("description") or project.get("name") or ""),
+            director_contract=director_contract,
+            previous_state=architecture_state,
+            index_summary=[],
+        )
+        parsed_arch_state: dict[str, Any] | None = None
+        try:
+            result = await send_action(
+                "run_coding_agent",
+                {
+                    "agent": str(getattr(cfg, "CONTROL_LOOP_PLANNER_AGENT", "codex") or "codex"),
+                    "backend": "auto",
+                    "prompt": architect_prompt,
+                    "working_dir": working_dir,
+                    "timeout_seconds": max(
+                        30,
+                        int(getattr(cfg, "CONTROL_LOOP_ARCHITECT_TIMEOUT_SECONDS", 180) or 180),
+                    ),
+                },
+                timeout=max(30, int(getattr(cfg, "CONTROL_LOOP_ARCHITECT_TIMEOUT_SECONDS", 180) or 180)),
+                confirmed=True,
+            )
+            if result.get("status") != "error" and _action_exit_code(result) == 0:
+                raw_state = str(_action_inner_result(result).get("stdout") or "").strip()
+                parsed_arch_state = parse_architecture_state(raw_state)
+            else:
+                raise RuntimeError(_action_error_text(result, "run_coding_agent"))
+        except Exception as exc:
+            parsed_arch_state = default_architecture_state(
+                goal=str(project.get("description") or project.get("name") or "")
+            )
+            await create_task_node_event(
+                db,
+                graph_id=int(graph_id),
+                node_id=None,
+                node_key="architect",
+                event_type="architect.failed",
+                status="failed",
+                agent="codex",
+                stage="architect",
+                failure_type=FAIL_ENVIRONMENT,
+                details={"error": str(exc)[:220], "fallback": "default_architecture_state"},
+            )
+        if parsed_arch_state is not None:
+            prev_version = int((architecture_state or {}).get("version", 0) or 0)
+            next_version = next_architecture_version(architecture_state)
+            if prev_version > 0:
+                await supersede_architecture_state(
+                    db,
+                    project_id=str(project["id"]),
+                    previous_version=prev_version,
+                )
+            architecture_state = await create_architecture_state(
+                db,
+                project_id=str(project["id"]),
+                version=next_version,
+                status="active",
+                components=list(parsed_arch_state.get("components") or []),
+                interfaces=list(parsed_arch_state.get("interfaces") or []),
+                boundaries=list(parsed_arch_state.get("boundaries") or []),
+                data_flows=list(parsed_arch_state.get("data_flows") or []),
+                constraints=list(parsed_arch_state.get("constraints") or []),
+                adr_summary=str(parsed_arch_state.get("adr_summary") or ""),
+                created_by="architect",
+            )
+            architecture_version = str((architecture_state or {}).get("version") or "")
+            await create_task_node_event(
+                db,
+                graph_id=int(graph_id),
+                node_id=None,
+                node_key="architect",
+                event_type="architect.done",
+                status="done",
+                agent="codex",
+                stage="architect",
+                details={"version": architecture_version},
+            )
+            await upsert_project_memory(
+                db,
+                project_id=str(project["id"]),
+                tier="decisions",
+                memory_key="architecture_state",
+                memory_value={
+                    "version": int(architecture_version or 0),
+                    "adr_summary": str((architecture_state or {}).get("adr_summary") or ""),
+                },
+                source_node_id=None,
+            )
+
+    if loop_v2_enabled and bool(getattr(cfg, "CONTROL_LOOP_WORKER_POOL_ENABLED", True)):
+        await upsert_worker_registry(
+            db,
+            worker_id=active_worker_id,
+            label="Primary SSH Worker",
+            transport="ssh",
+            endpoint={"host": "ssh-tunnel"},
+            capabilities=["code", "test", "lint", "deps", "build", "docker", "terraform"],
+            status="active",
+            priority=200,
+        )
+    strategy_payload = project.get("_loop_execution_strategy")
+    if isinstance(strategy_payload, dict):
+        await create_task_strategy(
+            db,
+            graph_id=int(graph_id),
+            parallel_lanes=list(
+                (project.get("_loop_parallel_lanes") or strategy_payload.get("parallel_lanes") or [])
+            ),
+            risk_assessment=list(
+                (project.get("_loop_risk_assessment") or strategy_payload.get("risk_assessment") or [])
+            ),
+            execution_strategy=strategy_payload,
+        )
 
     execution_stage_chain = _control_loop_stage_chain(active_stage_chain)
     total = len(milestones)
@@ -3621,13 +3904,15 @@ async def _run_control_loop_v1(
                 runtime_mode=str(payload.get("runtime") or "").strip() or "ssh",
                 queue_mode=str(payload.get("queue_mode") or "").strip(),
                 graph_id=str(graph_id),
+                arch_version=architecture_version,
                 node_key=node.node_key,
                 node_type=node.node_type,
+                worker_id=node.worker_id or active_worker_id,
             )
         return _hook
 
     async def _work_executor(node: LoopNode) -> dict[str, Any]:
-        nonlocal successful_milestones, failed_milestones, skipped_milestones, last_valid_run_contract
+        nonlocal successful_milestones, failed_milestones, skipped_milestones, last_valid_run_contract, learning_policy
         payload = node.payload or {}
         milestone_text = str(payload.get("milestone_text") or node.title or "").strip()
         milestone_index = int(payload.get("index", 0) or 0)
@@ -3696,6 +3981,19 @@ async def _run_control_loop_v1(
                 working_dir=working_dir,
                 findings=list(payload.get("findings") or []),
             )
+        if loop_v2_enabled:
+            if not learning_policy:
+                policy_row = await get_active_prompt_policy(
+                    db,
+                    scope="project",
+                    project_id=str(project["id"]),
+                    policy_kind="repair",
+                )
+                if isinstance(policy_row, dict):
+                    candidate = policy_row.get("policy")
+                    if isinstance(candidate, dict):
+                        learning_policy = candidate
+            prompt = apply_prompt_policy(prompt=prompt, policy=learning_policy)
 
         stage_tracker_hook = await _stage_tracker_hook_factory(node, milestone_index)
         generation_result = await _run_stage_chain_for_generation(
@@ -3935,6 +4233,22 @@ async def _run_control_loop_v1(
             findings if isinstance(findings, list) else [],
             threshold=str(getattr(cfg, "CONTROL_LOOP_CRITIC_BLOCK_THRESHOLD", "high") or "high"),
         )
+        arch_contract_ok = True
+        arch_violation_count = 0
+        if loop_v2_enabled and bool(getattr(cfg, "CONTROL_LOOP_ARCH_BLOCKING", True)):
+            arch_contract_ok, arch_violation_count = evaluate_architecture_contract(
+                findings=findings if isinstance(findings, list) else [],
+                max_violations=max(0, int(getattr(cfg, "CONTROL_LOOP_ARCH_MAX_VIOLATIONS", 0) or 0)),
+            )
+            if not arch_contract_ok:
+                blocking = True
+                await _trace_event(
+                    node=node,
+                    event_type="critic.architecture.contract",
+                    status="failed",
+                    failure_type=FAIL_STRICT_GATE,
+                    details={"violations": arch_violation_count},
+                )
         summary = "critic passed"
         if blocking:
             summary = "blocking findings detected"
@@ -3947,6 +4261,7 @@ async def _run_control_loop_v1(
             "summary": summary,
             "critic_name": "review",
             "failure_type": FAIL_STRICT_GATE if blocking else "",
+            "arch_violation_count": arch_violation_count,
         }
 
     async def _gate_executor(node: LoopNode) -> dict[str, Any]:
@@ -3977,7 +4292,127 @@ async def _run_control_loop_v1(
             return {"ok": False, "summary": reason, "failure_type": FAIL_CONTRACT}
         return {"ok": True, "summary": "All critic nodes passed and completion contract satisfied"}
 
+    async def _record_learning(node: LoopNode, event: str, payload: dict[str, Any]) -> None:
+        nonlocal learning_policy
+        if not loop_v2_enabled or not bool(getattr(cfg, "CONTROL_LOOP_LEARNING_ENABLED", True)):
+            return
+        failure_type = str(payload.get("failure_type") or "").strip().upper()
+        if not failure_type:
+            return
+        critic_code = str(payload.get("critic_code") or "").strip()
+        pattern_key = build_pattern_key(
+            failure_type=failure_type,
+            critic_code=critic_code,
+            node_type=node.node_type,
+        )
+        await create_learning_event(
+            db,
+            project_id=str(project["id"]),
+            graph_id=int(graph_id),
+            node_id=int(node.node_id),
+            failure_type=failure_type,
+            critic_code=critic_code,
+            pattern_key=pattern_key,
+            event={
+                "event": event,
+                "node_key": node.node_key,
+                "node_type": node.node_type,
+                "summary": str(payload.get("summary") or payload.get("error") or "")[:220],
+            },
+        )
+        await _trace_event(
+            node=node,
+            event_type="learning.event",
+            status="recorded",
+            failure_type=failure_type,
+            details={"pattern_key": pattern_key},
+        )
+        learning_events = await list_learning_events(
+            db,
+            project_id=str(project["id"]),
+            limit=200,
+        )
+        policy = build_conservative_prompt_policy(
+            events=learning_events,
+            min_samples=max(1, int(getattr(cfg, "CONTROL_LOOP_LEARNING_MIN_SAMPLES", 5) or 5)),
+            apply_mode=str(getattr(cfg, "CONTROL_LOOP_LEARNING_APPLY_MODE", "conservative") or "conservative"),
+        )
+        if not policy:
+            return
+        learning_policy = policy
+        await upsert_prompt_policy(
+            db,
+            scope="project",
+            project_id=str(project["id"]),
+            policy_kind="repair",
+            policy=policy,
+            source="learning",
+            active=True,
+        )
+        await _trace_event(
+            node=node,
+            event_type="learning.policy_applied",
+            status="active",
+            details={"sample_count": int(policy.get("sample_count", 0) or 0)},
+        )
+
     async def _on_node_event(node: LoopNode, event: str, payload: dict[str, Any]) -> None:
+        nonlocal active_worker_id
+        if loop_v2_enabled and event == "running":
+            workers = await list_active_workers(db)
+            required_tools = list(node.tools_required or [])
+            if not required_tools and isinstance(node.payload, dict):
+                required_tools = [
+                    str(item).strip()
+                    for item in (node.payload.get("tools_required") or [])
+                    if str(item).strip()
+                ]
+            selected_worker, reason = select_worker(
+                workers=workers,
+                required_capabilities=required_tools,
+                default_worker_id=str(
+                    getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "worker-primary") or "worker-primary"
+                ),
+                strategy=str(
+                    getattr(cfg, "CONTROL_LOOP_WORKER_POOL_STRATEGY", "capability_priority")
+                    or "capability_priority"
+                ),
+            )
+            active_worker_id = selected_worker
+            node.worker_id = selected_worker
+            if not any(str(item.get("id") or "") == selected_worker for item in workers):
+                await upsert_worker_registry(
+                    db,
+                    worker_id=selected_worker,
+                    label="Auto-registered worker",
+                    transport="ssh",
+                    endpoint={"host": "ssh-tunnel"},
+                    capabilities=required_tools or ["code"],
+                    status="active",
+                    priority=100,
+                )
+            await create_node_worker_assignment(
+                db,
+                graph_id=int(graph_id),
+                node_id=int(node.node_id),
+                worker_id=selected_worker,
+                assignment_reason=reason,
+            )
+            await update_task_node_worker(
+                db,
+                node_id=int(node.node_id),
+                worker_id=selected_worker,
+            )
+            await _trace_event(
+                node=node,
+                event_type="worker.assigned",
+                status="assigned",
+                details={
+                    "worker_id": selected_worker,
+                    "reason": reason,
+                    "required_tools": required_tools,
+                },
+            )
         phase = "milestone_execution"
         if node.node_type == "critic":
             phase = "quality_gates"
@@ -3990,8 +4425,10 @@ async def _run_control_loop_v1(
             stage=f"{node.node_key}:{node.node_type}",
             attempt=max(0, int(node.attempt_count)),
             graph_id=str(graph_id),
+            arch_version=architecture_version,
             node_key=node.node_key,
             node_type=node.node_type,
+            worker_id=node.worker_id or active_worker_id,
             critic_name=("review" if node.node_type == "critic" else ""),
         )
         if event == "needs_changes":
@@ -4006,6 +4443,7 @@ async def _run_control_loop_v1(
             failure_type=str(payload.get("failure_type") or ""),
             details=payload,
         )
+        await _record_learning(node, event, payload)
 
     run_result = await controller.run(
         execute_work=_work_executor,
@@ -4054,8 +4492,10 @@ async def _run_control_loop_v1(
             gate="",
             run_contract_status="validated" if strict_mode else "legacy",
             graph_id=str(graph_id),
+            arch_version=architecture_version,
             node_key="",
             node_type="",
+            worker_id=active_worker_id,
             critic_name="",
         )
         await finalize_tracker(
@@ -4083,8 +4523,10 @@ async def _run_control_loop_v1(
             stage="",
             gate="",
             graph_id=str(graph_id),
+            arch_version=architecture_version,
             node_key="",
             node_type="",
+            worker_id=active_worker_id,
             critic_name="",
         )
         await finalize_tracker(
@@ -4108,8 +4550,10 @@ async def _run_control_loop_v1(
         stage="",
         gate="",
         graph_id=str(graph_id),
+        arch_version=architecture_version,
         node_key="",
         node_type="",
+        worker_id=active_worker_id,
         critic_name="",
     )
     await finalize_tracker(
@@ -4493,12 +4937,13 @@ async def _coding_loop(
         )
 
         if _use_control_loop_v1(project) and db is not None:
+            loop_stage_name = _effective_control_loop_profile(project)
             await _update_tracker(
                 phase="milestone_execution",
                 phase_detail="Running closed orchestration loop",
                 milestone_index=0,
                 milestones_total=total,
-                stage="loop_v1",
+                stage=loop_stage_name,
             )
             await _run_control_loop_v1(
                 app=app,
@@ -5815,11 +6260,13 @@ def _parse_planner_task_graph_payload(raw: str) -> dict[str, Any] | None:
             "title": title,
             "node_type": "work",
             "owner": str(node.get("owner") or "codex").strip() or "codex",
+            "worker_id": str(node.get("worker_id") or "").strip(),
             "deps": deps,
             "priority": priority,
             "tools_required": list(node.get("tools_required") or []),
             "acceptance": list(node.get("acceptance") or []),
             "risk": dict(node.get("risk") or {}),
+            "risk_level": str(node.get("risk_level") or (node.get("risk") or {}).get("level") or "medium"),
         }
         milestones.append(title)
         normalized_nodes.append(normalized)
@@ -5830,6 +6277,8 @@ def _parse_planner_task_graph_payload(raw: str) -> dict[str, Any] | None:
         "nodes": normalized_nodes,
         "success_contract": parsed.get("success_contract") if isinstance(parsed.get("success_contract"), dict) else {},
         "execution_strategy": parsed.get("execution_strategy") if isinstance(parsed.get("execution_strategy"), dict) else {},
+        "parallel_lanes": parsed.get("parallel_lanes") if isinstance(parsed.get("parallel_lanes"), list) else [],
+        "risk_assessment": parsed.get("risk_assessment") if isinstance(parsed.get("risk_assessment"), list) else [],
     }
 
 
@@ -5907,6 +6356,8 @@ async def _extract_milestones_codex_then_router(
         if parsed_graph:
             project["_loop_success_contract"] = parsed_graph.get("success_contract") or {}
             project["_loop_execution_strategy"] = parsed_graph.get("execution_strategy") or {}
+            project["_loop_parallel_lanes"] = parsed_graph.get("parallel_lanes") or []
+            project["_loop_risk_assessment"] = parsed_graph.get("risk_assessment") or []
             project["_loop_node_specs"] = parsed_graph.get("nodes") or []
             return [str(item).strip() for item in (parsed_graph.get("milestones") or []) if str(item).strip()]
         parsed_list = _parse_json_string_list(output)

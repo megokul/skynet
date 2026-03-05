@@ -320,26 +320,32 @@ Tracker troubleshooting:
 - If transport is healthy but no stage progress is visible, inspect `telegram.tracker.*` logs in gateway output.
 - If chat shows `coding preflight failed: no control-plane coding agents available`, you are running ACP checks in an SSH-first topology. Set `SKYNET_ORCHESTRATION_MODE=legacy` (or keep ACP and install CLIs in EC2 runtime).
 
-### SSH-First Closed Loop v1 (Default)
+### SSH-First Closed Loop v1.2 (Default)
 
-Current default policy in this repo is closed-loop orchestration for coding sessions:
+Current default policy in this repo is hierarchical closed-loop orchestration for coding sessions:
 
-- `Planner -> Executor -> Critic -> Memory -> Planner`
+- `Director -> Architect -> Planner(DAG) -> Scheduler -> Executor -> Critics -> Memory -> Learning -> Gate`
 - all coding actions dispatch to worker through SSH (`OPENCLAW_EXECUTION_MODE=ssh_tunnel`)
 - worker is execution plane only (Codex + toolchain + project files)
 - EC2 gateway is control plane only (state/orchestration/telemetry)
 - coding chain is codex-only (`SKYNET_CODING_FALLBACK_CHAIN=codex`)
 - strict gates are mandatory before milestone completion
+- architecture contract checks are blocking in loop v2
 
 Closed-loop config flags:
 
 - `SKYNET_CONTROL_LOOP_ENABLED=1`
 - `SKYNET_CONTROL_LOOP_FORCE_FOR_ALL=1`
-- `SKYNET_CONTROL_LOOP_DEFAULT_PROFILE=loop_v1`
+- `SKYNET_CONTROL_LOOP_DEFAULT_PROFILE=loop_v2`
 - `SKYNET_CONTROL_LOOP_REPAIR_RETRIES=1`
 - `SKYNET_CONTROL_LOOP_CRITIC_BLOCK_THRESHOLD=high`
 - `SKYNET_CONTROL_LOOP_REVIEW_CRITIC_ENABLED=1`
 - `SKYNET_CONTROL_LOOP_ROUTER_FALLBACK_ENABLED=0` (planner/milestone fallback disabled by default)
+- `SKYNET_CONTROL_LOOP_DIRECTOR_ENABLED=1`
+- `SKYNET_CONTROL_LOOP_ARCHITECT_ENABLED=1`
+- `SKYNET_CONTROL_LOOP_ARCH_BLOCKING=1`
+- `SKYNET_CONTROL_LOOP_WORKER_POOL_ENABLED=1`
+- `SKYNET_CONTROL_LOOP_LEARNING_ENABLED=1`
 
 Closed-loop persistence tables:
 
@@ -347,6 +353,12 @@ Closed-loop persistence tables:
 - `task_nodes`
 - `critic_findings`
 - `project_memory`
+- `architecture_states`
+- `task_strategy`
+- `worker_registry`
+- `node_worker_assignments`
+- `learning_events`
+- `prompt_policies`
 - `task_orchestration_runs` (stage/session telemetry)
 
 ### ACP-First Orchestration (EC2 Agents, Worker SSH)

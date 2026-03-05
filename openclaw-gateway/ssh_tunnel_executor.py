@@ -2184,6 +2184,7 @@ class SSHTunnelExecutor:
             agent = self._require_str(params, "agent").strip().lower()
             prompt = self._require_str(params, "prompt")
             cwd = params.get("working_dir")
+            worker_id = str(params.get("worker_id") or "").strip()
             timeout = params.get("timeout_seconds", 1800)
             backend_raw = str(params.get("backend") or "auto").strip().lower()
             model = str(params.get("model") or "").strip()
@@ -2225,7 +2226,7 @@ class SSHTunnelExecutor:
                 return {"returncode": 1, "stdout": "", "stderr": backend_error}
 
             if agent == "claude" and resolved_backend == "ollama":
-                return self._run_coding_agent_claude_ollama(
+                run = self._run_coding_agent_claude_ollama(
                     client=client,
                     prompt=prompt,
                     cwd=cwd if isinstance(cwd, str) else None,
@@ -2234,8 +2235,11 @@ class SSHTunnelExecutor:
                     base_url=base_url or "http://localhost:11434",
                     auto_pull_model=auto_pull_model,
                 )
+                if worker_id:
+                    run["worker_id"] = worker_id
+                return run
 
-            return self._run_coding_agent_native(
+            run = self._run_coding_agent_native(
                 client=client,
                 agent=agent,
                 prompt=prompt,
@@ -2243,6 +2247,9 @@ class SSHTunnelExecutor:
                 timeout=timeout,
                 model=model,
             )
+            if worker_id:
+                run["worker_id"] = worker_id
+            return run
 
         if action == "docker_build":
             cwd = self._require_str(params, "working_dir")
@@ -2287,6 +2294,7 @@ class SSHTunnelExecutor:
         if action == "run_tool_command":
             cwd = self._require_str(params, "working_dir")
             command = self._require_str(params, "command")
+            worker_id = str(params.get("worker_id") or "").strip()
             parts = self._parse_tool_command(command)
             if not parts:
                 return {"returncode": 1, "stdout": "", "stderr": "Empty tool command."}
@@ -2295,7 +2303,10 @@ class SSHTunnelExecutor:
                 return {"returncode": 1, "stdout": "", "stderr": f"Command not allowed: {reason}"}
             timeout = int(params.get("timeout_seconds") or 600)
             remote_cwd = _norm_remote_path(cwd, self.remote_os)
-            return self._run_command(client, parts, cwd=remote_cwd, timeout=max(30, min(timeout, 3600)))
+            run = self._run_command(client, parts, cwd=remote_cwd, timeout=max(30, min(timeout, 3600)))
+            if worker_id:
+                run["worker_id"] = worker_id
+            return run
 
         return {"returncode": 1, "stdout": "", "stderr": f"Action '{action}' is not supported in SSH tunnel mode."}
 

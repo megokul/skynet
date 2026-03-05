@@ -102,10 +102,13 @@ CREATE TABLE IF NOT EXISTS task_nodes (
     title                TEXT    NOT NULL,
     node_type            TEXT    NOT NULL,
     owner                TEXT    NOT NULL DEFAULT '',
+    worker_id            TEXT    NOT NULL DEFAULT '',
     deps_json            TEXT    NOT NULL DEFAULT '[]',
     inputs_json          TEXT    NOT NULL DEFAULT '{}',
     allowed_paths_json   TEXT    NOT NULL DEFAULT '[]',
     forbidden_paths_json TEXT    NOT NULL DEFAULT '[]',
+    tools_required_json  TEXT    NOT NULL DEFAULT '[]',
+    risk_level           TEXT    NOT NULL DEFAULT 'medium',
     acceptance_json      TEXT    NOT NULL DEFAULT '[]',
     priority             INTEGER NOT NULL DEFAULT 100,
     execution_lock       TEXT    NOT NULL DEFAULT 'repo-write',
@@ -187,6 +190,76 @@ CREATE TABLE IF NOT EXISTS code_index_refs (
     ref_kind   TEXT    NOT NULL DEFAULT 'import'
 );
 
+CREATE TABLE IF NOT EXISTS architecture_states (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      TEXT    NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    version         INTEGER NOT NULL,
+    status          TEXT    NOT NULL DEFAULT 'active',
+    components_json TEXT    NOT NULL DEFAULT '[]',
+    interfaces_json TEXT    NOT NULL DEFAULT '[]',
+    boundaries_json TEXT    NOT NULL DEFAULT '[]',
+    data_flows_json TEXT    NOT NULL DEFAULT '[]',
+    constraints_json TEXT   NOT NULL DEFAULT '[]',
+    adr_summary     TEXT    NOT NULL DEFAULT '',
+    created_by      TEXT    NOT NULL DEFAULT 'architect',
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(project_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS task_strategy (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    graph_id               INTEGER NOT NULL REFERENCES task_graphs(id) ON DELETE CASCADE,
+    parallel_lanes_json    TEXT    NOT NULL DEFAULT '[]',
+    risk_assessment_json   TEXT    NOT NULL DEFAULT '[]',
+    execution_strategy_json TEXT   NOT NULL DEFAULT '{}',
+    created_at             TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS worker_registry (
+    id                TEXT PRIMARY KEY,
+    label             TEXT NOT NULL,
+    transport         TEXT NOT NULL DEFAULT 'ssh',
+    endpoint_json     TEXT NOT NULL DEFAULT '{}',
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    status            TEXT NOT NULL DEFAULT 'active',
+    priority          INTEGER NOT NULL DEFAULT 100,
+    last_seen_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS node_worker_assignments (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    graph_id          INTEGER NOT NULL REFERENCES task_graphs(id) ON DELETE CASCADE,
+    node_id           INTEGER NOT NULL REFERENCES task_nodes(id) ON DELETE CASCADE,
+    worker_id         TEXT NOT NULL REFERENCES worker_registry(id),
+    assignment_reason TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(graph_id, node_id)
+);
+
+CREATE TABLE IF NOT EXISTS learning_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    graph_id     INTEGER REFERENCES task_graphs(id) ON DELETE SET NULL,
+    node_id      INTEGER REFERENCES task_nodes(id) ON DELETE SET NULL,
+    failure_type TEXT NOT NULL DEFAULT '',
+    critic_code  TEXT NOT NULL DEFAULT '',
+    pattern_key  TEXT NOT NULL,
+    event_json   TEXT NOT NULL DEFAULT '{}',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS prompt_policies (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope       TEXT NOT NULL,
+    project_id  TEXT NOT NULL DEFAULT '',
+    policy_kind TEXT NOT NULL,
+    policy_json TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT 'learning',
+    active      INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(scope, project_id, policy_kind, active)
+);
+
 -- â”€â”€ Provider usage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 -- Daily quota tracking â€” one row per provider per day.
 CREATE TABLE IF NOT EXISTS provider_usage (
@@ -227,6 +300,16 @@ CREATE INDEX IF NOT EXISTS idx_code_index_symbols_project_symbol
     ON code_index_symbols(project_id, symbol);
 CREATE INDEX IF NOT EXISTS idx_code_index_refs_project_from
     ON code_index_refs(project_id, from_path);
+CREATE INDEX IF NOT EXISTS idx_architecture_states_project_status
+    ON architecture_states(project_id, status, version);
+CREATE INDEX IF NOT EXISTS idx_node_worker_assignments_graph_node
+    ON node_worker_assignments(graph_id, node_id);
+CREATE INDEX IF NOT EXISTS idx_learning_events_project_pattern
+    ON learning_events(project_id, pattern_key);
+CREATE INDEX IF NOT EXISTS idx_learning_events_project_failure
+    ON learning_events(project_id, failure_type);
+CREATE INDEX IF NOT EXISTS idx_prompt_policies_scope_kind
+    ON prompt_policies(scope, project_id, policy_kind, active);
 """
 
 # Clean tasks DDL used when recreating the table from a legacy schema.
@@ -291,6 +374,9 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
         "ALTER TABLE task_nodes ADD COLUMN failure_type TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE task_nodes ADD COLUMN started_at TEXT",
         "ALTER TABLE task_nodes ADD COLUMN finished_at TEXT",
+        "ALTER TABLE task_nodes ADD COLUMN worker_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE task_nodes ADD COLUMN tools_required_json TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE task_nodes ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'medium'",
     ]:
         try:
             await db.execute(sql)
@@ -351,6 +437,16 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
         "ON code_index_symbols(project_id, symbol)",
         "CREATE INDEX IF NOT EXISTS idx_code_index_refs_project_from "
         "ON code_index_refs(project_id, from_path)",
+        "CREATE INDEX IF NOT EXISTS idx_architecture_states_project_status "
+        "ON architecture_states(project_id, status, version)",
+        "CREATE INDEX IF NOT EXISTS idx_node_worker_assignments_graph_node "
+        "ON node_worker_assignments(graph_id, node_id)",
+        "CREATE INDEX IF NOT EXISTS idx_learning_events_project_pattern "
+        "ON learning_events(project_id, pattern_key)",
+        "CREATE INDEX IF NOT EXISTS idx_learning_events_project_failure "
+        "ON learning_events(project_id, failure_type)",
+        "CREATE INDEX IF NOT EXISTS idx_prompt_policies_scope_kind "
+        "ON prompt_policies(scope, project_id, policy_kind, active)",
     ]:
         try:
             await db.execute(idx_sql)

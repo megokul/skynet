@@ -114,6 +114,7 @@ class ClosedLoopController:
                     "tools_required": list(spec.get("tools_required") or []),
                     "acceptance": list(spec.get("acceptance") or []),
                     "risk": dict(spec.get("risk") or {}),
+                    "risk_level": str(spec.get("risk_level") or (spec.get("risk") or {}).get("level") or "medium"),
                     "owner": str(spec.get("owner") or "codex"),
                 }
             )
@@ -149,6 +150,7 @@ class ClosedLoopController:
                 title=milestone_text or f"Milestone {index}",
                 node_type="work",
                 owner=str(spec.get("owner") or "codex"),
+                worker_id=str(spec.get("worker_id") or "").strip(),
                 deps=work_deps,
                 inputs={
                     "milestone_text": milestone_text,
@@ -158,6 +160,8 @@ class ClosedLoopController:
                     "risk": dict(spec.get("risk") or {}),
                 },
                 retry_budget=0,
+                tools_required=list(spec.get("tools_required") or []),
+                risk_level=str(spec.get("risk_level") or (spec.get("risk") or {}).get("level") or "medium"),
                 priority=int(spec.get("priority") or 200),
                 execution_lock="repo-write",
             )
@@ -171,6 +175,8 @@ class ClosedLoopController:
                 deps=[work_key],
                 inputs={"milestone_text": milestone_text, "work_node_key": work_key},
                 retry_budget=self._repair_retries,
+                tools_required=[],
+                risk_level="medium",
                 priority=150,
                 execution_lock="repo-write",
             )
@@ -185,6 +191,8 @@ class ClosedLoopController:
             owner="system",
             deps=critic_keys,
             retry_budget=0,
+            tools_required=[],
+            risk_level="low",
             priority=120,
             execution_lock="repo-write",
         )
@@ -528,12 +536,15 @@ class ClosedLoopController:
                 title=f"Repair for {node.node_key}",
                 node_type="repair",
                 owner="codex",
+                worker_id=node.worker_id,
                 deps=current_deps,
                 inputs={
                     "critic_node_key": node.node_key,
                     "findings": findings,
                 },
                 retry_budget=0,
+                tools_required=list(node.tools_required),
+                risk_level=node.risk_level,
                 priority=max(120, int(node.priority) + 10),
                 execution_lock="repo-write",
             )
@@ -627,6 +638,13 @@ class ClosedLoopController:
                 deps = []
         except Exception:
             deps = []
+        tools_raw = row.get("tools_required_json") or "[]"
+        try:
+            tools_required = json.loads(str(tools_raw))
+            if not isinstance(tools_required, list):
+                tools_required = []
+        except Exception:
+            tools_required = []
         try:
             payload = json.loads(str(inputs_raw))
             if not isinstance(payload, dict):
@@ -639,7 +657,10 @@ class ClosedLoopController:
             title=str(row.get("title") or ""),
             node_type=str(row.get("node_type") or ""),
             owner=str(row.get("owner") or ""),
+            worker_id=str(row.get("worker_id") or ""),
             deps=[str(item).strip() for item in deps if str(item).strip()],
+            tools_required=[str(item).strip() for item in tools_required if str(item).strip()],
+            risk_level=str(row.get("risk_level") or "medium"),
             priority=int(row.get("priority", 100) or 100),
             execution_lock=str(row.get("execution_lock") or "repo-write"),
             retry_budget=int(row.get("retry_budget", 0) or 0),

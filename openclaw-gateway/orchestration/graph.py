@@ -13,7 +13,10 @@ class LoopNode:
     title: str
     node_type: str
     owner: str
+    worker_id: str = ""
     deps: list[str] = field(default_factory=list)
+    tools_required: list[str] = field(default_factory=list)
+    risk_level: str = "medium"
     priority: int = 100
     execution_lock: str = "repo-write"
     retry_budget: int = 0

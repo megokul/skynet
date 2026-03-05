@@ -446,10 +446,13 @@ async def create_task_node(
     title: str,
     node_type: str,
     owner: str = "",
+    worker_id: str = "",
     deps: list[str] | None = None,
     inputs: dict[str, Any] | None = None,
     allowed_paths: list[str] | None = None,
     forbidden_paths: list[str] | None = None,
+    tools_required: list[str] | None = None,
+    risk_level: str = "medium",
     acceptance: list[dict[str, Any]] | None = None,
     priority: int = 100,
     execution_lock: str = "repo-write",
@@ -466,12 +469,12 @@ async def create_task_node(
     async with db.execute(
         """
         INSERT INTO task_nodes (
-            graph_id, node_key, title, node_type, owner,
-            deps_json, inputs_json, allowed_paths_json, forbidden_paths_json,
+            graph_id, node_key, title, node_type, owner, worker_id,
+            deps_json, inputs_json, allowed_paths_json, forbidden_paths_json, tools_required_json, risk_level,
             acceptance_json, priority, execution_lock, retry_budget, attempt_count, status,
             failure_type, result_summary, error_message, started_at, finished_at, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             int(graph_id),
@@ -479,10 +482,13 @@ async def create_task_node(
             title.strip(),
             node_type.strip(),
             owner.strip(),
+            worker_id.strip(),
             _dump_json(deps or [], "[]"),
             _dump_json(inputs or {}, "{}"),
             _dump_json(allowed_paths or [], "[]"),
             _dump_json(forbidden_paths or [], "[]"),
+            _dump_json(tools_required or [], "[]"),
+            risk_level.strip().lower() or "medium",
             _dump_json(acceptance or [], "[]"),
             int(priority),
             execution_lock.strip() or "repo-write",
@@ -932,6 +938,468 @@ async def query_code_index(
         (project_id, *file_params, max(1, int(top_k))),
     ) as cur:
         return [dict(r) for r in await cur.fetchall()]
+
+
+async def update_task_node_worker(
+    db: aiosqlite.Connection,
+    *,
+    node_id: int,
+    worker_id: str,
+) -> None:
+    await db.execute(
+        """
+        UPDATE task_nodes
+        SET worker_id = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (worker_id.strip(), _now(), int(node_id)),
+    )
+    await db.commit()
+
+
+async def create_architecture_state(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+    version: int,
+    status: str = "active",
+    components: list[dict[str, Any]] | None = None,
+    interfaces: list[dict[str, Any]] | None = None,
+    boundaries: list[dict[str, Any]] | None = None,
+    data_flows: list[dict[str, Any]] | None = None,
+    constraints: list[dict[str, Any]] | None = None,
+    adr_summary: str = "",
+    created_by: str = "architect",
+) -> dict[str, Any]:
+    async with db.execute(
+        """
+        INSERT INTO architecture_states (
+            project_id, version, status, components_json, interfaces_json,
+            boundaries_json, data_flows_json, constraints_json, adr_summary, created_by
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            project_id,
+            int(version),
+            status.strip() or "active",
+            _dump_json(components or [], "[]"),
+            _dump_json(interfaces or [], "[]"),
+            _dump_json(boundaries or [], "[]"),
+            _dump_json(data_flows or [], "[]"),
+            _dump_json(constraints or [], "[]"),
+            adr_summary.strip(),
+            created_by.strip() or "architect",
+        ),
+    ) as cur:
+        state_id = cur.lastrowid
+    await db.commit()
+    async with db.execute("SELECT * FROM architecture_states WHERE id = ?", (state_id,)) as cur:
+        row = _row(await cur.fetchone())
+    return _decode_architecture_state(row)
+
+
+def _decode_architecture_state(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    out = dict(row)
+    for json_field, key in [
+        ("components_json", "components"),
+        ("interfaces_json", "interfaces"),
+        ("boundaries_json", "boundaries"),
+        ("data_flows_json", "data_flows"),
+        ("constraints_json", "constraints"),
+    ]:
+        try:
+            parsed = json.loads(str(out.get(json_field) or "[]"))
+        except Exception:
+            parsed = []
+        out[key] = parsed if isinstance(parsed, list) else []
+    return out
+
+
+async def get_active_architecture_state(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+) -> dict[str, Any] | None:
+    async with db.execute(
+        """
+        SELECT * FROM architecture_states
+        WHERE project_id = ? AND status = 'active'
+        ORDER BY version DESC
+        LIMIT 1
+        """,
+        (project_id,),
+    ) as cur:
+        row = _row(await cur.fetchone())
+    return _decode_architecture_state(row)
+
+
+async def supersede_architecture_state(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+    previous_version: int,
+) -> None:
+    await db.execute(
+        """
+        UPDATE architecture_states
+        SET status = 'superseded'
+        WHERE project_id = ? AND version = ? AND status = 'active'
+        """,
+        (project_id, int(previous_version)),
+    )
+    await db.commit()
+
+
+async def create_task_strategy(
+    db: aiosqlite.Connection,
+    *,
+    graph_id: int,
+    parallel_lanes: list[dict[str, Any]] | None = None,
+    risk_assessment: list[dict[str, Any]] | None = None,
+    execution_strategy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    async with db.execute(
+        """
+        INSERT INTO task_strategy (
+            graph_id, parallel_lanes_json, risk_assessment_json, execution_strategy_json
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            int(graph_id),
+            _dump_json(parallel_lanes or [], "[]"),
+            _dump_json(risk_assessment or [], "[]"),
+            _dump_json(execution_strategy or {}, "{}"),
+        ),
+    ) as cur:
+        strategy_id = cur.lastrowid
+    await db.commit()
+    async with db.execute("SELECT * FROM task_strategy WHERE id = ?", (strategy_id,)) as cur:
+        row = _row(await cur.fetchone())
+    return _decode_task_strategy(row)
+
+
+def _decode_task_strategy(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    out = dict(row)
+    for json_field, key, default in [
+        ("parallel_lanes_json", "parallel_lanes", []),
+        ("risk_assessment_json", "risk_assessment", []),
+        ("execution_strategy_json", "execution_strategy", {}),
+    ]:
+        try:
+            parsed = json.loads(str(out.get(json_field) or _dump_json(default)))
+        except Exception:
+            parsed = default
+        out[key] = parsed if isinstance(parsed, type(default)) else default
+    return out
+
+
+async def get_task_strategy(
+    db: aiosqlite.Connection,
+    *,
+    graph_id: int,
+) -> dict[str, Any] | None:
+    async with db.execute(
+        """
+        SELECT * FROM task_strategy
+        WHERE graph_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (int(graph_id),),
+    ) as cur:
+        row = _row(await cur.fetchone())
+    return _decode_task_strategy(row)
+
+
+async def upsert_worker_registry(
+    db: aiosqlite.Connection,
+    *,
+    worker_id: str,
+    label: str,
+    transport: str = "ssh",
+    endpoint: dict[str, Any] | None = None,
+    capabilities: list[str] | None = None,
+    status: str = "active",
+    priority: int = 100,
+) -> dict[str, Any]:
+    await db.execute(
+        """
+        INSERT INTO worker_registry (
+            id, label, transport, endpoint_json, capabilities_json, status, priority, last_seen_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            label = excluded.label,
+            transport = excluded.transport,
+            endpoint_json = excluded.endpoint_json,
+            capabilities_json = excluded.capabilities_json,
+            status = excluded.status,
+            priority = excluded.priority,
+            last_seen_at = excluded.last_seen_at
+        """,
+        (
+            worker_id.strip(),
+            label.strip() or worker_id.strip(),
+            transport.strip() or "ssh",
+            _dump_json(endpoint or {}, "{}"),
+            _dump_json(capabilities or [], "[]"),
+            status.strip() or "active",
+            int(priority),
+            _now(),
+        ),
+    )
+    await db.commit()
+    async with db.execute("SELECT * FROM worker_registry WHERE id = ?", (worker_id.strip(),)) as cur:
+        row = _row(await cur.fetchone())
+    return _decode_worker_row(row) or {}
+
+
+def _decode_worker_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    out = dict(row)
+    try:
+        endpoint = json.loads(str(out.get("endpoint_json") or "{}"))
+    except Exception:
+        endpoint = {}
+    try:
+        capabilities = json.loads(str(out.get("capabilities_json") or "[]"))
+    except Exception:
+        capabilities = []
+    out["endpoint"] = endpoint if isinstance(endpoint, dict) else {}
+    out["capabilities"] = [str(item).strip() for item in capabilities if str(item).strip()]
+    return out
+
+
+async def list_active_workers(
+    db: aiosqlite.Connection,
+) -> list[dict[str, Any]]:
+    async with db.execute(
+        """
+        SELECT * FROM worker_registry
+        WHERE status = 'active'
+        ORDER BY priority DESC, id ASC
+        """
+    ) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        decoded = _decode_worker_row(row)
+        if decoded:
+            out.append(decoded)
+    return out
+
+
+async def create_node_worker_assignment(
+    db: aiosqlite.Connection,
+    *,
+    graph_id: int,
+    node_id: int,
+    worker_id: str,
+    assignment_reason: str = "",
+) -> dict[str, Any]:
+    await db.execute(
+        """
+        INSERT INTO node_worker_assignments (graph_id, node_id, worker_id, assignment_reason)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(graph_id, node_id) DO UPDATE SET
+            worker_id = excluded.worker_id,
+            assignment_reason = excluded.assignment_reason
+        """,
+        (
+            int(graph_id),
+            int(node_id),
+            worker_id.strip(),
+            assignment_reason.strip(),
+        ),
+    )
+    await db.commit()
+    async with db.execute(
+        """
+        SELECT * FROM node_worker_assignments
+        WHERE graph_id = ? AND node_id = ?
+        LIMIT 1
+        """,
+        (int(graph_id), int(node_id)),
+    ) as cur:
+        return _row(await cur.fetchone()) or {}
+
+
+async def get_node_worker_assignment(
+    db: aiosqlite.Connection,
+    *,
+    graph_id: int,
+    node_id: int,
+) -> dict[str, Any] | None:
+    async with db.execute(
+        """
+        SELECT * FROM node_worker_assignments
+        WHERE graph_id = ? AND node_id = ?
+        LIMIT 1
+        """,
+        (int(graph_id), int(node_id)),
+    ) as cur:
+        return _row(await cur.fetchone())
+
+
+async def create_learning_event(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+    graph_id: int | None,
+    node_id: int | None,
+    failure_type: str,
+    critic_code: str = "",
+    pattern_key: str,
+    event: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    async with db.execute(
+        """
+        INSERT INTO learning_events (
+            project_id, graph_id, node_id, failure_type, critic_code, pattern_key, event_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            project_id,
+            int(graph_id) if isinstance(graph_id, int) else None,
+            int(node_id) if isinstance(node_id, int) else None,
+            failure_type.strip(),
+            critic_code.strip(),
+            pattern_key.strip(),
+            _dump_json(event or {}, "{}"),
+        ),
+    ) as cur:
+        learning_id = cur.lastrowid
+    await db.commit()
+    async with db.execute("SELECT * FROM learning_events WHERE id = ?", (learning_id,)) as cur:
+        row = _row(await cur.fetchone())
+    if row:
+        try:
+            row["event"] = json.loads(str(row.get("event_json") or "{}"))
+        except Exception:
+            row["event"] = {}
+    return row or {}
+
+
+async def list_learning_events(
+    db: aiosqlite.Connection,
+    *,
+    project_id: str,
+    pattern_key: str | None = None,
+    failure_type: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    clauses = ["project_id = ?"]
+    params: list[Any] = [project_id]
+    if pattern_key:
+        clauses.append("pattern_key = ?")
+        params.append(pattern_key.strip())
+    if failure_type:
+        clauses.append("failure_type = ?")
+        params.append(failure_type.strip())
+    where = " AND ".join(clauses)
+    query = (
+        f"SELECT * FROM learning_events WHERE {where} "
+        "ORDER BY id DESC LIMIT ?"
+    )
+    params.append(max(1, int(limit)))
+    async with db.execute(query, tuple(params)) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    rows.reverse()
+    for row in rows:
+        try:
+            row["event"] = json.loads(str(row.get("event_json") or "{}"))
+        except Exception:
+            row["event"] = {}
+    return rows
+
+
+async def upsert_prompt_policy(
+    db: aiosqlite.Connection,
+    *,
+    scope: str,
+    project_id: str,
+    policy_kind: str,
+    policy: dict[str, Any],
+    source: str = "learning",
+    active: bool = True,
+) -> dict[str, Any]:
+    scope_value = scope.strip() or "project"
+    project_value = project_id.strip() if scope_value == "project" else ""
+    kind_value = policy_kind.strip()
+    active_value = 1 if active else 0
+
+    if active_value == 1:
+        await db.execute(
+            """
+            UPDATE prompt_policies
+            SET active = 0
+            WHERE scope = ? AND project_id = ? AND policy_kind = ? AND active = 1
+            """,
+            (scope_value, project_value, kind_value),
+        )
+
+    async with db.execute(
+        """
+        INSERT INTO prompt_policies (
+            scope, project_id, policy_kind, policy_json, source, active
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            scope_value,
+            project_value,
+            kind_value,
+            _dump_json(policy or {}, "{}"),
+            source.strip() or "learning",
+            active_value,
+        ),
+    ) as cur:
+        policy_id = cur.lastrowid
+    await db.commit()
+    async with db.execute("SELECT * FROM prompt_policies WHERE id = ?", (policy_id,)) as cur:
+        row = _row(await cur.fetchone())
+    if row:
+        try:
+            row["policy"] = json.loads(str(row.get("policy_json") or "{}"))
+        except Exception:
+            row["policy"] = {}
+    return row or {}
+
+
+async def get_active_prompt_policy(
+    db: aiosqlite.Connection,
+    *,
+    scope: str,
+    project_id: str,
+    policy_kind: str,
+) -> dict[str, Any] | None:
+    scope_value = scope.strip() or "project"
+    project_value = project_id.strip() if scope_value == "project" else ""
+    async with db.execute(
+        """
+        SELECT * FROM prompt_policies
+        WHERE scope = ? AND project_id = ? AND policy_kind = ? AND active = 1
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (scope_value, project_value, policy_kind.strip()),
+    ) as cur:
+        row = _row(await cur.fetchone())
+    if not row:
+        return None
+    try:
+        row["policy"] = json.loads(str(row.get("policy_json") or "{}"))
+    except Exception:
+        row["policy"] = {}
+    return row
 
 
 async def record_provider_usage(
