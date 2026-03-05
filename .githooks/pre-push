@@ -10,9 +10,8 @@ if [ ! -f ".env" ]; then
   exit 0
 fi
 
-# Default: non-blocking sync so git push reliability is not coupled to GH secret API calls.
-# Set SKYNET_ENV_SYNC_STRICT=1 to fail push when sync fails.
-strict_mode="${SKYNET_ENV_SYNC_STRICT:-0}"
+# Default: strict sync. Set SKYNET_ENV_SYNC_STRICT=0 to allow push on sync failures.
+strict_mode="${SKYNET_ENV_SYNC_STRICT:-1}"
 sync_rc=0
 
 if command -v python >/dev/null 2>&1; then
@@ -24,12 +23,13 @@ else
 fi
 
 if [ "$sync_rc" -ne 0 ]; then
-  if [ "$strict_mode" = "1" ]; then
-    echo "pre-push: env sync failed (exit=$sync_rc) and SKYNET_ENV_SYNC_STRICT=1, blocking push." >&2
-    exit "$sync_rc"
+  if [ "$strict_mode" = "0" ]; then
+    echo "pre-push: env sync failed (exit=$sync_rc); continuing push (SKYNET_ENV_SYNC_STRICT=0)." >&2
+    exit 0
   fi
-  echo "pre-push: env sync failed (exit=$sync_rc); continuing push." >&2
-  echo "pre-push: set SKYNET_ENV_SYNC_STRICT=1 to block push on sync errors." >&2
+  echo "pre-push: env sync failed (exit=$sync_rc) and strict mode is enabled, blocking push." >&2
+  echo "pre-push: set SKYNET_ENV_SYNC_STRICT=0 to bypass temporarily." >&2
+  exit "$sync_rc"
 fi
 
 exit 0
