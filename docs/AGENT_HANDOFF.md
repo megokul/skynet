@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-06 15:02
+Last updated (UTC): 2026-03-06 15:16
 
 ## Current Goal
 
@@ -40,6 +40,23 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
 - Deployment alignment fix:
   - updated `.github/workflows/deploy-ec2-skynet.yml` so `.env.ci` no longer forces legacy trace payload mode.
   - deploy now exports forensic trace defaults (`DETAIL_PROFILE=max_forensic`, `PAYLOAD_MODE=forensic_redacted`, remote snapshot/session-registry flags).
+
+### 2026-03-06 Deployment Repair: Runtime Trace Schema Migration Order
+
+- GitHub Actions run `22769176004` failed in `Deploy on self-hosted runner -> Verify deployment`.
+- Root cause:
+  - `openclaw-gateway` startup ran `init_db()` against an existing SQLite file whose `runtime_trace_events` table predated the new forensic columns.
+  - `SCHEMA_SQL` attempted to create `idx_runtime_trace_session_created` before the migration step added `session_key`, causing:
+    - `sqlite3.OperationalError: no such column: session_key`
+- Fix in `openclaw-gateway/db/schema.py`:
+  - removed runtime-trace indexes from bootstrap `SCHEMA_SQL`
+  - re-created them only in the post-migration index pass, after `ALTER TABLE ... ADD COLUMN session_key/root_trace_id/event_id/remote_pid/artifact_count`
+  - added missing post-migration indexes:
+    - `idx_runtime_trace_session_created`
+    - `idx_runtime_trace_project_graph_created`
+- Regression coverage:
+  - `openclaw-gateway/tests/test_runtime_trace_forensic.py::test_init_db_upgrades_legacy_runtime_trace_schema`
+  - creates a legacy `runtime_trace_events` table and verifies `init_db()` upgrades columns and indexes safely.
 
 ### 2026-03-06 Trace-First Live E2E + Container Stream Update
 
@@ -565,6 +582,12 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
 
 ## Test Results
 
+- `python -m py_compile openclaw-gateway/db/schema.py openclaw-gateway/tests/test_runtime_trace_forensic.py`
+  - pass
+- `python -m pytest openclaw-gateway/tests/test_runtime_trace.py openclaw-gateway/tests/test_runtime_trace_forensic.py openclaw-gateway/tests/test_ssh_executor_trace_forensics.py openclaw-gateway/tests/test_trace_command.py openclaw-gateway/tests/test_tracker_progress.py -q`
+  - `14 passed`
+- `python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD`
+  - pass
 - `python -m py_compile openclaw-gateway/bot/handlers/coding.py openclaw-gateway/bot/handlers/project.py openclaw-gateway/runtime_trace.py openclaw-gateway/ssh_tunnel_executor.py openclaw-gateway/tests/test_runtime_trace.py openclaw-gateway/tests/test_runtime_trace_forensic.py openclaw-gateway/tests/test_ssh_executor_trace_forensics.py openclaw-gateway/tests/test_tracker_progress.py`
   - pass
 - `python -m pytest openclaw-gateway/tests/test_runtime_trace.py openclaw-gateway/tests/test_runtime_trace_forensic.py openclaw-gateway/tests/test_ssh_executor_trace_forensics.py openclaw-gateway/tests/test_trace_command.py openclaw-gateway/tests/test_tracker_progress.py -q`
@@ -638,6 +661,10 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
   - `1 passed` (`test_live_conversation_real_planner_codegen_and_github_push`, ~143s, trace `e2e-live-1772610595.log`)
 ## Trace Evidence
 
+- request_id=deploy-repair-runtime-trace-schema-order-20260306
+- task_id=runtime-trace-legacy-migration-index-fix
+- GitHub Actions run `22769176004`
+- skynet.trace.log
 - request_id=max-forensic-runtime-trace-20260306
 - task_id=ssh-first-live-e2e-trace-expansion
 - skynet.trace.log

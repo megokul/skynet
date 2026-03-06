@@ -333,16 +333,6 @@ CREATE INDEX IF NOT EXISTS idx_project_memory_lookup
     ON project_memory(project_id, tier, memory_key);
 CREATE INDEX IF NOT EXISTS idx_task_node_events_graph_created
     ON task_node_events(graph_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_runtime_trace_trace_id_created
-    ON runtime_trace_events(trace_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_runtime_trace_session_created
-    ON runtime_trace_events(session_key, created_at);
-CREATE INDEX IF NOT EXISTS idx_runtime_trace_project_created
-    ON runtime_trace_events(project_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_runtime_trace_graph_created
-    ON runtime_trace_events(graph_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_runtime_trace_project_graph_created
-    ON runtime_trace_events(project_id, graph_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_code_index_files_project_updated
     ON code_index_files(project_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_code_index_symbols_project_symbol
@@ -487,10 +477,14 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
         "ON task_node_events(graph_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_runtime_trace_trace_id_created "
         "ON runtime_trace_events(trace_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_runtime_trace_session_created "
+        "ON runtime_trace_events(session_key, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_runtime_trace_project_created "
         "ON runtime_trace_events(project_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_runtime_trace_graph_created "
         "ON runtime_trace_events(graph_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_runtime_trace_project_graph_created "
+        "ON runtime_trace_events(project_id, graph_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_code_index_files_project_updated "
         "ON code_index_files(project_id, updated_at)",
         "CREATE INDEX IF NOT EXISTS idx_code_index_symbols_project_symbol "
