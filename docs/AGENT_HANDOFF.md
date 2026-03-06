@@ -1,10 +1,29 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-06 08:30
+Last updated (UTC): 2026-03-06 09:02
 
 ## Current Goal
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-06 Codex Prompt Transport + Gate Heartbeat Update
+
+- Root-cause from live Telegram E2E (`livee2e1772786667`):
+  - Windows SSH Codex prompt delivery was brittle for multiline payloads because prompt text was passed via argv.
+  - Gate auto-fix (`_run_quality_fix_pass`) could run silently long enough for live E2E polling to timeout even while work was still progressing.
+- Applied fixes:
+  - `openclaw-gateway/ssh_tunnel_executor.py`
+    - Added stdin prompt delivery path for Windows (`codex exec -`) via `_run_windows_command_with_prompt_file(..., prompt_via_stdin=True)`.
+    - Added `coding.prompt.transport` runtime trace event with prompt length/newline metrics and delivery mode (`stdin|argv`).
+  - `openclaw-gateway/bot/handlers/coding.py`
+    - `_run_quality_fix_pass` now supports heartbeat-wrapped `run_coding_agent` execution.
+    - `_run_strict_quality_gates` now passes app/chat/user context to quality-fix path and emits periodic `run_contract` running updates during auto-fix.
+    - Updated both control-loop and legacy strict-gate call sites to provide heartbeat context.
+  - `openclaw-gateway/tests/test_ssh_executor_resilience.py`
+    - Added regression test validating stdin prompt transport script generation on Windows prompt-file runner.
+- CI note:
+  - Policy gate run `22756380094` initially failed because `docs/AGENT_HANDOFF.md` was not included with code changes.
+  - This handoff update resolves that policy requirement for the next push.
 
 ### 2026-03-06 Control-Loop Timeout Crash Hardening Update
 
