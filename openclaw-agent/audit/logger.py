@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from config import AUDIT_LOG_DIR, AUDIT_LOG_FILE
+from agent_config import AUDIT_LOG_DIR, AUDIT_LOG_FILE
 
 logger = logging.getLogger("chathan.audit")
 
@@ -170,3 +170,4 @@ def _append_line(path: str, line: str) -> None:
 
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(line)
+

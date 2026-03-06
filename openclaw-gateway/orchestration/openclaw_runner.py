@@ -8,7 +8,7 @@ import time
 import uuid
 from typing import Any
 
-import config as cfg
+import gateway_config as cfg
 
 
 class OpenClawRunner:
@@ -303,3 +303,4 @@ def get_openclaw_runner() -> OpenClawRunner:
     if _RUNNER is None:
         _RUNNER = OpenClawRunner()
     return _RUNNER
+

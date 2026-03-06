@@ -1,7 +1,7 @@
 import json
 
 import aiosqlite
-import config as cfg
+import gateway_config as cfg
 import pytest
 from db.schema import init_db
 from runtime_trace import (
@@ -118,3 +118,4 @@ async def test_init_db_upgrades_legacy_runtime_trace_schema(tmp_path):
         assert "idx_runtime_trace_project_graph_created" in index_names
     finally:
         await db.close()
+

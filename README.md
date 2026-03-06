@@ -7,6 +7,50 @@ Implementation/debug/policy docs: `docs/INDEX.md`.
 - SKYNET orchestrates OpenClaw gateways.
 - SKYNET does not run agent runtime/tool execution logic.
 
+## WebSocket-First Execution Model
+
+Current worker transport policy:
+
+1. `openclaw-gateway` prefers the connected `openclaw-agent` websocket channel.
+2. SSH remains configured as automatic fallback.
+3. Gateway runtime traces and `/status` now expose:
+   - `primary_transport_mode`
+   - websocket heartbeat health
+   - fallback readiness/reason
+   - websocket log-mirror health
+
+Worker runtime model:
+
+1. EC2 hosts the control plane and gateway services.
+2. Worker laptop hosts:
+   - `openclaw-agent`
+   - `codex` and local toolchain
+   - project files
+3. The recommended worker lifecycle is the scheduled-task path:
+   - `scripts/install_worker_agent.ps1`
+   - `scripts/register_worker_agent_task.ps1`
+   - `scripts/check_worker_agent_health.ps1`
+   - `scripts/repair_worker_agent.ps1`
+4. If Windows Scheduled Task registration is blocked by local workstation policy, start the worker agent in a detached user session with:
+   - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_worker_agent.ps1`
+   This keeps websocket-primary usable while SSH remains the fallback path.
+5. Worker secrets/config should live in `.env.worker-agent` derived from `.env.worker-agent.example`.
+
+Worker bootstrap notes:
+
+1. `scripts/run_worker_agent.ps1` now writes a bootstrap transcript to `logs\worker-agent.bootstrap.log`.
+2. The worker env loader no longer aborts on comment lines in `.env.worker-agent`.
+3. TCP tunnel probes now avoid the PowerShell `$Host` variable collision that previously killed launcher health checks.
+
+Live E2E websocket expectations:
+
+1. `SKYNET_E2E_REQUIRE_WEBSOCKET_PRIMARY=1` makes the real Telegram E2E fail unless runtime trace shows at least one `gateway.transport.select` event with `transport=websocket_primary`.
+2. `SKYNET_E2E_ALLOW_SSH_FALLBACK=1` allows degraded runs to continue when websocket falls back to SSH.
+3. The recommended deployment default remains:
+   - `OPENCLAW_EXECUTION_MODE=agent_preferred`
+   - `SKYNET_CODING_TRANSPORT=websocket_primary`
+   - `SKYNET_WEBSOCKET_FALLBACK_TO_SSH=1`
+
 ## Active Scope
 
 `skynet/` now contains control-plane code only:

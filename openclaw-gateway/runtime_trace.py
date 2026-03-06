@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import config as cfg
+import gateway_config as cfg
 
 _TRACE_LOGGER = logging.getLogger("skynet.trace.mirror")
 _FILE_LOCK = threading.Lock()
@@ -409,3 +409,4 @@ def command_preview(command: str) -> dict[str, str]:
         "command_preview": text,
         "command_hash": command_hash(command),
     }
+

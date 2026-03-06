@@ -29,7 +29,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-import config  # noqa: E402 — must come after path fixup
+import agent_config as config  # noqa: E402 — must come after path fixup
 from connection.websocket_client import run_agent  # noqa: E402
 
 
@@ -201,3 +201,4 @@ if __name__ == "__main__":
         pass
     finally:
         loop.close()
+

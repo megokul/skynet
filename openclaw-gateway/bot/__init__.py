@@ -6,7 +6,7 @@ returns a configured telegram.ext.Application ready to start polling.
 """
 from __future__ import annotations
 
-import config as cfg
+import gateway_config as cfg
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -112,3 +112,4 @@ def build_app(db, router) -> Application:
     app.add_handler(CallbackQueryHandler(run_project_handler,        pattern=f"^{CB_RUN_PROJECT}$"),       group=2)
 
     return app
+

@@ -1,10 +1,79 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-06 15:16
+Last updated (UTC): 2026-03-06 20:05
 
 ## Current Goal
 
-SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
+WebSocket-primary worker execution with SSH fallback, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-06 WebSocket-First Execution Model Rollout
+
+- Gateway transport layer in `openclaw-gateway/gateway.py` now supports:
+  - websocket-primary selection based on worker heartbeat freshness
+  - explicit `gateway.transport.select` and `gateway.transport.fallback` trace events
+  - `action_accepted` handling for in-flight websocket actions
+  - replay path for accepted mutating actions
+  - pre-accept SSH fallback on websocket send failure
+  - websocket log-mirror ack tracking (`log_write_ack`)
+- Gateway `/status` now exposes websocket health and mirror diagnostics in `openclaw-gateway/api.py`:
+  - `primary_transport_mode`
+  - `worker_id`
+  - `agent_last_hello_at`
+  - `agent_last_heartbeat_at`
+  - `websocket_health_ok`
+  - `websocket_error_category`
+  - `websocket_failure_streak`
+  - `fallback_ready`
+  - `fallback_last_reason`
+  - websocket log mirror send/ack/error fields
+  - dynamic `primary_transport_mode` (`websocket_primary`, `ssh_fallback`, `unavailable`)
+- Logging bootstrap now binds websocket mirror handlers to the runtime event loop:
+  - `openclaw-gateway/logging_setup.py`
+  - `openclaw-gateway/main.py`
+- Worker websocket client now supports:
+  - rich `agent_hello`
+  - periodic `agent_heartbeat`
+  - `action_accepted`
+  - `log_write_ack`
+  - concurrent action handling so long-running coding actions do not block probes/cancel requests
+- Worker router now supports websocket replay identity via:
+  - `task_id:idempotency_key`
+  - fallback `transport_id:idempotency_key`
+  - in-flight replay wait path
+- Worker executor now exposes websocket-compatible runtime controls:
+  - `trace_runtime_probe`
+  - `cancel_runtime_session`
+- Worker lifecycle scripts added:
+  - `scripts/install_worker_agent.ps1`
+  - `scripts/run_worker_agent.ps1`
+  - `scripts/register_worker_agent_task.ps1`
+  - `scripts/check_worker_agent_health.ps1`
+  - `scripts/repair_worker_agent.ps1`
+- Non-secret defaults/docs updated toward websocket-primary:
+  - `openclaw-gateway/settings/settings.yaml`
+  - `openclaw-gateway/settings/settings.example.yaml`
+  - `.env.ec2-gateway.example`
+  - `.env.local-e2e.example`
+  - `.env.worker-agent.example`
+  - `README.md`
+  - `docs/IMPLEMENTATION_GUIDE.md`
+  - `docs/DEBUG_PLAYBOOK.md`
+  - `docs/ARCHITECTURE_MAP.md`
+- Live Telegram E2E now proves websocket-primary selection from runtime trace:
+  - `SKYNET_E2E_REQUIRE_WEBSOCKET_PRIMARY=1`
+  - `SKYNET_E2E_ALLOW_SSH_FALLBACK=1`
+  - runtime trace summary checks for `gateway.transport.select transport=websocket_primary`
+- Telegram tracker/runtime trace surfaces now use dynamic transport/runtime labels instead of hardcoded SSH labels in websocket-primary runs.
+- Mixed gateway/agent pytest runs no longer collide on the bare `config.py` module:
+  - gateway code now imports `gateway_config.py`
+  - worker code now imports `agent_config.py`
+- Worker bootstrap fixes added after live bring-up:
+  - `.env.worker-agent` parsing no longer aborts on comment lines
+  - launcher writes `logs\worker-agent.bootstrap.log`
+  - tunnel probe helper no longer collides with PowerShell's built-in `$Host`
+- Current workstation note:
+  - `register_worker_agent_task.ps1` still hits local `Access is denied` on this laptop
+  - detached user-session launch via `scripts/run_worker_agent.ps1` is the current operational workaround
 
 ### 2026-03-06 Max-Forensic Runtime Trace + Telegram Tracker Update
 

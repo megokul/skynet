@@ -21,7 +21,10 @@ import os
 import re
 import logging
 import shutil
+import time
+import uuid
 from html import unescape
+from pathlib import Path
 from urllib import parse, request
 from typing import Any
 
@@ -29,6 +32,8 @@ logger = logging.getLogger("chathan.executor")
 
 # Upper bound on how long any single subprocess may run (seconds).
 _SUBPROCESS_TIMEOUT = 120
+_ACTIVE_RUNTIME_SESSIONS: dict[str, dict[str, Any]] = {}
+_ACTIVE_RUNTIME_SESSIONS_LOCK = asyncio.Lock()
 
 
 def _env_first(*names: str, default: str = "") -> str:
@@ -57,6 +62,97 @@ def _env_bool(*names: str, default: bool = False) -> bool:
         if text in falsy:
             return False
     return default
+
+
+async def _register_runtime_session(session_key: str, **fields: Any) -> None:
+    key = str(session_key or "").strip()
+    if not key:
+        return
+    async with _ACTIVE_RUNTIME_SESSIONS_LOCK:
+        entry = dict(_ACTIVE_RUNTIME_SESSIONS.get(key) or {})
+        entry.update(fields)
+        entry["session_key"] = key
+        _ACTIVE_RUNTIME_SESSIONS[key] = entry
+
+
+async def _get_runtime_session(session_key: str) -> dict[str, Any]:
+    key = str(session_key or "").strip()
+    async with _ACTIVE_RUNTIME_SESSIONS_LOCK:
+        entry = dict(_ACTIVE_RUNTIME_SESSIONS.get(key) or {})
+    return entry
+
+
+async def _pop_runtime_session(session_key: str) -> dict[str, Any]:
+    key = str(session_key or "").strip()
+    async with _ACTIVE_RUNTIME_SESSIONS_LOCK:
+        entry = dict(_ACTIVE_RUNTIME_SESSIONS.pop(key, {}) or {})
+    return entry
+
+
+def _artifact_snapshot(working_dir: str, *, max_files: int = 25) -> list[dict[str, Any]]:
+    target = str(working_dir or "").strip()
+    if not target or not os.path.isdir(target):
+        return []
+    rows: list[dict[str, Any]] = []
+    base = Path(target)
+    try:
+        for path in base.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            rows.append(
+                {
+                    "path": str(path.relative_to(base)).replace("\\", "/"),
+                    "size_bytes": int(stat.st_size),
+                    "mtime": float(stat.st_mtime),
+                }
+            )
+    except Exception:
+        return []
+    rows.sort(key=lambda item: item.get("mtime", 0.0), reverse=True)
+    return rows[:max_files]
+
+
+def _session_probe_payload(session: dict[str, Any], *, working_dir: str = "") -> dict[str, Any]:
+    proc = session.get("proc")
+    pid = ""
+    status = str(session.get("status") or "")
+    if proc is not None:
+        pid = str(getattr(proc, "pid", "") or "")
+        if getattr(proc, "returncode", None) is None and status != "cancelled":
+            status = "running"
+        elif getattr(proc, "returncode", None) is not None and status not in {"cancelled", "completed"}:
+            status = "completed"
+    artifact_dir = str(session.get("working_dir") or working_dir or "")
+    artifacts = _artifact_snapshot(artifact_dir, max_files=25)
+    return {
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "",
+        "remote_pid": pid,
+        "process_tree": [
+            {
+                "pid": pid,
+                "name": str(session.get("agent") or ""),
+                "status": status,
+                "working_dir": artifact_dir,
+            }
+        ]
+        if pid
+        else [],
+        "prompt_file": {
+            "path": "",
+            "exists": False,
+            "backend": "worker_agent",
+        },
+        "artifact_snapshot": artifacts,
+        "artifact_count": len(artifacts),
+        "python_validation_processes": [],
+        "cleanup_status": str(session.get("cleanup_status") or ""),
+    }
 
 
 # CLI resolution for local coding agents.
@@ -832,6 +928,64 @@ def _check_ollama_model(base_url: str, model: str) -> dict[str, Any]:
     return {"reachable": True, "present": False, "summary": "model missing"}
 
 
+async def _run_tracked_coding_subprocess(
+    *,
+    args: list[str],
+    cwd: str | None,
+    timeout: int,
+    session_key: str,
+    agent: str,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+        env=env,
+    )
+    await _register_runtime_session(
+        session_key,
+        proc=proc,
+        agent=agent,
+        status="running",
+        started_at=time.time(),
+        working_dir=str(cwd or ""),
+        remote_pid=str(getattr(proc, "pid", "") or ""),
+        cleanup_status="",
+    )
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        status = "completed"
+        cleanup_status = "completed"
+    except asyncio.TimeoutError:
+        proc.kill()
+        stdout_bytes, stderr_bytes = await proc.communicate()
+        status = "timed_out"
+        cleanup_status = f"timed_out_after_{timeout}s"
+    result = {
+        "returncode": proc.returncode if status != "timed_out" else -1,
+        "stdout": stdout_bytes.decode("utf-8", errors="replace")[:8192],
+        "stderr": stderr_bytes.decode("utf-8", errors="replace")[:4096],
+        "session_key": session_key,
+        "remote_pid": str(getattr(proc, "pid", "") or ""),
+    }
+    if status == "timed_out":
+        timeout_note = f"Process timed out after {timeout}s and was killed."
+        result["stderr"] = f"{timeout_note}\n{result['stderr']}".strip()
+    await _register_runtime_session(
+        session_key,
+        status=status,
+        cleanup_status=cleanup_status,
+        returncode=int(result["returncode"]),
+        stdout_tail=str(result["stdout"] or "")[-2000:],
+        stderr_tail=str(result["stderr"] or "")[-2000:],
+        finished_at=time.time(),
+    )
+    await _pop_runtime_session(session_key)
+    return result
+
+
 async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
     """
     Run a local coding agent CLI in non-interactive mode.
@@ -845,6 +999,7 @@ async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
     prompt = _require_param(params, "prompt")
     cwd = params.get("working_dir")
     timeout = params.get("timeout_seconds", _CODING_AGENT_TIMEOUT_SECONDS)
+    session_key = str(params.get("session_key") or uuid.uuid4().hex).strip()
     backend_raw = str(params.get("backend") or "auto").strip().lower()
     model = str(params.get("model") or "").strip()
     base_url = str(params.get("base_url") or _CLAUDE_OLLAMA_BASE_URL or "http://localhost:11434").strip().rstrip("/")
@@ -920,10 +1075,12 @@ async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
                 "ANTHROPIC_BASE_URL": base_url,
             }
         )
-        result = await _run(
-            [resolved, "--model", selected_model, "-p", prompt],
+        result = await _run_tracked_coding_subprocess(
+            args=[resolved, "--model", selected_model, "-p", prompt],
             cwd=cwd,
             timeout=timeout,
+            session_key=session_key,
+            agent=agent,
             env=env,
         )
 
@@ -946,6 +1103,7 @@ async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
                         f"below target {_CLAUDE_OLLAMA_MIN_CONTEXT}."
                     )
                     result["stdout"] = f"{warning}\n{result['stdout']}".strip()
+        result["session_key"] = session_key
         return result
 
     if agent == "claude":
@@ -953,10 +1111,79 @@ async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
         if model:
             args.extend(["--model", model])
         args.extend(["-p", prompt])
-        return await _run(args, cwd=cwd, timeout=timeout)
+        return await _run_tracked_coding_subprocess(
+            args=args,
+            cwd=cwd,
+            timeout=timeout,
+            session_key=session_key,
+            agent=agent,
+        )
 
     args = [resolved, *_CODING_AGENT_PREFIX_ARGS[agent], prompt]
-    return await _run(args, cwd=cwd, timeout=timeout)
+    return await _run_tracked_coding_subprocess(
+        args=args,
+        cwd=cwd,
+        timeout=timeout,
+        session_key=session_key,
+        agent=agent,
+    )
+
+
+async def trace_runtime_probe(params: dict[str, Any]) -> dict[str, Any]:
+    session_key = _require_param(params, "session_key")
+    session = await _get_runtime_session(session_key)
+    if not session:
+        return {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": f"No active session found for {session_key}",
+            "session_key": session_key,
+            "artifact_snapshot": _artifact_snapshot(str(params.get("working_dir") or ""), max_files=25),
+            "artifact_count": 0,
+            "process_tree": [],
+            "prompt_file": {"path": "", "exists": False, "backend": "worker_agent"},
+            "remote_pid": "",
+            "python_validation_processes": [],
+        }
+    payload = _session_probe_payload(session, working_dir=str(params.get("working_dir") or ""))
+    payload["session_key"] = session_key
+    return payload
+
+
+async def cancel_runtime_session(params: dict[str, Any]) -> dict[str, Any]:
+    session_key = _require_param(params, "session_key")
+    session = await _get_runtime_session(session_key)
+    if not session:
+        return {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": f"No active session found for {session_key}",
+            "session_key": session_key,
+            "process_tree": [],
+            "artifact_snapshot": _artifact_snapshot(str(params.get("working_dir") or ""), max_files=25),
+            "artifact_count": 0,
+            "prompt_file": {"path": "", "exists": False, "backend": "worker_agent"},
+            "remote_pid": "",
+            "cleanup_status": "missing",
+        }
+    proc = session.get("proc")
+    cleanup_status = "already_exited"
+    if proc is not None and getattr(proc, "returncode", None) is None:
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+            cleanup_status = "terminated"
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            cleanup_status = "killed"
+    await _register_runtime_session(session_key, status="cancelled", cleanup_status=cleanup_status)
+    updated = await _get_runtime_session(session_key)
+    payload = _session_probe_payload(updated, working_dir=str(params.get("working_dir") or ""))
+    payload["session_key"] = session_key
+    payload["cleanup_status"] = cleanup_status
+    await _pop_runtime_session(session_key)
+    return payload
 
 
 async def docker_build(params: dict[str, Any]) -> dict[str, Any]:
@@ -983,7 +1210,7 @@ async def close_app(params: dict[str, Any]) -> dict[str, Any]:
     Only applications in config.CLOSEABLE_APPS can be terminated.
     Uses ``taskkill /F /IM <process.exe>`` with a fixed argument list.
     """
-    from config import CLOSEABLE_APPS
+    from agent_config import CLOSEABLE_APPS
 
     app_name = _require_param(params, "app").lower()
 
@@ -1078,6 +1305,8 @@ ACTION_REGISTRY: dict[str, Any] = {
     "list_directory": list_directory,
     "ollama_chat": ollama_chat,
     "check_coding_agents": check_coding_agents,
+    "trace_runtime_probe": trace_runtime_probe,
+    "cancel_runtime_session": cancel_runtime_session,
     # CONFIRM
     "git_commit": git_commit,
     "install_dependencies": install_dependencies,
@@ -1096,3 +1325,4 @@ ACTION_REGISTRY: dict[str, Any] = {
     "close_app": close_app,
     "zip_project": zip_project,
 }
+

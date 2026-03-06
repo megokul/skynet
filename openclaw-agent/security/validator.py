@@ -17,8 +17,8 @@ import os
 import re
 from typing import Any
 
-import config
-from config import (
+import agent_config as config
+from agent_config import (
     ALLOWED_ROOTS,
     AUTO_ACTIONS,
     BLOCKED_ACTIONS,
@@ -199,3 +199,4 @@ def validate_path_params(params: dict[str, Any] | None) -> None:
         value = params.get(key)
         if isinstance(value, str) and value:
             params[key] = validate_path(value)
+

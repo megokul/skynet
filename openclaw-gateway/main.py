@@ -25,13 +25,13 @@ import logging
 import os
 import sys
 
-import config as cfg
+import gateway_config as cfg
 from logging_setup import configure_logging
 from db.schema import init_db
 
 
-def _setup_logging() -> None:
-    configure_logging(
+def _setup_logging() -> dict[str, object]:
+    return configure_logging(
         level_name=cfg.LOG_LEVEL,
         log_dir=cfg.LOG_DIR,
         enable_local_file_targets=cfg.LOG_ENABLE_LOCAL_FILES,
@@ -51,6 +51,7 @@ def _setup_logging() -> None:
         s3_bucket="",
         s3_prefix="",
         s3_region="",
+        enable_websocket_mirror=cfg.LOG_ENABLE_WEBSOCKET_MIRROR,
     )
 
 
@@ -101,7 +102,29 @@ def _build_ai_router(db):
 
 
 async def _main() -> None:
-    _setup_logging()
+    logging_state = _setup_logging()
+    from gateway import set_websocket_log_mirror_state
+
+    ws_handlers = list(logging_state.get("websocket_handlers") or [])
+    if ws_handlers:
+        loop = asyncio.get_running_loop()
+        for handler in ws_handlers:
+            try:
+                handler.set_event_loop(loop)
+            except Exception:
+                logging.getLogger("skynet").exception("Failed to bind websocket log handler loop.")
+        set_websocket_log_mirror_state(
+            enabled=bool(logging_state.get("websocket_enabled", False)),
+            loop_bound=True,
+            ack_required=bool(getattr(cfg, "LOG_WEBSOCKET_REQUIRE_ACK", True)),
+            last_error="",
+        )
+    else:
+        set_websocket_log_mirror_state(
+            enabled=bool(logging_state.get("websocket_enabled", False)),
+            loop_bound=False,
+            ack_required=bool(getattr(cfg, "LOG_WEBSOCKET_REQUIRE_ACK", True)),
+        )
     _print_banner()
 
     logger = logging.getLogger("skynet")
@@ -179,3 +202,4 @@ if __name__ == "__main__":
         asyncio.run(_main())
     except KeyboardInterrupt:
         pass
+

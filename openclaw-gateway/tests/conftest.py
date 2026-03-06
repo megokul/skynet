@@ -1,6 +1,7 @@
 """
 Shared fixtures and sys.path bootstrap for SKYNET handler tests.
 """
+import importlib.util
 import os
 import sys
 
@@ -8,6 +9,16 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+# Gateway and worker test suites both expose a bare ``config`` module.
+# Drop any previously imported non-gateway variant before gateway modules load.
+_config_path = os.path.join(ROOT, "config.py")
+_config_spec = importlib.util.spec_from_file_location("config", _config_path)
+if _config_spec is None or _config_spec.loader is None:
+    raise RuntimeError(f"Unable to load gateway config from {_config_path}")
+_config_module = importlib.util.module_from_spec(_config_spec)
+_config_spec.loader.exec_module(_config_module)
+sys.modules["config"] = _config_module
 
 # Provide required env vars before any config-dependent module is imported.
 os.environ.setdefault("TELEGRAM_BOT_TOKEN",          "1234567890:test_token_for_ci")

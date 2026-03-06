@@ -57,6 +57,10 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    return _env_bool(name, default)
+
+
 def _parse_csv_env(name: str, default: str) -> list[str]:
     raw = (os.environ.get(name) or default).strip()
     out: list[str] = []
@@ -259,6 +263,10 @@ class _ContainerLogStreamer:
             "StrictHostKeyChecking=no",
             "-o",
             "ConnectTimeout=10",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=6",
         ]
         if port != 22:
             cmd.extend(["-p", str(port)])
@@ -282,26 +290,60 @@ class _ContainerLogStreamer:
             )
             return
 
-        self._procs[container] = proc
-        self._trace(
-            "container.log.stream.ok",
-            status="ok",
-            container=container,
-            pid=int(proc.pid or 0),
-        )
-        stderr_task = asyncio.create_task(self._consume_stream(container, proc.stderr, stream_name="stderr"))
-        await self._consume_stream(container, proc.stdout, stream_name="stdout")
-        rc = await proc.wait()
-        with contextlib.suppress(Exception):
-            await stderr_task
-        if not self._stop and rc != 0:
-            self._record_error(container=container, message=f"returncode:{int(rc)}")
+        max_retries = 3
+        retry_delay = 5
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                # Reconnect after previous SSH process died
+                self._trace(
+                    "container.log.stream.reconnect",
+                    status="ok",
+                    container=container,
+                    attempt=attempt,
+                )
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                except Exception as exc:
+                    self._record_error(container=container, message=f"reconnect:{type(exc).__name__}")
+                    return
+
+            self._procs[container] = proc
             self._trace(
-                "container.log.stream.error",
-                status="fail",
+                "container.log.stream.ok",
+                status="ok",
                 container=container,
-                returncode=int(rc),
+                pid=int(proc.pid or 0),
             )
+            stderr_task = asyncio.create_task(self._consume_stream(container, proc.stderr, stream_name="stderr"))
+            await self._consume_stream(container, proc.stdout, stream_name="stdout")
+            rc = await proc.wait()
+            with contextlib.suppress(Exception):
+                await stderr_task
+
+            if self._stop or rc == 0:
+                break  # clean exit or intentional stop
+
+            if attempt < max_retries:
+                self._trace(
+                    "container.log.stream.error",
+                    status="fail",
+                    container=container,
+                    returncode=int(rc),
+                    retrying=True,
+                )
+                await asyncio.sleep(retry_delay)
+            else:
+                self._record_error(container=container, message=f"returncode:{int(rc)}")
+                self._trace(
+                    "container.log.stream.error",
+                    status="fail",
+                    container=container,
+                    returncode=int(rc),
+                )
 
     async def _consume_stream(self, container: str, stream, *, stream_name: str) -> None:
         if stream is None:
@@ -504,6 +546,53 @@ def _emit_runtime_trace_snapshot(
             **payload,
         )
         return payload
+
+
+def _load_runtime_trace_events() -> tuple[Path | None, list[dict[str, Any]]]:
+    path = _resolve_runtime_trace_file()
+    if path is None or not path.exists():
+        return path, []
+    events: list[dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(payload, dict):
+                    events.append(payload)
+    except Exception:
+        return path, []
+    return path, events
+
+
+def _runtime_trace_transport_summary() -> dict[str, Any]:
+    path, events = _load_runtime_trace_events()
+    websocket_select = 0
+    ssh_fallback = 0
+    fallback_reasons: list[str] = []
+    for event in events:
+        event_name = str(event.get("event") or "").strip()
+        transport = str(event.get("transport") or "").strip()
+        if event_name == "gateway.transport.select" and transport == "websocket_primary":
+            websocket_select += 1
+        if event_name == "gateway.transport.fallback":
+            ssh_fallback += 1
+            details = event.get("details") or {}
+            if isinstance(details, dict):
+                reason = str(details.get("reason") or "").strip()
+                if reason:
+                    fallback_reasons.append(reason)
+    return {
+        "trace_file": str(path) if path else "",
+        "websocket_primary_select_count": websocket_select,
+        "ssh_fallback_count": ssh_fallback,
+        "fallback_reasons": fallback_reasons[-10:],
+    }
 
 
 def _require_env(name: str) -> str:
@@ -810,6 +899,8 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
     stream_max_line_chars = _env_int(f"{_CONTAINER_LOG_ENV_PREFIX}MAX_LINE_CHARS", 1200)
     stream_ring_lines = _env_int(f"{_CONTAINER_LOG_ENV_PREFIX}RING_LINES", 300)
     runtime_stale_seconds = max(30, _env_int("SKYNET_E2E_RUNTIME_TRACE_STALE_SECONDS", 90))
+    require_websocket_primary = _env_flag("SKYNET_E2E_REQUIRE_WEBSOCKET_PRIMARY", True)
+    allow_ssh_fallback = _env_flag("SKYNET_E2E_ALLOW_SSH_FALLBACK", True)
     runtime_progress = _RuntimeTraceProgress()
     trace(
         "test.start",
@@ -1374,6 +1465,13 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
             runtime_progress.observe(
                 _emit_runtime_trace_snapshot(trace, checkpoint="artifact.validation.ok", tail_lines=160)
             )
+        transport_summary = _runtime_trace_transport_summary()
+        trace(
+            "runtime.trace.transport.summary",
+            require_websocket_primary=require_websocket_primary,
+            allow_ssh_fallback=allow_ssh_fallback,
+            **transport_summary,
+        )
 
         try:
             assert saw_no_github_push, "Live Telegram E2E unexpectedly created/pushed a GitHub repo."
@@ -1393,6 +1491,15 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 f"Live Telegram E2E did not complete any milestones (complete={complete_count}, failed={failed_count})."
             )
             assert saw_run_button and saw_run_success, "Live Telegram E2E did not reach a successful Run Project output."
+            if require_websocket_primary:
+                assert transport_summary["websocket_primary_select_count"] >= 1, (
+                    "Live Telegram E2E did not observe websocket-primary transport selection in runtime trace."
+                )
+            if not allow_ssh_fallback:
+                assert transport_summary["ssh_fallback_count"] == 0, (
+                    "Live Telegram E2E observed SSH fallback when SKYNET_E2E_ALLOW_SSH_FALLBACK=0: "
+                    + ", ".join(transport_summary["fallback_reasons"])
+                )
         except Exception:
             if container_streamer is not None:
                 trace(

@@ -14,7 +14,7 @@ import asyncio
 import time
 from collections import deque
 
-from config import RATE_LIMIT_PER_MINUTE
+from agent_config import RATE_LIMIT_PER_MINUTE
 
 
 class RateLimitExceeded(Exception):
@@ -117,3 +117,4 @@ class SlidingWindowRateLimiter:
             while self._timestamps and self._timestamps[0] < cutoff:
                 self._timestamps.popleft()
             return max(0, self._max - len(self._timestamps))
+

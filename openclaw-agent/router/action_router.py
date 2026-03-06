@@ -22,7 +22,8 @@ import uuid
 from typing import Any
 
 from audit.logger import log_event
-from config import Tier
+import agent_config as config
+from agent_config import Tier
 from executor.actions import ACTION_REGISTRY
 from executor.locks import acquire_lock, release_lock
 from security.rate_limiter import RateLimitExceeded, SlidingWindowRateLimiter
@@ -40,7 +41,8 @@ logger = logging.getLogger("chathan.router")
 _rate_limiter = SlidingWindowRateLimiter()
 _idempotency_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _idempotency_cache_lock = asyncio.Lock()
-_IDEMPOTENCY_TTL_SECONDS = 900
+_inflight_idempotency: dict[str, asyncio.Future[dict[str, Any]]] = {}
+_IDEMPOTENCY_TTL_SECONDS = max(60, int(getattr(config, "AGENT_RESULT_CACHE_TTL_SECONDS", 900) or 900))
 
 
 # ------------------------------------------------------------------
@@ -149,6 +151,9 @@ async def route(message: dict[str, Any]) -> dict[str, Any]:
         cached = await _load_idempotent_result(idempotency_cache_key)
         if cached is not None:
             return _with_request_id(cached, request_id)
+        inflight = await _load_inflight_result(idempotency_cache_key)
+        if inflight is not None:
+            return _with_request_id(inflight, request_id)
 
     async def _finalize(response: dict[str, Any]) -> dict[str, Any]:
         """
@@ -173,9 +178,23 @@ async def route(message: dict[str, Any]) -> dict[str, Any]:
         - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
         """
 
-        if idempotency_cache_key:
-            await _store_idempotent_result(idempotency_cache_key, response)
-        return response
+        try:
+            if idempotency_cache_key:
+                await _store_idempotent_result(idempotency_cache_key, response)
+            return response
+        finally:
+            if idempotency_cache_key:
+                await _complete_inflight_result(idempotency_cache_key, response)
+
+    if idempotency_cache_key:
+        loop = asyncio.get_running_loop()
+        async with _idempotency_cache_lock:
+            existing = _inflight_idempotency.get(idempotency_cache_key)
+            if existing is None:
+                _inflight_idempotency[idempotency_cache_key] = loop.create_future()
+        if existing is not None:
+            response = await existing
+            return _with_request_id(response, request_id)
 
     try:
         # ---- Gate 1: Rate limit ----
@@ -271,6 +290,12 @@ async def route(message: dict[str, Any]) -> dict[str, Any]:
             duration_ms=_elapsed_ms(start),
         )
         return await _finalize(_error_response(request_id, action, "Internal agent error."))
+    finally:
+        if idempotency_cache_key:
+            async with _idempotency_cache_lock:
+                future = _inflight_idempotency.get(idempotency_cache_key)
+                if future is not None and future.done():
+                    _inflight_idempotency.pop(idempotency_cache_key, None)
 
 
 def _elapsed_ms(start: float) -> float:
@@ -323,10 +348,15 @@ def _build_idempotency_key(message: dict[str, Any]) -> str | None:
     """
 
     task_id = str(message.get("task_id") or "").strip()
+    transport_id = str(message.get("transport_id") or "").strip()
     idem = str(message.get("idempotency_key") or "").strip()
-    if not task_id or not idem:
+    if not idem:
         return None
-    return f"{task_id}:{idem}"
+    if task_id:
+        return f"{task_id}:{idem}"
+    if transport_id:
+        return f"{transport_id}:{idem}"
+    return None
 
 
 def _with_request_id(response: dict[str, Any], request_id: str) -> dict[str, Any]:
@@ -393,6 +423,15 @@ async def _load_idempotent_result(key: str) -> dict[str, Any] | None:
         return dict(record[1])
 
 
+async def _load_inflight_result(key: str) -> dict[str, Any] | None:
+    async with _idempotency_cache_lock:
+        future = _inflight_idempotency.get(key)
+    if future is None:
+        return None
+    response = await future
+    return dict(response)
+
+
 async def _store_idempotent_result(key: str, response: dict[str, Any]) -> None:
     """
     Store idempotent result.
@@ -423,3 +462,11 @@ async def _store_idempotent_result(key: str, response: dict[str, Any]) -> None:
         for stale_key in stale:
             _idempotency_cache.pop(stale_key, None)
         _idempotency_cache[key] = (now, dict(response))
+
+
+async def _complete_inflight_result(key: str, response: dict[str, Any]) -> None:
+    async with _idempotency_cache_lock:
+        future = _inflight_idempotency.get(key)
+        if future is not None and not future.done():
+            future.set_result(dict(response))
+

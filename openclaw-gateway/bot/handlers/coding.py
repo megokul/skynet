@@ -24,7 +24,7 @@ import time
 import uuid
 from typing import Any, Awaitable, Callable
 
-import config as cfg
+import gateway_config as cfg
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -72,7 +72,7 @@ from db.store import (
     upsert_prompt_policy,
     upsert_worker_registry,
 )
-from gateway import is_worker_available, send_action
+from gateway import get_agent_status, is_worker_available, send_action, websocket_primary_available
 from orchestration.arch_critic import evaluate_architecture_refs, load_arch_rules
 from orchestration.architect import (
     build_architect_prompt,
@@ -333,17 +333,38 @@ def _tracker_verbose_pipeline() -> bool:
 def _tracker_default_transport() -> str:
     execution_mode = str(cfg.get_str("OPENCLAW_EXECUTION_MODE", "") or "").strip().lower()
     if execution_mode in {"ssh", "ssh_tunnel", "tunnel", "ssh-only"}:
-        return "ssh_first"
-    coding_transport = str(getattr(cfg, "CODING_TRANSPORT", "auto") or "auto").strip().lower()
-    if coding_transport == "ssh_first":
-        return "ssh_first"
+        return "ssh_fallback"
     if _use_acp_orchestration():
         return "acp_local"
-    return coding_transport or "auto"
+    agent_status = get_agent_status()
+    if websocket_primary_available() or bool(agent_status.get("websocket_health_ok", False)):
+        return "websocket_primary"
+    return "ssh_fallback"
 
 
 def _tracker_default_runtime_mode() -> str:
-    return "acp" if _use_acp_orchestration() else "ssh"
+    if _use_acp_orchestration():
+        return "acp"
+    agent_status = get_agent_status()
+    if websocket_primary_available() or bool(agent_status.get("websocket_health_ok", False)):
+        return "worker_agent"
+    return "ssh"
+
+
+def _runtime_transport_label(*, use_acp: bool | None = None) -> str:
+    if use_acp is None:
+        use_acp = _use_acp_orchestration()
+    if use_acp:
+        return "acp_local"
+    return _tracker_default_transport()
+
+
+def _runtime_mode_label(*, use_acp: bool | None = None) -> str:
+    if use_acp is None:
+        use_acp = _use_acp_orchestration()
+    if use_acp:
+        return "acp"
+    return _tracker_default_runtime_mode()
 
 
 def _clamp_unit(value: float) -> float:
@@ -1091,6 +1112,8 @@ async def _emit_remote_probe_trace(
     artifact_snapshot = probe.get("artifact_snapshot") or []
     artifact_count = int(probe.get("artifact_count") or 0)
     remote_pid = str(probe.get("remote_pid") or "")
+    transport_mode = _tracker_default_transport()
+    runtime_mode = _tracker_default_runtime_mode()
     await emit_runtime_trace_async(
         db=db,
         event="coding.stage.remote_snapshot",
@@ -1104,8 +1127,8 @@ async def _emit_remote_probe_trace(
         phase="coding_generation",
         stage=stage,
         worker_id=worker_id,
-        transport="ssh_first",
-        runtime_mode="ssh",
+        transport=transport_mode,
+        runtime_mode=runtime_mode,
         action_name="trace_runtime_probe",
         working_dir=working_dir,
         session_key=session_key,
@@ -1127,8 +1150,8 @@ async def _emit_remote_probe_trace(
             phase="coding_generation",
             stage=stage,
             worker_id=worker_id,
-            transport="ssh_first",
-            runtime_mode="ssh",
+            transport=transport_mode,
+            runtime_mode=runtime_mode,
             action_name="trace_runtime_probe",
             working_dir=working_dir,
             session_key=session_key,
@@ -1150,8 +1173,8 @@ async def _emit_remote_probe_trace(
             phase="coding_generation",
             stage=stage,
             worker_id=worker_id,
-            transport="ssh_first",
-            runtime_mode="ssh",
+            transport=transport_mode,
+            runtime_mode=runtime_mode,
             action_name="trace_runtime_probe",
             working_dir=working_dir,
             session_key=session_key,
@@ -1174,8 +1197,8 @@ async def _emit_remote_probe_trace(
             phase="coding_generation",
             stage=stage,
             worker_id=worker_id,
-            transport="ssh_first",
-            runtime_mode="ssh",
+            transport=transport_mode,
+            runtime_mode=runtime_mode,
             action_name="trace_runtime_probe",
             working_dir=working_dir,
             session_key=session_key,
@@ -1197,8 +1220,8 @@ async def _emit_remote_probe_trace(
             phase="coding_generation",
             stage=stage,
             worker_id=worker_id,
-            transport="ssh_first",
-            runtime_mode="ssh",
+            transport=transport_mode,
+            runtime_mode=runtime_mode,
             action_name="trace_runtime_probe",
             working_dir=working_dir,
             session_key=session_key,
@@ -1305,6 +1328,8 @@ async def _send_action_with_heartbeat(
                 if user_id is not None and app.bot_data.get(_stop_request_key(user_id)):
                     db = app.bot_data.get(KEY_DB) if isinstance(app.bot_data, dict) else None
                     session_key = str(params.get("session_key") or "").strip()
+                    transport_mode = _tracker_default_transport()
+                    runtime_mode = _tracker_default_runtime_mode()
                     await emit_runtime_trace_async(
                         db=db,
                         event="coding.stop.requested",
@@ -1318,8 +1343,8 @@ async def _send_action_with_heartbeat(
                         phase="coding_generation",
                         stage=str(params.get("agent") or params.get("stage") or ""),
                         worker_id=str(params.get("worker_id") or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
-                        transport="ssh_first",
-                        runtime_mode="ssh",
+                        transport=transport_mode,
+                        runtime_mode=runtime_mode,
                         action_name=action,
                         working_dir=str(params.get("working_dir") or ""),
                         session_key=session_key,
@@ -1338,8 +1363,8 @@ async def _send_action_with_heartbeat(
                             phase="coding_generation",
                             stage=str(params.get("agent") or params.get("stage") or ""),
                             worker_id=str(params.get("worker_id") or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
-                            transport="ssh_first",
-                            runtime_mode="ssh",
+                            transport=transport_mode,
+                            runtime_mode=runtime_mode,
                             action_name="cancel_runtime_session",
                             working_dir=str(params.get("working_dir") or ""),
                             session_key=session_key,
@@ -1381,8 +1406,8 @@ async def _send_action_with_heartbeat(
                             phase="coding_generation",
                             stage=str(params.get("agent") or params.get("stage") or ""),
                             worker_id=str(params.get("worker_id") or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
-                            transport="ssh_first",
-                            runtime_mode="ssh",
+                            transport=transport_mode,
+                            runtime_mode=runtime_mode,
                             action_name="cancel_runtime_session",
                             working_dir=str(params.get("working_dir") or ""),
                             session_key=session_key,
@@ -1417,8 +1442,8 @@ async def _send_action_with_heartbeat(
                                 phase="coding_generation",
                                 stage=str(params.get("agent") or params.get("stage") or ""),
                                 worker_id=str(params.get("worker_id") or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
-                                transport="ssh_first",
-                                runtime_mode="ssh",
+                                transport=transport_mode,
+                                runtime_mode=runtime_mode,
                                 action_name="cancel_runtime_session",
                                 working_dir=str(params.get("working_dir") or ""),
                                 session_key=session_key,
@@ -2186,8 +2211,8 @@ async def _run_stage_chain_for_generation(
             phase=str(label_prefix or ""),
             stage=stage_name,
             worker_id=str(worker_id or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
-            transport="ssh_first",
-            runtime_mode=("acp" if use_acp else "ssh"),
+            transport=_runtime_transport_label(use_acp=use_acp),
+            runtime_mode=_runtime_mode_label(use_acp=use_acp),
             action_name="run_coding_agent",
             command_hash=command_hash(prompt),
             working_dir=working_dir,
@@ -2424,8 +2449,8 @@ async def _run_stage_chain_for_generation(
                 phase=str(label_prefix or ""),
                 stage=stage_name,
                 worker_id=str(worker_id or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
-                transport="ssh_first",
-                runtime_mode=("acp" if use_acp else "ssh"),
+                transport=_runtime_transport_label(use_acp=use_acp),
+                runtime_mode=_runtime_mode_label(use_acp=use_acp),
                 action_name="run_coding_agent",
                 command_hash=command_hash(prompt),
                 working_dir=working_dir,
@@ -2463,8 +2488,8 @@ async def _run_stage_chain_for_generation(
             phase=str(label_prefix or ""),
             stage=stage_name,
             worker_id=str(worker_id or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
-            transport="ssh_first",
-            runtime_mode=("acp" if use_acp else "ssh"),
+            transport=_runtime_transport_label(use_acp=use_acp),
+            runtime_mode=_runtime_mode_label(use_acp=use_acp),
             error_type="StageFailure",
             error_code="GENERATION_FAILED",
             error_message=failure_excerpt,
@@ -2919,8 +2944,8 @@ async def _run_strict_quality_gates(
                 task_id=str(task_id),
                 phase="quality_gates",
                 gate=gate_name,
-                transport="ssh_first",
-                runtime_mode="ssh",
+                transport=_runtime_transport_label(),
+                runtime_mode=_runtime_mode_label(),
                 error_code=("STRICT_GATES_FAILED" if status.strip().lower() in {"failed", "error"} else ""),
                 error_message=(summary if status.strip().lower() in {"failed", "error"} else ""),
                 action_name=command.split(" ", 1)[0] if command else "",
@@ -3697,8 +3722,8 @@ async def _start_coding_loop(
         user_id=user_id,
         project_id=str(project.get("id") or ""),
         phase="setup",
-        transport="ssh_first",
-        runtime_mode="ssh",
+        transport=_runtime_transport_label(),
+        runtime_mode=_runtime_mode_label(),
         working_dir=working_dir,
         action_name="start_coding_loop",
         details={"do_github": bool(do_github), "strict_mode": _is_strict_project(project)},
@@ -4286,11 +4311,24 @@ async def trace_handler(
     repair_events = [
         row for row in events if "repair" in str(row.get("event_type") or "").lower()
     ]
+    agent_status = get_agent_status()
+    fallback_reason = str(agent_status.get("fallback_last_reason") or "").strip()
     header = (
         f"Graph: <code>{graph_id}</code>\n"
         f"Status: {html_mod.escape(str(active_graph.get('status') or 'active'))}\n"
-        f"Events shown: {len(lines)}"
+        f"Events shown: {len(lines)}\n"
+        f"Transport: {html_mod.escape(_runtime_transport_label())}\n"
+        f"WebSocket healthy: {'yes' if bool(agent_status.get('websocket_health_ok', False)) else 'no'}"
     )
+    if str(agent_status.get("worker_id") or "").strip():
+        header += f"\nWorker: {html_mod.escape(str(agent_status.get('worker_id') or ''))}"
+    if str(agent_status.get("agent_last_heartbeat_at") or "").strip():
+        header += (
+            f"\nLast heartbeat: "
+            f"{html_mod.escape(str(agent_status.get('agent_last_heartbeat_at') or ''))}"
+        )
+    if fallback_reason:
+        header += f"\nFallback reason: {html_mod.escape(fallback_reason)}"
     if latest_failure:
         header += (
             f"\nLatest failure: {html_mod.escape(str(latest_failure.get('failure_type') or 'unknown'))}"
@@ -4815,8 +4853,8 @@ async def _run_control_loop_v1(
                     if isinstance(node, LoopNode)
                     else str(active_worker_id)
                 ),
-                transport="ssh_first",
-                runtime_mode="ssh",
+                transport=_runtime_transport_label(),
+                runtime_mode=_runtime_mode_label(),
                 error_code=(str(failure_type or "").strip() if str(failure_type or "").strip() else ""),
                 error_message=(
                     str((details or {}).get("error") or (details or {}).get("summary") or "")
@@ -5730,8 +5768,8 @@ async def _coding_loop(
         project_id=project_id,
         phase="setup",
         worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
-        transport="ssh_first",
-        runtime_mode="ssh",
+        transport=_runtime_transport_label(),
+        runtime_mode=_runtime_mode_label(),
         working_dir=working_dir,
         details={
             "strict_mode": strict_mode,
@@ -6449,6 +6487,12 @@ async def _coding_loop(
                     )
                     if not generation_result.get("ok"):
                         attempted = generation_result.get("attempted_stages") or []
+                        stage_failures = generation_result.get("stage_failures") or []
+                        error_detail = ""
+                        if stage_failures:
+                            error_detail = stage_failures[-1].get("error_excerpt", "")
+                        if error_detail:
+                            raise RuntimeError(error_detail)
                         raise RuntimeError(f"GENERATION_FAILED: {','.join(attempted) or 'none'}")
                     inner = generation_result.get("inner", {})
                     # New profile: always use Claude CLI against Ollama in attempt 1.
@@ -6980,8 +7024,8 @@ async def _coding_loop(
                 project_id=project_id,
                 phase="finalization",
                 worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
-                transport="ssh_first",
-                runtime_mode="ssh",
+                transport=_runtime_transport_label(),
+                runtime_mode=_runtime_mode_label(),
                 working_dir=working_dir,
                 details={
                     "complete": successful_milestones,
@@ -7032,8 +7076,8 @@ async def _coding_loop(
                 project_id=project_id,
                 phase="finalization",
                 worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
-                transport="ssh_first",
-                runtime_mode="ssh",
+                transport=_runtime_transport_label(),
+                runtime_mode=_runtime_mode_label(),
                 error_type="LoopFailure",
                 error_code="GENERATION_FAILED",
                 error_message="No successful milestones completed.",
@@ -7058,8 +7102,8 @@ async def _coding_loop(
             project_id=project_id,
             phase="finalization",
             worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
-            transport="ssh_first",
-            runtime_mode="ssh",
+            transport=_runtime_transport_label(),
+            runtime_mode=_runtime_mode_label(),
             error_type="LoopCrash",
             error_code="LOOP_CRASH",
             error_message="Unexpected coding loop crash.",
@@ -7961,6 +8005,7 @@ def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9-]", "", name.lower().replace(" ", "-"))
     slug = re.sub(r"-+", "-", slug).strip("-")
     return slug or "project"
+
 
 
 

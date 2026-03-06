@@ -8,6 +8,12 @@ Current-code-first map of runtime topology, boundaries, and ownership.
 - `openclaw-gateway/`: orchestration gateway (Telegram bot + HTTP dispatch + WS bridge + SSH fallback).
 - `openclaw-agent/`: execution worker (security-gated action router + action executors + audit logging).
 
+Transport priority:
+
+1. `openclaw-agent` websocket connection is the primary worker transport.
+2. `openclaw-gateway/ssh_tunnel_executor.py` is the fallback execution path.
+3. Runtime status and trace surfaces must report transport switches explicitly.
+
 High-level flow:
 
 1. User interacts with gateway (Telegram handlers).

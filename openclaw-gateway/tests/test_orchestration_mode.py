@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import config as cfg
+import gateway_config as cfg
 
 
 def test_effective_orchestration_mode_forces_legacy_in_ssh_mode(
@@ -37,3 +37,4 @@ def test_effective_orchestration_mode_keeps_acp_when_not_ssh_execution(
     monkeypatch.setattr(cfg, "ORCHESTRATION_MODE", "acp_first")
     monkeypatch.setattr(cfg, "ORCHESTRATION_ALLOW_ACP_WITH_SSH", False)
     assert cfg.effective_orchestration_mode() == "acp_first"
+

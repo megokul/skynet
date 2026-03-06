@@ -26,9 +26,10 @@ from typing import Any
 import aiosqlite
 from aiohttp import web
 
-import config as bot_config
-import config as cfg
+import gateway_config as bot_config
+import gateway_config as cfg
 from gateway import (
+    get_agent_status,
     is_agent_connected,
     send_action,
     send_emergency_stop,
@@ -253,9 +254,33 @@ async def handle_status(request: web.Request) -> web.Response:
     mode = cfg.get_str("OPENCLAW_EXECUTION_MODE", "").strip().lower()
     force_ssh = mode in _SSH_ONLY_MODES
     diagnostics = ssh_exec.get_diagnostics()
+    agent_status = get_agent_status()
     execution_mode_effective = "ssh_tunnel" if force_ssh else "agent_preferred"
+    websocket_health_ok = bool(agent_status.get("websocket_health_ok", False))
+    if force_ssh:
+        primary_transport_mode = "ssh_fallback"
+    elif websocket_health_ok:
+        primary_transport_mode = "websocket_primary"
+    elif ssh_configured:
+        primary_transport_mode = "ssh_fallback"
+    else:
+        primary_transport_mode = "unavailable"
     return web.json_response({
+        "primary_transport_mode": primary_transport_mode,
         "agent_connected": is_agent_connected(),
+        "worker_id": str(agent_status.get("worker_id") or ""),
+        "agent_last_hello_at": str(agent_status.get("agent_last_hello_at") or ""),
+        "agent_last_heartbeat_at": str(agent_status.get("agent_last_heartbeat_at") or ""),
+        "websocket_health_ok": websocket_health_ok,
+        "websocket_error_category": str(agent_status.get("websocket_error_category") or ""),
+        "websocket_failure_streak": int(agent_status.get("websocket_failure_streak", 0) or 0),
+        "fallback_ready": bool(ssh_configured and ssh_ok),
+        "fallback_last_reason": str(agent_status.get("fallback_last_reason") or ""),
+        "websocket_log_mirror_enabled": bool(agent_status.get("websocket_log_mirror_enabled", False)),
+        "websocket_log_mirror_loop_bound": bool(agent_status.get("websocket_log_mirror_loop_bound", False)),
+        "websocket_log_mirror_last_send_at": str(agent_status.get("websocket_log_mirror_last_send_at") or ""),
+        "websocket_log_mirror_last_ack_at": str(agent_status.get("websocket_log_mirror_last_ack_at") or ""),
+        "websocket_log_mirror_last_error": str(agent_status.get("websocket_log_mirror_last_error") or ""),
         "ssh_fallback_enabled": ssh_configured,
         "ssh_fallback_healthy": ssh_ok,
         "ssh_fallback_target": ssh_detail,
@@ -266,6 +291,8 @@ async def handle_status(request: web.Request) -> web.Response:
         "ssh_failure_streak": int(diagnostics.get("ssh_failure_streak", 0)),
         "ssh_circuit_open_until": int(diagnostics.get("ssh_circuit_open_until", 0)),
         "ssh_endpoint": str(diagnostics.get("ssh_endpoint", f"{ssh_exec.host}:{ssh_exec.port}")),
+        "worker_capabilities": list(agent_status.get("worker_capabilities") or []),
+        "coding_agents": dict(agent_status.get("coding_agents") or {}),
     })
 
 
@@ -340,39 +367,6 @@ async def handle_action(request: web.Request) -> web.Response:
             return web.json_response(replay)
 
     try:
-        ssh_exec = get_ssh_executor()
-        ssh_configured = ssh_exec.is_configured()
-        force_ssh = _force_ssh_mode(ssh_configured)
-        if force_ssh or not is_agent_connected():
-            if ssh_configured:
-                result = await ssh_exec.execute_action(action, params, confirmed=confirmed)
-                if action_key and db is not None:
-                    await _store_cached_result(
-                        db,
-                        task_id=str(task_id),
-                        idempotency_key=str(idempotency_key),
-                        result=result,
-                    )
-                if is_owner and inflight_future is not None and not inflight_future.done():
-                    inflight_future.set_result(result)
-                if result.get("status") == "error":
-                    return web.json_response(result, status=503)
-                return web.json_response(result)
-            if force_ssh:
-                if is_owner and inflight_future is not None and not inflight_future.done():
-                    inflight_future.set_exception(
-                        RuntimeError("SSH mode enabled without configured executor")
-                    )
-                return web.json_response(
-                    {"error": "SSH tunnel mode is enabled but SSH executor is not configured."},
-                    status=503,
-                )
-            if is_owner and inflight_future is not None and not inflight_future.done():
-                inflight_future.set_exception(RuntimeError("No connected agent and no SSH fallback"))
-            return web.json_response(
-                {"error": "No agent connected and SSH fallback is not configured."}, status=503,
-            )
-
         result = await send_action(
             action,
             params,
@@ -765,3 +759,4 @@ async def start_http_api() -> web.AppRunner:
     await site.start()
     logger.info("HTTP API listening on http://%s:%d", cfg.HTTP_HOST, cfg.HTTP_PORT)
     return runner
+

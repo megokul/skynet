@@ -1,7 +1,7 @@
 import json
 from io import StringIO
 
-import config as cfg
+import gateway_config as cfg
 from ssh_tunnel_executor import SSHTunnelExecutor
 
 
@@ -149,3 +149,4 @@ def test_windows_prompt_wrapper_emits_forensic_events(tmp_path, monkeypatch):
     assert "ssh.command.stdout.chunk" in names
     assert "ssh.prompt_file.cleanup" in names
     assert "ssh.session.completed" in names
+

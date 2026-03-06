@@ -17,6 +17,7 @@ Why this exists:
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import base64
 import gzip
@@ -29,7 +30,7 @@ import traceback
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import paramiko
 
@@ -497,6 +498,13 @@ class _SSHMirrorFileHandler(_AsyncBatchHandler):
             self._exec_powershell(client, mkdir_script, timeout=self._command_timeout)
             self._mkdir_done = True
 
+        # Truncate oversized individual lines before chunking to prevent
+        # PowerShell commands that exceed Windows' 8191-char limit.
+        MAX_MIRROR_LINE_CHARS = 500
+        for i, line in enumerate(batch):
+            if len(line) > MAX_MIRROR_LINE_CHARS:
+                batch[i] = line[:MAX_MIRROR_LINE_CHARS] + "...[truncated]"
+
         # Keep payload chunks small to avoid long command-line limits.
         chunk: list[str] = []
         size = 0
@@ -641,6 +649,70 @@ class _SSHMirrorFileHandler(_AsyncBatchHandler):
         except Exception:
             self._close_client()
             raise
+
+
+class _WebSocketBatchHandler(_AsyncBatchHandler):
+    """Mirror logs to a connected WebSocket agent for local file write."""
+
+    def __init__(
+        self,
+        *,
+        stream: str,
+        flush_interval_seconds: float = 1.0,
+        batch_size: int = 20,
+    ) -> None:
+        self._stream = stream
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._warned_missing_loop = False
+        super().__init__(
+            flush_interval_seconds=flush_interval_seconds,
+            batch_size=batch_size,
+        )
+
+    def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Set the asyncio event loop for dispatching coroutines."""
+        self._loop = loop
+
+    def _flush_batch(self, batch: list[str]) -> None:
+        loop = self._loop
+        if loop is None:
+            try:
+                import gateway
+
+                gateway.set_websocket_log_mirror_state(
+                    enabled=True,
+                    loop_bound=False,
+                    last_error="event_loop_unbound",
+                )
+            except Exception:
+                pass
+            if not self._warned_missing_loop:
+                self._warned_missing_loop = True
+                self._stderr(
+                    f"WebSocket log mirror disabled for stream '{self._stream}' because no event loop is bound."
+                )
+            return
+        try:
+            import gateway
+            future = asyncio.run_coroutine_threadsafe(
+                gateway.send_log_write(self._stream, list(batch)),
+                loop,
+            )
+            future.result(timeout=5.0)
+            gateway.set_websocket_log_mirror_state(
+                enabled=True,
+                loop_bound=True,
+                last_error="",
+            )
+        except Exception:
+            try:
+                gateway.set_websocket_log_mirror_state(
+                    enabled=True,
+                    loop_bound=loop is not None,
+                    last_error=traceback.format_exc()[:1000],
+                )
+            except Exception:
+                pass
 
 
 class _S3BatchHandler(_AsyncBatchHandler):
@@ -798,7 +870,8 @@ def configure_logging(
     s3_bucket: str = "",
     s3_prefix: str = "openclaw/logs",
     s3_region: str = "us-east-1",
-) -> None:
+    enable_websocket_mirror: bool = False,
+) -> dict[str, Any]:
     """
     Configure root + flow logging.
 
@@ -978,8 +1051,38 @@ def configure_logging(
         trace_mirror_logger.addHandler(s3_trace)
         atexit.register(_safe_close_handler, s3_trace)
 
+    ws_runtime_target = ""
+    ws_flow_target = ""
+    ws_trace_target = ""
+    websocket_handlers: list[_WebSocketBatchHandler] = []
+    if enable_websocket_mirror:
+        ws_runtime_target = "ws://agent/runtime"
+        ws_flow_target = "ws://agent/control-flow"
+        ws_trace_target = "ws://agent/trace"
+
+        ws_runtime = _WebSocketBatchHandler(stream="runtime")
+        ws_runtime.setLevel(logging.DEBUG)
+        ws_runtime.setFormatter(fmt)
+        root.addHandler(ws_runtime)
+        atexit.register(_safe_close_handler, ws_runtime)
+        websocket_handlers.append(ws_runtime)
+
+        ws_flow = _WebSocketBatchHandler(stream="control-flow")
+        ws_flow.setLevel(logging.DEBUG)
+        ws_flow.setFormatter(fmt)
+        flow_logger.addHandler(ws_flow)
+        atexit.register(_safe_close_handler, ws_flow)
+        websocket_handlers.append(ws_flow)
+
+        ws_trace = _WebSocketBatchHandler(stream="trace")
+        ws_trace.setLevel(logging.DEBUG)
+        ws_trace.setFormatter(trace_fmt)
+        trace_mirror_logger.addHandler(ws_trace)
+        atexit.register(_safe_close_handler, ws_trace)
+        websocket_handlers.append(ws_trace)
+
     root.info(
-        "Logging configured level=%s local_file_targets=%s ssh_runtime_target=%s ssh_flow_target=%s ssh_trace_target=%s s3_runtime_target=%s s3_flow_target=%s s3_trace_target=%s",
+        "Logging configured level=%s local_file_targets=%s ssh_runtime_target=%s ssh_flow_target=%s ssh_trace_target=%s s3_runtime_target=%s s3_flow_target=%s s3_trace_target=%s ws_runtime=%s ws_flow=%s ws_trace=%s",
         logging.getLevelName(level),
         [str(p) for p in runtime_targets + flow_targets],
         ssh_runtime_target,
@@ -988,7 +1091,14 @@ def configure_logging(
         s3_runtime_target,
         s3_flow_target,
         s3_trace_target,
+        ws_runtime_target,
+        ws_flow_target,
+        ws_trace_target,
     )
+    return {
+        "websocket_handlers": websocket_handlers,
+        "websocket_enabled": bool(enable_websocket_mirror),
+    }
 
 
 def _safe_close_handler(handler: logging.Handler) -> None:

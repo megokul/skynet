@@ -33,6 +33,15 @@ MAX_RECONNECT_DELAY_SECONDS: int = 120
 # WebSocket ping interval to keep NAT/firewall mappings alive.
 WS_PING_INTERVAL_SECONDS: int = 30
 WS_PING_TIMEOUT_SECONDS: int = 10
+WORKER_ID: str = os.environ.get("SKYNET_WORKER_ID", "worker-primary").strip() or "worker-primary"
+AGENT_HEARTBEAT_SECONDS: int = int(os.environ.get("SKYNET_AGENT_HEARTBEAT_SECONDS", "15") or "15")
+AGENT_RESULT_CACHE_TTL_SECONDS: int = int(
+    os.environ.get("SKYNET_AGENT_RESULT_CACHE_TTL_SECONDS", "900") or "900"
+)
+AGENT_LOG_MIRROR_DIR: str = os.environ.get(
+    "SKYNET_AGENT_LOG_MIRROR_DIR",
+    os.environ.get("SKYNET_TRACE_MIRROR_LOG_DIR", r"E:\MyProjects\skynet\logs"),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +84,8 @@ AUTO_ACTIONS: set[str] = {
     "list_directory",
     "ollama_chat",
     "check_coding_agents",
+    "trace_runtime_probe",
+    "cancel_runtime_session",
 }
 
 CONFIRM_ACTIONS: set[str] = {

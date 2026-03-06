@@ -18,7 +18,7 @@ import logging
 import re
 import uuid
 
-import config as cfg
+import gateway_config as cfg
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -976,3 +976,4 @@ def build_project_conversation_handler() -> ConversationHandler:
         allow_reentry=True,
         per_message=False,
     )
+

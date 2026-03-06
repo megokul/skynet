@@ -2,6 +2,23 @@
 
 Module-level implementation reference for coding agents.
 
+## WebSocket-Primary Runtime
+
+Authoritative transport behavior:
+
+1. `openclaw-gateway/gateway.py` selects websocket first when:
+   - `SKYNET_WEBSOCKET_PRIMARY_ENABLED=1`
+   - worker agent is connected
+   - heartbeat is fresh
+2. SSH is used when:
+   - execution mode is explicitly SSH-only, or
+   - websocket is unavailable/unhealthy and fallback is enabled
+3. Mutating websocket actions are not blindly duplicated to SSH after acceptance.
+4. Replay semantics rely on:
+   - `transport_id`
+   - `idempotency_key`
+   - agent-side result cache in `openclaw-agent/router/action_router.py`
+
 ## Control Plane Implementation
 
 Primary modules:
@@ -36,8 +53,13 @@ Dispatch behavior:
 
 1. `/action` validates body and optional `(task_id, idempotency_key)`.
 2. Returns cached idempotent result when available.
-3. Uses WS agent path when connected.
-4. Uses SSH fallback when configured or forced via `OPENCLAW_EXECUTION_MODE`.
+3. Uses WS agent path when connected and healthy.
+4. Waits for `action_accepted` before treating a websocket action as in flight.
+5. Uses SSH fallback when configured or forced via `OPENCLAW_EXECUTION_MODE`.
+6. Uses websocket replay rather than SSH duplication for accepted mutating actions.
+7. Live E2E can enforce websocket-primary transport with:
+   - `SKYNET_E2E_REQUIRE_WEBSOCKET_PRIMARY=1`
+   - optional `SKYNET_E2E_ALLOW_SSH_FALLBACK=0` to hard-fail on degraded fallback runs
 
 ## Conversation UX Contract
 
@@ -106,6 +128,10 @@ Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" | Select-Object ProcessId
 Agent:
 
 - `SKYNET_GATEWAY_URL`, `SKYNET_AUTH_TOKEN`
+- `SKYNET_WORKER_ID`
+- `SKYNET_AGENT_HEARTBEAT_SECONDS`
+- `SKYNET_AGENT_RESULT_CACHE_TTL_SECONDS`
+- `SKYNET_AGENT_LOG_MIRROR_DIR`
 - `SKYNET_ALLOWED_ROOTS` path jail roots
 - `RATE_LIMIT_PER_MINUTE` from config module default/override
 

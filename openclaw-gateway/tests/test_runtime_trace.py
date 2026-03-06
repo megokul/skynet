@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-import config as cfg
+import gateway_config as cfg
 from db.schema import init_db
 from db.store import list_runtime_trace_events
 from runtime_trace import command_preview, emit_runtime_trace, emit_runtime_trace_async
@@ -130,3 +130,4 @@ def test_command_preview_hashes_and_truncates(monkeypatch):
     assert payload["command_hash"]
     assert len(payload["command_preview"]) <= 120
     assert "abc123" not in payload["command_preview"]
+

@@ -10,6 +10,33 @@ Triage-first operational playbook for runtime issues.
 4. Inspect task/event/audit trails before patching behavior.
 5. Reproduce with smallest command/test path and keep evidence in handoff.
 
+## WebSocket-Primary Triage
+
+Check these in order before debugging execution logic:
+
+1. Worker task is running:
+   - `Get-ScheduledTask -TaskName OpenClawWorkerAgent`
+2. Worker health script is clean:
+   - `powershell -ExecutionPolicy Bypass -File .\\scripts\\check_worker_agent_health.ps1`
+3. Gateway `/status` shows:
+   - `primary_transport_mode=websocket_primary`
+   - `agent_connected=true`
+   - `websocket_health_ok=true`
+   - `websocket_log_mirror_last_ack_at` advancing
+4. If websocket is unhealthy, inspect:
+   - `fallback_last_reason`
+   - `websocket_error_category`
+   - `websocket_failure_streak`
+   - `websocket_log_mirror_last_error`
+5. If the worker task cannot be registered because Windows returns `Access is denied`, use a detached user-session launch as the operational fallback:
+   - `powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\run_worker_agent.ps1`
+6. Check the local bootstrap transcript when startup dies too early:
+   - `logs\\worker-agent.bootstrap.log`
+7. Fixed launcher failures from this rollout:
+   - `.env.worker-agent` parsing aborted on comment lines
+   - tunnel probes failed because the helper used a parameter named `Host`, conflicting with PowerShell's built-in `$Host`
+8. Only after that move to coding/planner/gate debugging.
+
 ## Runtime Trace Completeness Rules
 
 These are mandatory for live E2E debugging and production incident triage.
@@ -74,6 +101,14 @@ Use this policy for every `telegram_real` failure. Do not stop at first symptom.
    - `skynet_run.json` is present and valid
    - run action exits `0`
 8. If fail again, repeat from step 2 with a new mitigation plan version (`v2`, `v3`, ...).
+
+### WebSocket-Primary Live E2E Flags
+
+Use these when the live run is intended to prove websocket-primary behavior rather than merely tolerate fallback:
+
+1. `SKYNET_E2E_REQUIRE_WEBSOCKET_PRIMARY=1`
+2. `SKYNET_E2E_ALLOW_SSH_FALLBACK=1` for degraded-but-traceable rollout runs
+3. Set `SKYNET_E2E_ALLOW_SSH_FALLBACK=0` only when you want the live run to hard-fail on any SSH fallback event
 
 ### Completion Rule (Do Not Close Early)
 

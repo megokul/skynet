@@ -57,18 +57,21 @@ def test_tracker_percent_is_monotonic() -> None:
     assert lowered == updated
 
 
-def test_tracker_defaults_report_ssh_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(coding.cfg, "CODING_TRANSPORT", "auto", raising=False)
+def test_tracker_defaults_report_websocket_primary_when_agent_is_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         coding.cfg,
         "get_str",
-        lambda name, default="": "ssh_tunnel" if name == "OPENCLAW_EXECUTION_MODE" else default,
+        lambda name, default="": "agent_preferred" if name == "OPENCLAW_EXECUTION_MODE" else default,
         raising=False,
     )
     monkeypatch.setattr(coding, "_use_acp_orchestration", lambda: False)
+    monkeypatch.setattr(coding, "websocket_primary_available", lambda: True)
+    monkeypatch.setattr(coding, "get_agent_status", lambda: {"websocket_health_ok": True})
 
-    assert _tracker_default_transport() == "ssh_first"
-    assert _tracker_default_runtime_mode() == "ssh"
+    assert _tracker_default_transport() == "websocket_primary"
+    assert _tracker_default_runtime_mode() == "worker_agent"
 
 
 @pytest.mark.asyncio
