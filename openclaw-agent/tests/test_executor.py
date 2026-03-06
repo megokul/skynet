@@ -147,6 +147,17 @@ class TestExecCommand:
             f"Stderr must be captured; got {result['stderr']!r}"
         )
 
+    @pytest.mark.asyncio
+    async def test_runs_python_argv_without_shell_string(self, tmp_path):
+        """Structured argv supports quoted python -c preflight without shell parsing."""
+        result = await exec_command({
+            "argv": ["python", "-c", "print('argv-ok')"],
+            "working_dir": str(tmp_path),
+        })
+
+        assert result["returncode"] == 0, f"Expected exit 0; got {result}"
+        assert "argv-ok" in result["stdout"]
+
 
 # ── run_coding_agent ──────────────────────────────────────────────────────────
 

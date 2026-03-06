@@ -71,6 +71,10 @@ WebSocket-primary worker execution with SSH fallback, while preserving strict qu
   - `.env.worker-agent` parsing no longer aborts on comment lines
   - launcher writes `logs\worker-agent.bootstrap.log`
   - tunnel probe helper no longer collides with PowerShell's built-in `$Host`
+- Live E2E preflight fix added after websocket-primary rollout:
+  - worker `exec_command` now supports structured `argv`
+  - coding preflight write-probe no longer sends a quoted `python -c "..."` shell string
+  - this removes the false `CODEX_WRITE_BLOCKED: Parameter 'command' contains disallowed shell metacharacters` failure in websocket-primary runs
 - Current workstation note:
   - `register_worker_agent_task.ps1` still hits local `Access is denied` on this laptop
   - detached user-session launch via `scripts/run_worker_agent.ps1` is the current operational workaround

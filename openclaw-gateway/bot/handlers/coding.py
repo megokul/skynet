@@ -1715,11 +1715,12 @@ async def _preflight_coding_environment(
         )
 
     if _use_control_loop_v1(project) and working_dir:
-        runtime_probe = "node -v" if _project_prefers_node(str(project.get("project_type") or "")) else "python -V"
+        runtime_probe_argv = ["node", "-v"] if _project_prefers_node(str(project.get("project_type") or "")) else ["python", "-V"]
+        runtime_probe = " ".join(runtime_probe_argv)
         try:
             runtime_result = await send_action(
                 "exec_command",
-                {"working_dir": working_dir, "command": runtime_probe},
+                {"working_dir": working_dir, "argv": runtime_probe_argv, "command": runtime_probe},
                 timeout=20,
                 confirmed=True,
             )
@@ -1729,14 +1730,16 @@ async def _preflight_coding_environment(
             detail = _action_error_text(runtime_result, "exec_command")
             return False, f"Runtime preflight failed ({runtime_probe}): {detail}", filtered_chain
 
-        write_probe = (
-            "python -c \"from pathlib import Path; p=Path('.skynet_write_probe'); "
-            "p.write_text('ok', encoding='utf-8'); p.unlink(missing_ok=True)\""
-        )
+        write_probe_argv = [
+            "python",
+            "-c",
+            "from pathlib import Path; p=Path('.skynet_write_probe'); "
+            "p.write_text('ok', encoding='utf-8'); p.unlink(missing_ok=True)",
+        ]
         try:
             write_result = await send_action(
                 "exec_command",
-                {"working_dir": working_dir, "command": write_probe},
+                {"working_dir": working_dir, "argv": write_probe_argv},
                 timeout=20,
                 confirmed=True,
             )

@@ -387,11 +387,17 @@ async def exec_command(params: dict[str, Any]) -> dict[str, Any]:
     interpreter; arbitrary shell commands are rejected.
     """
     cwd = _require_param(params, "working_dir")
-    command = _require_param(params, "command")
-
-    parts = command.strip().split()
-    if not parts:
-        return {"returncode": 1, "stdout": "", "stderr": "Empty command."}
+    argv = params.get("argv")
+    parts: list[str]
+    if isinstance(argv, list):
+        parts = [str(item) for item in argv if str(item)]
+        if not parts:
+            return {"returncode": 1, "stdout": "", "stderr": "Empty argv."}
+    else:
+        command = _require_param(params, "command")
+        parts = command.strip().split()
+        if not parts:
+            return {"returncode": 1, "stdout": "", "stderr": "Empty command."}
 
     interpreter = parts[0].lower().rstrip(".exe")
     if interpreter not in ("python", "python3", "node"):
