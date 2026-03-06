@@ -522,6 +522,7 @@ class TaskQueueManager:
         self,
         *,
         worker_id: str,
+        lock_timeout_seconds: int | None = None,
     ) -> dict[str, Any] | None:
         """
         Atomically claim one ready task.
@@ -532,9 +533,11 @@ class TaskQueueManager:
         - all dependencies are succeeded
         - required files are not owned by another active task
 
-        Lock timeout is determined by the control-plane scheduler, configured
-        via SKYNET_CONTROL_TASK_LOCK_TIMEOUT (default: 300 seconds).
+        Compatibility:
+        - `lock_timeout_seconds` is accepted for scheduler/API compatibility.
+        - The queue currently uses its configured timeout (`self.lock_timeout_seconds`).
         """
+        _ = lock_timeout_seconds
         now = _iso_now()
         await self.db.execute("BEGIN IMMEDIATE")
         try:

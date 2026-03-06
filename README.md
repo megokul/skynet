@@ -319,6 +319,23 @@ Runtime trace control flags:
 - `SKYNET_RUNTIME_TRACE_REQUIRE_DEBUG_BUNDLE=1`
 - `SKYNET_RUNTIME_TRACE_REQUIRED_EVENT_ENFORCEMENT=1`
 
+Telegram-real container log stream flags:
+
+- `SKYNET_E2E_CONTAINER_LOG_STREAM_ENABLED=1`
+- `SKYNET_E2E_CONTAINER_LOG_SOURCES=openclaw-gateway,skynet-api`
+- `SKYNET_E2E_CONTAINER_LOG_REQUIRE_STREAM=1`
+- `SKYNET_E2E_CONTAINER_LOG_MAX_LINE_CHARS=1200`
+- `SKYNET_E2E_CONTAINER_LOG_RING_LINES=300`
+- `SKYNET_E2E_RUNTIME_TRACE_STALE_SECONDS=90`
+
+Container stream SSH credential resolution order:
+
+1. `SKYNET_E2E_CONTAINER_LOG_SSH_HOST`, `SKYNET_E2E_CONTAINER_LOG_SSH_USER`, `SKYNET_E2E_CONTAINER_LOG_SSH_KEY`
+2. `OPENCLAW_TUNNEL_EC2_HOST`, `OPENCLAW_TUNNEL_EC2_USER`, `OPENCLAW_TUNNEL_SSH_KEY`
+3. If stream is required and still unresolved, E2E fails early with `CONTAINER_LOG_STREAM_UNAVAILABLE`.
+
+During `telegram_real`, E2E now emits `container.log.stream.*`, `container.log.line`, and `container.log.bundle` events into the live E2E trace for single-timeline debugging.
+
 ### Telegram Coding Tracker
 
 During coding sessions, SKYNET now maintains one live tracker message with:
