@@ -398,10 +398,13 @@ def _make_live_trace_logger(test_name: str):
 def _resolve_runtime_trace_file() -> Path | None:
     repo_root = Path(__file__).resolve().parents[2]
     explicit = (os.environ.get("SKYNET_E2E_RUNTIME_TRACE_FILE") or "").strip()
+    runtime_live_file = (os.environ.get("SKYNET_RUNTIME_TRACE_LIVE_FILE") or "").strip()
     mirror_dir = (os.environ.get("SKYNET_TRACE_MIRROR_LOG_DIR") or "").strip()
     candidates: list[Path] = []
     if explicit:
         candidates.append(Path(explicit))
+    if runtime_live_file:
+        candidates.append(Path(runtime_live_file))
     if mirror_dir:
         candidates.append(Path(mirror_dir) / "skynet.trace.log")
     candidates.extend(
@@ -410,11 +413,22 @@ def _resolve_runtime_trace_file() -> Path | None:
             repo_root / "openclaw-gateway" / "logs" / "skynet.trace.log",
         ]
     )
+    if explicit:
+        explicit_path = Path(explicit)
+        if explicit_path.exists():
+            return explicit_path
+        return explicit_path
+    existing: list[Path] = []
     for candidate in candidates:
         if candidate.exists():
-            return candidate
-    if explicit:
-        return Path(explicit)
+            existing.append(candidate)
+    if existing:
+        # Prefer the freshest trace source to avoid pinning to stale mirror files.
+        existing.sort(
+            key=lambda path: path.stat().st_mtime if path.exists() else 0,
+            reverse=True,
+        )
+        return existing[0]
     return None
 
 

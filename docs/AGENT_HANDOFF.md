@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-06 12:03
+Last updated (UTC): 2026-03-06 12:09
 
 ## Current Goal
 
@@ -33,6 +33,16 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
   - As a result, EC2 stayed on previous containers and continued emitting:
     - `TypeError: TaskQueueManager.claim_next_ready_task() got an unexpected keyword argument 'lock_timeout_seconds'`
   - Current objective is to pass policy gate and redeploy so runtime picks up the compatibility fix.
+
+### 2026-03-06 Runtime Trace Source Selection Hardening
+
+- Live E2E exposed a false-stale failure mode: runtime snapshot resolver preferred a stale mirror file (`E:\SKYNET-SANDBOX\logs\skynet.trace.log`) even when a newer repo-local runtime trace existed.
+- Updated `openclaw-gateway/tests/test_e2e_telegram_real_live.py`:
+  - runtime trace resolution now considers:
+    - `SKYNET_E2E_RUNTIME_TRACE_FILE` (explicit override, hard priority)
+    - `SKYNET_RUNTIME_TRACE_LIVE_FILE`
+    - mirror/file fallbacks
+  - for non-explicit paths, resolver now selects the freshest existing trace file by `mtime` to avoid stale-pin behavior during live runs.
 
 ### 2026-03-06 Codex Prompt Transport + Gate Heartbeat Update
 
