@@ -107,10 +107,21 @@ def _resolve_container_log_stream_ssh() -> dict[str, Any] | None:
         (os.environ.get(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_USER") or "").strip()
         or (os.environ.get("OPENCLAW_TUNNEL_EC2_USER") or "").strip()
     )
-    key = (
-        (os.environ.get(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_KEY") or "").strip()
-        or (os.environ.get("OPENCLAW_TUNNEL_SSH_KEY") or "").strip()
-    )
+    key_candidates = [
+        ("e2e_override", (os.environ.get(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_KEY") or "").strip()),
+        ("tunnel", (os.environ.get("OPENCLAW_TUNNEL_SSH_KEY") or "").strip()),
+        ("ssh_fallback", (os.environ.get("OPENCLAW_SSH_KEY_PATH") or "").strip()),
+    ]
+    key_options = [(source, value) for source, value in key_candidates if value]
+    key = ""
+    key_source = ""
+    for source, candidate in key_options:
+        if Path(candidate).exists():
+            key = candidate
+            key_source = source
+            break
+    if not key and key_options:
+        key_source, key = key_options[0]
     port = _env_int(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_PORT", 22)
     if not host or not user or not key:
         return None
@@ -118,6 +129,7 @@ def _resolve_container_log_stream_ssh() -> dict[str, Any] | None:
         "host": host,
         "user": user,
         "key": key,
+        "key_source": key_source or "unknown",
         "port": max(1, port),
     }
 
@@ -203,6 +215,7 @@ class _ContainerLogStreamer:
             containers=self._containers,
             host=self._ssh.get("host"),
             user=self._ssh.get("user"),
+            key_source=self._ssh.get("key_source"),
             port=int(self._ssh.get("port") or 22),
             since=self._since,
         )
