@@ -1189,13 +1189,25 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 )
             stale_s = runtime_progress.stale_seconds()
             if stale_s >= runtime_stale_seconds:
-                runtime_progress.observe(
-                    _emit_runtime_trace_snapshot(
-                        trace,
-                        checkpoint=f"coding.trace_stale.{idx + 1}",
-                        tail_lines=180,
-                    )
+                stale_snapshot = _emit_runtime_trace_snapshot(
+                    trace,
+                    checkpoint=f"coding.trace_stale.{idx + 1}",
+                    tail_lines=180,
                 )
+                stale_progress = runtime_progress.observe(stale_snapshot)
+                stale_s = runtime_progress.stale_seconds()
+                if stale_progress or stale_s < runtime_stale_seconds:
+                    trace(
+                        "coding.poll.recovered",
+                        iteration=idx + 1,
+                        tracker_progress=tracker_progress,
+                        trace_progress=stale_progress,
+                        container_progress=bool(
+                            container_streamer and container_streamer.has_recent_activity(within_seconds=60)
+                        ),
+                        runtime_trace_stale_s=round(stale_s, 1),
+                    )
+                    continue
                 if container_streamer is not None:
                     trace(
                         "container.log.bundle",

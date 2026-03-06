@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-06 12:09
+Last updated (UTC): 2026-03-06 12:20
 
 ## Current Goal
 
@@ -43,6 +43,19 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
     - `SKYNET_RUNTIME_TRACE_LIVE_FILE`
     - mirror/file fallbacks
   - for non-explicit paths, resolver now selects the freshest existing trace file by `mtime` to avoid stale-pin behavior during live runs.
+
+### 2026-03-06 TRACE_STALE False-Positive Fix in Coding Poll Loop
+
+- Root cause:
+  - During active coding polls, stale detection checked `runtime_progress.stale_seconds()` before refreshing with a fresh runtime snapshot.
+  - This produced false `TRACE_STALE` failures even when the same iteration snapshot showed new lines and recent `mtime`.
+- Fix:
+  - In `openclaw-gateway/tests/test_e2e_telegram_real_live.py`, stale branch now:
+    - captures a fresh snapshot first,
+    - re-observes progress,
+    - recomputes staleness,
+    - emits `coding.poll.recovered` and continues when freshness is restored.
+  - Terminal stale failure now only triggers when staleness remains above threshold after refresh.
 
 ### 2026-03-06 Codex Prompt Transport + Gate Heartbeat Update
 
