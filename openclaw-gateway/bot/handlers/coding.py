@@ -2513,6 +2513,48 @@ async def _run_strict_quality_gates(
                 attempt=attempt,
             )
 
+        async def _run_gate_action(
+            *,
+            gate_name: str,
+            action: str,
+            params: dict[str, Any],
+            timeout_seconds: int,
+            command: str,
+            label: str,
+        ) -> dict[str, Any]:
+            if app is None or not isinstance(chat_id, int):
+                return await send_action(
+                    action,
+                    params,
+                    timeout=timeout_seconds,
+                    confirmed=True,
+                )
+
+            async def _gate_heartbeat(elapsed: int) -> None:
+                with contextlib.suppress(Exception):
+                    await _emit_gate_event(
+                        gate_name,
+                        "running",
+                        summary=f"{label} ({elapsed}s elapsed)",
+                        command=command,
+                    )
+
+            return await _send_action_with_heartbeat(
+                app=app,
+                chat_id=chat_id,
+                user_id=user_id,
+                action=action,
+                params=params,
+                timeout=timeout_seconds,
+                label=label,
+                max_wait_seconds=max(
+                    1,
+                    int(getattr(cfg, "CODING_AGENT_MAX_WAIT_SECONDS", 900) or 900),
+                ),
+                confirmed=True,
+                heartbeat_hook=_gate_heartbeat,
+            )
+
         preflight_cmd = f"list_directory {working_dir}"
         with contextlib.suppress(Exception):
             await _emit_gate_event(
@@ -2695,11 +2737,13 @@ async def _run_strict_quality_gates(
                     command=lint_cmd,
                 )
             try:
-                lint_result = await send_action(
-                    "lint_project",
-                    {"working_dir": working_dir, "linter": lint_linter},
-                    timeout=120,
-                    confirmed=True,
+                lint_result = await _run_gate_action(
+                    gate_name="lint",
+                    action="lint_project",
+                    params={"working_dir": working_dir, "linter": lint_linter},
+                    timeout_seconds=120,
+                    command=lint_cmd,
+                    label=f"quality gate lint ({lint_linter})",
                 )
             except Exception as exc:
                 lint_summary = f"{type(exc).__name__}: {exc}"
@@ -2863,11 +2907,13 @@ async def _run_strict_quality_gates(
                     )
                 else:
                     try:
-                        tests_result = await send_action(
-                            "run_tests",
-                            {"working_dir": working_dir, "runner": test_runner},
-                            timeout=300,
-                            confirmed=True,
+                        tests_result = await _run_gate_action(
+                            gate_name="tests",
+                            action="run_tests",
+                            params={"working_dir": working_dir, "runner": test_runner},
+                            timeout_seconds=300,
+                            command=tests_cmd,
+                            label=f"quality gate tests ({test_runner})",
                         )
                     except Exception as exc:
                         tests_summary = f"{type(exc).__name__}: {exc}"
@@ -2943,11 +2989,13 @@ async def _run_strict_quality_gates(
                     command=smoke_cmd,
                 )
             try:
-                smoke_result = await send_action(
-                    "exec_command",
-                    {"command": smoke_cmd, "working_dir": working_dir},
-                    timeout=120,
-                    confirmed=True,
+                smoke_result = await _run_gate_action(
+                    gate_name="smoke",
+                    action="exec_command",
+                    params={"command": smoke_cmd, "working_dir": working_dir},
+                    timeout_seconds=120,
+                    command=smoke_cmd,
+                    label="quality gate smoke",
                 )
             except Exception as exc:
                 smoke_summary = f"{type(exc).__name__}: {exc}"

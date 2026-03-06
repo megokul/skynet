@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-06 09:02
+Last updated (UTC): 2026-03-06 09:18
 
 ## Current Goal
 
@@ -24,6 +24,20 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
 - CI note:
   - Policy gate run `22756380094` initially failed because `docs/AGENT_HANDOFF.md` was not included with code changes.
   - This handoff update resolves that policy requirement for the next push.
+
+### 2026-03-06 Strict-Gate Long-Run Heartbeat Coverage Update
+
+- Live E2E observation after deploy `22756451474`:
+  - quality-fix heartbeat messages were visible, but strict-gate operations (`lint/tests/smoke`) still ran without chat heartbeat emissions.
+  - Telegram real E2E timed out waiting for new bot messages while gates were still executing.
+- Fix in `openclaw-gateway/bot/handlers/coding.py`:
+  - Added `_run_gate_action(...)` helper inside `_run_strict_quality_gates(...)`.
+  - Long-running gate actions now use `_send_action_with_heartbeat(...)` when app/chat context is available.
+  - Covered actions:
+    - `lint_project`
+    - `run_tests`
+    - `exec_command` (smoke)
+  - Gate heartbeat updates now emit periodic `running` events with elapsed seconds and gate command context.
 
 ### 2026-03-06 Control-Loop Timeout Crash Hardening Update
 
