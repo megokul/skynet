@@ -1797,6 +1797,13 @@ async def _run_stage_chain_for_generation(
         return_code = 1
         written: list[str] = []
         try:
+            heartbeat_runtime = (
+                str(getattr(cfg, "OPENCLAW_RUNTIME", "acp") or "acp")
+                if use_acp
+                else "ssh"
+            )
+            heartbeat_queue_mode = queue_mode if use_acp else ""
+
             async def _heartbeat_tracker(elapsed: int, *, sid: str = "") -> None:
                 if tracker_hook is None:
                     return
@@ -1807,8 +1814,8 @@ async def _run_stage_chain_for_generation(
                     stage_total=len(stage_chain),
                     elapsed=elapsed,
                     session_id=sid,
-                    runtime=str(getattr(cfg, "OPENCLAW_RUNTIME", "acp") or "acp"),
-                    queue_mode=queue_mode,
+                    runtime=heartbeat_runtime,
+                    queue_mode=heartbeat_queue_mode,
                     detail=f"Stage {stage_name} still running ({elapsed}s)",
                 )
 
@@ -1922,9 +1929,13 @@ async def _run_stage_chain_for_generation(
                 )
         except Exception as exc:
             reason = str(exc).strip()
-            if reason.startswith("STOP_REQUESTED:") or reason.startswith("WAIT_TIMEOUT:"):
+            if reason.startswith("STOP_REQUESTED:"):
                 raise
-            failure_reason = f"{type(exc).__name__}: {exc}"
+            if reason.startswith("WAIT_TIMEOUT:"):
+                failure_reason = reason
+                return_code = 124
+            else:
+                failure_reason = f"{type(exc).__name__}: {exc}"
         else:
             inner = _action_inner_result(result or {})
             return_code = int(inner.get("returncode", inner.get("exit_code", 0)) or 0)
@@ -4962,12 +4973,32 @@ async def _run_control_loop_v1(
         )
         await _record_learning(node, event, payload)
 
-    run_result = await controller.run(
-        execute_work=_work_executor,
-        execute_critic=_critic_executor,
-        execute_gate=_gate_executor,
-        on_node_event=_on_node_event,
-    )
+    try:
+        run_result = await controller.run(
+            execute_work=_work_executor,
+            execute_critic=_critic_executor,
+            execute_gate=_gate_executor,
+            on_node_event=_on_node_event,
+        )
+    except Exception as exc:
+        error_text = (str(exc).strip() or type(exc).__name__)[:320]
+        failure_type = classify_generation_error(error_text)
+        await create_task_node_event(
+            db,
+            graph_id=int(graph_id),
+            node_id=None,
+            node_key="",
+            event_type="graph.crash",
+            status="failed",
+            failure_type=failure_type,
+            details={"error": error_text},
+        )
+        run_result = {
+            "status": "failed",
+            "graph_id": graph_id,
+            "error": error_text,
+            "failure_type": failure_type,
+        }
 
     unique_written: list[str] = []
     seen_written: set[str] = set()

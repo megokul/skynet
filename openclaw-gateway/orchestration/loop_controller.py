@@ -23,6 +23,7 @@ from orchestration.failure import (
     FAIL_CRITIC_PARSE,
     FAIL_DEADLOCK,
     FAIL_ENVIRONMENT,
+    FAIL_STRICT_GATE,
     classify_generation_error,
     is_repairable,
 )
@@ -239,6 +240,46 @@ class ClosedLoopController:
                 details=data,
             )
 
+        async def _fail_graph_from_executor_exception(
+            *,
+            node: LoopNode,
+            exc: Exception,
+            failure_type: str,
+        ) -> dict[str, Any]:
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+            error_text = (str(exc).strip() or type(exc).__name__)[:600]
+            failed_status = "failed_infra" if failure_type == FAIL_ENVIRONMENT else "failed"
+            await update_task_node_status(
+                self._db,
+                node_id=node.node_id,
+                status=failed_status,
+                error_message=error_text,
+                failure_type=failure_type,
+                finished_at=now,
+            )
+            node.status = failed_status
+            await _emit(
+                node,
+                failed_status,
+                {
+                    "error": error_text,
+                    "failure_type": failure_type,
+                    "source": "executor_exception",
+                },
+            )
+            await update_task_graph_status(
+                self._db,
+                graph_id=int(self._graph_id or 0),
+                status="failed",
+                finished_at=now,
+            )
+            return {
+                "status": "failed",
+                "graph_id": self._graph_id,
+                "error": error_text,
+                "failure_type": failure_type,
+            }
+
         while True:
             elapsed = int(max(0, time.time() - self._started_ts))
             if elapsed > self._max_runtime_seconds:
@@ -345,7 +386,15 @@ class ClosedLoopController:
                 await _emit(node, "running", {"stage": node.node_type})
 
                 if node.node_type in {"work", "repair"}:
-                    result = await execute_work(node)
+                    try:
+                        result = await execute_work(node)
+                    except Exception as exc:
+                        failure_type = classify_generation_error(str(exc))
+                        return await _fail_graph_from_executor_exception(
+                            node=node,
+                            exc=exc,
+                            failure_type=failure_type,
+                        )
                     await self._handle_work_result(node=node, result=result, emit=_emit)
                     await update_task_graph_counters(
                         self._db,
@@ -355,7 +404,14 @@ class ClosedLoopController:
                     continue
 
                 if node.node_type == "critic":
-                    result = await execute_critic(node)
+                    try:
+                        result = await execute_critic(node)
+                    except Exception as exc:
+                        return await _fail_graph_from_executor_exception(
+                            node=node,
+                            exc=exc,
+                            failure_type=FAIL_CRITIC_PARSE,
+                        )
                     handled = await self._handle_critic_result(node=node, result=result, emit=_emit)
                     await update_task_graph_counters(
                         self._db,
@@ -371,7 +427,14 @@ class ClosedLoopController:
                     continue
 
                 if node.node_type == "gate":
-                    result = await execute_gate(node)
+                    try:
+                        result = await execute_gate(node)
+                    except Exception as exc:
+                        return await _fail_graph_from_executor_exception(
+                            node=node,
+                            exc=exc,
+                            failure_type=FAIL_STRICT_GATE,
+                        )
                     await self._handle_gate_result(node=node, result=result, emit=_emit)
                     continue
 

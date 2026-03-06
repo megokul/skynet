@@ -1,10 +1,25 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-05 19:45
+Last updated (UTC): 2026-03-06 08:20
 
 ## Current Goal
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-06 Control-Loop Timeout Crash Hardening Update
+
+- Root-cause from live Telegram E2E (`livee2e1772782693`):
+  - `work_2` stage timed out after 900s (`WAIT_TIMEOUT`) and bubbled up as an uncaught exception.
+  - The coding loop emitted a generic "unexpected error" and left the loop graph in an `active` state with a `running` work node.
+- Applied hardening in `openclaw-gateway/bot/handlers/coding.py`:
+  - `WAIT_TIMEOUT` during stage execution is now treated as a stage failure path (non-crashing) instead of an unconditional re-raise.
+  - Stage heartbeat tracker runtime metadata now correctly reports SSH mode for SSH-stage executions.
+  - Added a protective catch around `controller.run(...)` to convert unexpected controller exceptions into a structured failed graph result.
+- Applied hardening in `openclaw-gateway/orchestration/loop_controller.py`:
+  - Added executor exception guards for `work`, `critic`, and `gate` nodes.
+  - On uncaught executor exception, node and graph are now atomically marked failed with persisted failure type and event telemetry.
+- Added regression coverage:
+  - `openclaw-gateway/tests/test_control_loop_integration.py::test_closed_loop_executor_exception_fails_graph_without_crash`
 
 ### 2026-03-05 Live E2E Runtime Trace Visibility Update
 
