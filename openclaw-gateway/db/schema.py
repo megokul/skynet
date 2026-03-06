@@ -167,9 +167,12 @@ CREATE TABLE IF NOT EXISTS runtime_trace_events (
     level              TEXT    NOT NULL DEFAULT 'info',
     event              TEXT    NOT NULL,
     status             TEXT    NOT NULL DEFAULT '',
+    event_id           TEXT    NOT NULL DEFAULT '',
     trace_id           TEXT    NOT NULL DEFAULT '',
+    root_trace_id      TEXT    NOT NULL DEFAULT '',
     span_id            TEXT    NOT NULL DEFAULT '',
     parent_span_id     TEXT    NOT NULL DEFAULT '',
+    session_key        TEXT    NOT NULL DEFAULT '',
     flow               TEXT    NOT NULL DEFAULT '',
     project_id         TEXT    NOT NULL DEFAULT '',
     task_id            TEXT    NOT NULL DEFAULT '',
@@ -191,6 +194,8 @@ CREATE TABLE IF NOT EXISTS runtime_trace_events (
     action_name        TEXT    NOT NULL DEFAULT '',
     command_hash       TEXT    NOT NULL DEFAULT '',
     working_dir        TEXT    NOT NULL DEFAULT '',
+    remote_pid         TEXT    NOT NULL DEFAULT '',
+    artifact_count     INTEGER NOT NULL DEFAULT 0,
     payload_json       TEXT    NOT NULL DEFAULT '{}',
     created_at         TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -330,10 +335,14 @@ CREATE INDEX IF NOT EXISTS idx_task_node_events_graph_created
     ON task_node_events(graph_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runtime_trace_trace_id_created
     ON runtime_trace_events(trace_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_runtime_trace_session_created
+    ON runtime_trace_events(session_key, created_at);
 CREATE INDEX IF NOT EXISTS idx_runtime_trace_project_created
     ON runtime_trace_events(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runtime_trace_graph_created
     ON runtime_trace_events(graph_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_runtime_trace_project_graph_created
+    ON runtime_trace_events(project_id, graph_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_code_index_files_project_updated
     ON code_index_files(project_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_code_index_symbols_project_symbol
@@ -417,6 +426,11 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
         "ALTER TABLE task_nodes ADD COLUMN worker_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE task_nodes ADD COLUMN tools_required_json TEXT NOT NULL DEFAULT '[]'",
         "ALTER TABLE task_nodes ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'medium'",
+        "ALTER TABLE runtime_trace_events ADD COLUMN event_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE runtime_trace_events ADD COLUMN root_trace_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE runtime_trace_events ADD COLUMN session_key TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE runtime_trace_events ADD COLUMN remote_pid TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE runtime_trace_events ADD COLUMN artifact_count INTEGER NOT NULL DEFAULT 0",
     ]:
         try:
             await db.execute(sql)

@@ -172,6 +172,7 @@ async def send_action(
     _node_key = str(_params.get("node_key") or "")
     _node_type = str(_params.get("node_type") or "")
     _stage = str(_params.get("agent") or _params.get("stage") or "").strip().lower()
+    _session_key = str(_params.get("session_key") or "").strip()
     _cmd_hash = command_hash(str(_params.get("command") or _params.get("prompt") or ""))
     _working_dir = str(
         _params.get("working_dir")
@@ -196,6 +197,7 @@ async def send_action(
         graph_id=_graph_id,
         node_key=_node_key,
         node_type=_node_type,
+        session_key=_session_key,
         action_name=str(action or "").strip(),
         command_hash=_cmd_hash,
         working_dir=_working_dir,

@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -26,6 +27,13 @@ _SENSITIVE_TOKENS = (
     "cookie",
     "pat",
     "private",
+)
+_STRING_REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\b(authorization\s*:\s*bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)\b(bot\d{6,}:[A-Za-z0-9_-]{20,})\b"), "[REDACTED_TELEGRAM_BOT_TOKEN]"),
+    (re.compile(r"(?is)-----BEGIN [A-Z ]+PRIVATE KEY-----.*?-----END [A-Z ]+PRIVATE KEY-----"), "[REDACTED_PEM_BLOCK]"),
+    (re.compile(r"(?i)\b(api[_-]?key|token|password|secret|session)\s*[:=]\s*([^\s,;]+)"), r"\1=[REDACTED]"),
 )
 
 
@@ -50,7 +58,14 @@ def _is_sensitive_key(key: str) -> bool:
 
 
 def _sanitize_value(value: Any, *, key: str = "") -> Any:
-    mode = str(getattr(cfg, "RUNTIME_TRACE_PAYLOAD_MODE", "redacted_hash") or "redacted_hash").strip().lower()
+    mode = str(
+        getattr(
+            cfg,
+            "RUNTIME_TRACE_REDACTION_MODE",
+            getattr(cfg, "RUNTIME_TRACE_PAYLOAD_MODE", "forensic_redacted"),
+        )
+        or "forensic_redacted"
+    ).strip().lower()
     if mode == "raw":
         return value
 
@@ -69,15 +84,26 @@ def _sanitize_value(value: Any, *, key: str = "") -> Any:
     if isinstance(value, (int, float, bool)):
         return value
 
-    text = _truncate(str(value), limit=2000)
+    text = _truncate(str(value), limit=4000)
     if mode == "redacted":
         if _is_sensitive_key(key):
             return "[REDACTED]"
         return text
+    if mode == "forensic_redacted":
+        if _is_sensitive_key(key):
+            return "[REDACTED]"
+        return _sanitize_string_body(text)
 
     # redacted_hash (default)
     if _is_sensitive_key(key):
         return {"redacted": True, "sha1": _sha1_text(text), "len": len(text)}
+    return _sanitize_string_body(text)
+
+
+def _sanitize_string_body(value: str) -> str:
+    text = str(value or "")
+    for pattern, replacement in _STRING_REDACTIONS:
+        text = pattern.sub(replacement, text)
     return text
 
 
@@ -124,6 +150,11 @@ def build_debug_bundle(
     files_touched: list[str] | None = None,
     mitigation_hint: str = "",
     retry_policy_snapshot: dict[str, Any] | None = None,
+    process_tree: list[dict[str, Any]] | None = None,
+    prompt_file: dict[str, Any] | None = None,
+    artifact_snapshot: list[dict[str, Any]] | None = None,
+    artifact_count: int | None = None,
+    stop_cleanup_status: str = "",
 ) -> dict[str, Any]:
     stdio_limit = max(256, int(getattr(cfg, "RUNTIME_TRACE_STDIO_TAIL_BYTES", 4000) or 4000))
     include_stdio = bool(getattr(cfg, "RUNTIME_TRACE_INCLUDE_STDIO_TAIL", True))
@@ -139,14 +170,50 @@ def build_debug_bundle(
         "files_touched": [str(item).strip() for item in (files_touched or []) if str(item).strip()],
         "mitigation_hint": _truncate(mitigation_hint, 800),
         "retry_policy_snapshot": _sanitize_value(dict(retry_policy_snapshot or {}), key="retry_policy_snapshot"),
+        "process_tree": _sanitize_value(list(process_tree or []), key="process_tree"),
+        "prompt_file": _sanitize_value(dict(prompt_file or {}), key="prompt_file"),
+        "artifact_snapshot": _sanitize_value(list(artifact_snapshot or []), key="artifact_snapshot"),
+        "artifact_count": max(0, int(artifact_count or 0)),
+        "stop_cleanup_status": _truncate(stop_cleanup_status, 200),
+    }
+
+
+def build_process_debug_bundle(
+    *,
+    process_tree: list[dict[str, Any]] | None = None,
+    prompt_file: dict[str, Any] | None = None,
+    remote_pid: str = "",
+    stop_cleanup_status: str = "",
+) -> dict[str, Any]:
+    return {
+        "process_tree": _sanitize_value(list(process_tree or []), key="process_tree"),
+        "prompt_file": _sanitize_value(dict(prompt_file or {}), key="prompt_file"),
+        "remote_pid": str(remote_pid or "").strip(),
+        "stop_cleanup_status": _truncate(stop_cleanup_status, 200),
+    }
+
+
+def build_artifact_debug_bundle(
+    *,
+    artifact_snapshot: list[dict[str, Any]] | None = None,
+    artifact_count: int = 0,
+    files_touched: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "artifact_snapshot": _sanitize_value(list(artifact_snapshot or []), key="artifact_snapshot"),
+        "artifact_count": max(0, int(artifact_count or 0)),
+        "files_touched": [str(item).strip() for item in (files_touched or []) if str(item).strip()],
     }
 
 
 def _required_defaults(payload: dict[str, Any]) -> dict[str, Any]:
     defaults = {
+        "event_id": payload.get("event_id") or uuid.uuid4().hex,
         "trace_id": payload.get("trace_id") or uuid.uuid4().hex,
+        "root_trace_id": payload.get("root_trace_id") or payload.get("trace_id") or uuid.uuid4().hex,
         "span_id": payload.get("span_id") or uuid.uuid4().hex[:16],
         "parent_span_id": payload.get("parent_span_id") or "",
+        "session_key": str(payload.get("session_key") or ""),
         "flow": _normalize_flow(str(payload.get("flow") or "")),
         "project_id": str(payload.get("project_id") or ""),
         "task_id": str(payload.get("task_id") or ""),
@@ -168,6 +235,8 @@ def _required_defaults(payload: dict[str, Any]) -> dict[str, Any]:
         "action_name": str(payload.get("action_name") or ""),
         "command_hash": str(payload.get("command_hash") or ""),
         "working_dir": str(payload.get("working_dir") or ""),
+        "remote_pid": str(payload.get("remote_pid") or ""),
+        "artifact_count": max(0, int(payload.get("artifact_count") or 0)),
     }
     return defaults
 
@@ -222,8 +291,10 @@ def emit_runtime_trace(
             level="error",
             status="fail",
             emit_debug_bundle=False,
+            root_trace_id=payload.get("root_trace_id"),
             trace_id=payload.get("trace_id"),
             parent_span_id=payload.get("span_id"),
+            session_key=payload.get("session_key"),
             flow=payload.get("flow"),
             project_id=payload.get("project_id"),
             task_id=payload.get("task_id"),
@@ -242,6 +313,8 @@ def emit_runtime_trace(
             action_name=payload.get("action_name"),
             command_hash=payload.get("command_hash"),
             working_dir=payload.get("working_dir"),
+            remote_pid=payload.get("remote_pid"),
+            artifact_count=payload.get("artifact_count"),
             debug_bundle=debug_bundle,
         )
 
@@ -284,8 +357,10 @@ async def emit_runtime_trace_async(
             level="error",
             status="fail",
             emit_debug_bundle=False,
+            root_trace_id=payload.get("root_trace_id"),
             trace_id=payload.get("trace_id"),
             parent_span_id=payload.get("span_id"),
+            session_key=payload.get("session_key"),
             flow=payload.get("flow"),
             project_id=payload.get("project_id"),
             task_id=payload.get("task_id"),
@@ -304,6 +379,8 @@ async def emit_runtime_trace_async(
             action_name=payload.get("action_name"),
             command_hash=payload.get("command_hash"),
             working_dir=payload.get("working_dir"),
+            remote_pid=payload.get("remote_pid"),
+            artifact_count=payload.get("artifact_count"),
             debug_bundle=debug_bundle,
         )
         if db is not None and bool(getattr(cfg, "RUNTIME_TRACE_DB_ENABLED", True)):
@@ -322,3 +399,13 @@ def command_hash(command: str) -> str:
     if not text:
         return ""
     return _sha1_text(text)
+
+
+def command_preview(command: str) -> dict[str, str]:
+    text = _sanitize_string_body(str(command or ""))
+    limit = max(80, int(getattr(cfg, "RUNTIME_TRACE_COMMAND_PREVIEW_CHARS", 2000) or 2000))
+    text = _truncate(text, limit=limit)
+    return {
+        "command_preview": text,
+        "command_hash": command_hash(command),
+    }

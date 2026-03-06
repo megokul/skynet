@@ -820,22 +820,25 @@ async def create_runtime_trace_event(
         """
         INSERT INTO runtime_trace_events
             (
-                ts, level, event, status, trace_id, span_id, parent_span_id, flow,
+                ts, level, event, status, event_id, trace_id, root_trace_id, span_id, parent_span_id, session_key, flow,
                 project_id, task_id, graph_id, node_key, node_type, phase, stage, gate,
                 worker_id, transport, runtime_mode, error_type, error_code, error_message,
                 telegram_chat_id, telegram_user_id, telegram_message_id, action_name,
-                command_hash, working_dir, payload_json, created_at
+                command_hash, working_dir, remote_pid, artifact_count, payload_json, created_at
             )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             ts,
             str(payload.get("level") or "info").strip(),
             str(payload.get("event") or "").strip(),
             str(payload.get("status") or "").strip(),
+            str(payload.get("event_id") or "").strip(),
             str(payload.get("trace_id") or "").strip(),
+            str(payload.get("root_trace_id") or "").strip(),
             str(payload.get("span_id") or "").strip(),
             str(payload.get("parent_span_id") or "").strip(),
+            str(payload.get("session_key") or "").strip(),
             str(payload.get("flow") or "").strip(),
             str(payload.get("project_id") or "").strip(),
             str(payload.get("task_id") or "").strip(),
@@ -857,6 +860,8 @@ async def create_runtime_trace_event(
             str(payload.get("action_name") or "").strip(),
             str(payload.get("command_hash") or "").strip(),
             str(payload.get("working_dir") or "").strip(),
+            str(payload.get("remote_pid") or "").strip(),
+            max(0, int(payload.get("artifact_count") or 0)),
             _dump_json(payload, "{}"),
             _now(),
         ),
@@ -879,6 +884,7 @@ async def list_runtime_trace_events(
     trace_id: str | None = None,
     project_id: str | None = None,
     graph_id: str | None = None,
+    session_key: str | None = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     clauses: list[str] = []
@@ -892,6 +898,9 @@ async def list_runtime_trace_events(
     if graph_id:
         clauses.append("graph_id = ?")
         params.append(str(graph_id).strip())
+    if session_key:
+        clauses.append("session_key = ?")
+        params.append(str(session_key).strip())
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     query = (
         "SELECT * FROM runtime_trace_events"

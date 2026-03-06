@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 
 import config as cfg
 from telegram import Update
@@ -384,6 +385,7 @@ async def _planner_via_codex_then_router(
         )
         try:
             orchestration_mode = str(cfg.effective_orchestration_mode() or "legacy").strip().lower()
+            planner_session_key = uuid.uuid4().hex
             if orchestration_mode == "acp_first":
                 runner = get_openclaw_runner()
                 session = await runner.start_session(
@@ -411,7 +413,12 @@ async def _planner_via_codex_then_router(
                     raise RuntimeError("Worker unavailable for planner codex call")
                 await send_action(
                     "create_directory",
-                    {"directory": sandbox_dir},
+                    {
+                        "directory": sandbox_dir,
+                        "project_id": f"user-{user_id}",
+                        "worker_id": str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
+                        "session_key": planner_session_key,
+                    },
                     timeout=20,
                     confirmed=True,
                 )
@@ -423,6 +430,10 @@ async def _planner_via_codex_then_router(
                         "prompt": planner_prompt,
                         "working_dir": sandbox_dir,
                         "timeout_seconds": timeout,
+                        "project_id": f"user-{user_id}",
+                        "task_id": f"planner-{task_type}",
+                        "worker_id": str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
+                        "session_key": planner_session_key,
                     },
                     timeout=timeout,
                     confirmed=True,
@@ -698,7 +709,7 @@ async def _do_generate_plan(
         return GATHERING_REQUIREMENTS
 
     await message.chat.send_action(ChatAction.TYPING)
-    await message.reply_text("Generating your project plan…")
+    await message.reply_text("Generating your project plan...")
 
     name       = context.user_data.get(_NAME_KEY, "Untitled")
     type_label = context.user_data.get(_TYPE_KEY, "Other")

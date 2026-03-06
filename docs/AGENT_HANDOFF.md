@@ -1,10 +1,45 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-06 12:33
+Last updated (UTC): 2026-03-06 15:02
 
 ## Current Goal
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-06 Max-Forensic Runtime Trace + Telegram Tracker Update
+
+- Expanded runtime trace for SSH-first coding so stuck stages are diagnosable from `skynet.trace.log` alone:
+  - added forensic trace envelope fields in `openclaw-gateway/runtime_trace.py`, `openclaw-gateway/db/schema.py`, and `openclaw-gateway/db/store.py`
+    - `event_id`
+    - `root_trace_id`
+    - `session_key`
+    - `remote_pid`
+    - `artifact_count`
+  - moved runtime redaction to regex-based forensic sanitization while preserving readable command/path/process diagnostics.
+- Hardened SSH execution tracing in `openclaw-gateway/ssh_tunnel_executor.py`:
+  - active session registry keyed by `session_key`
+  - prompt-file lifecycle events
+  - command launch/stdout/stderr/exit wait events
+  - `trace_runtime_probe` and `cancel_runtime_session` actions
+  - remote artifact/process snapshots for long-running `run_coding_agent` calls.
+- Wired coding heartbeat probes and stop-cleanup tracing in `openclaw-gateway/bot/handlers/coding.py`:
+  - `coding.stage.remote_snapshot`
+  - `coding.stage.process_tree`
+  - `coding.stage.prompt_file_state`
+  - `coding.stage.artifact_detected`
+  - `coding.stop.requested`
+  - `coding.stop.remote_cancel`
+  - `coding.stop.orphan_process.detected`
+  - `/trace deep` now includes latest forensic snapshot summary.
+- Fixed Telegram tracker/status correctness in `openclaw-gateway/bot/handlers/coding.py`:
+  - SSH sessions now default to `transport=ssh_first` and `runtime=ssh`
+  - meaningful phase/stage/gate changes bypass edit throttling immediately
+  - tracker message stays rate-limited only for non-significant heartbeat churn.
+- Normalized Telegram chat text in `openclaw-gateway/bot/handlers/coding.py` and `openclaw-gateway/bot/handlers/project.py`:
+  - removed mojibake/corrupted symbols from milestone, retry, stop, and plan-generation messages.
+- Deployment alignment fix:
+  - updated `.github/workflows/deploy-ec2-skynet.yml` so `.env.ci` no longer forces legacy trace payload mode.
+  - deploy now exports forensic trace defaults (`DETAIL_PROFILE=max_forensic`, `PAYLOAD_MODE=forensic_redacted`, remote snapshot/session-registry flags).
 
 ### 2026-03-06 Trace-First Live E2E + Container Stream Update
 
@@ -530,6 +565,17 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
 
 ## Test Results
 
+- `python -m py_compile openclaw-gateway/bot/handlers/coding.py openclaw-gateway/bot/handlers/project.py openclaw-gateway/runtime_trace.py openclaw-gateway/ssh_tunnel_executor.py openclaw-gateway/tests/test_runtime_trace.py openclaw-gateway/tests/test_runtime_trace_forensic.py openclaw-gateway/tests/test_ssh_executor_trace_forensics.py openclaw-gateway/tests/test_tracker_progress.py`
+  - pass
+- `python -m pytest openclaw-gateway/tests/test_runtime_trace.py openclaw-gateway/tests/test_runtime_trace_forensic.py openclaw-gateway/tests/test_ssh_executor_trace_forensics.py openclaw-gateway/tests/test_trace_command.py openclaw-gateway/tests/test_tracker_progress.py -q`
+  - `8 passed`
+- `python scripts/ci/check_stale_paths.py`
+  - pass
+- `python scripts/ci/check_control_plane_boundary.py`
+  - pass
+- `python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD`
+  - pass after updating `docs/AGENT_HANDOFF.md`
+
 - `python -m pytest -q openclaw-gateway/tests/test_live_e2e_trace_logging.py openclaw-gateway/tests/test_live_e2e_runner_policy.py openclaw-gateway/tests/test_ssh_executor_resilience.py openclaw-gateway/tests/test_planner_resilience.py`
   - `26 passed`
 - `python -m py_compile openclaw-gateway/tests/e2e_live.py openclaw-gateway/tests/test_e2e_telegram_real_live.py`
@@ -592,6 +638,14 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
   - `1 passed` (`test_live_conversation_real_planner_codegen_and_github_push`, ~143s, trace `e2e-live-1772610595.log`)
 ## Trace Evidence
 
+- request_id=max-forensic-runtime-trace-20260306
+- task_id=ssh-first-live-e2e-trace-expansion
+- skynet.trace.log
+- /trace deep
+- session_key runtime correlation added to SSH coding actions
+- request_id=telegram-tracker-cleanup-20260306
+- task_id=ssh-status-tracker-and-chat-normalization
+- `E:\MyProjects\skynet\logs\skynet.trace.log`
 - request_id=live-e2e-runtime-trace-visibility-20260305
 - task_id=telegram-real-e2e-runtime-trace-snapshots
 - `E:\MyProjects\skynet\logs\e2e-live-1772737353.log`
@@ -623,6 +677,7 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
 ## Documentation Updates
 
 - `docs/AGENT_HANDOFF.md`
+- `.github/workflows/deploy-ec2-skynet.yml`
 - `README.md`
 - `docs/DEBUG_PLAYBOOK.md`
 - `docs/IMPLEMENTATION_GUIDE.md`

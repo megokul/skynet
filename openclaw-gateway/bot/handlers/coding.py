@@ -21,6 +21,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from typing import Any, Awaitable, Callable
 
 import config as cfg
@@ -102,7 +103,14 @@ from orchestration.learning import (
 from orchestration.loop_controller import ClosedLoopController
 from orchestration.openclaw_runner import get_openclaw_runner
 from orchestration.trace import format_timeline_lines, load_trace_timeline
-from runtime_trace import build_debug_bundle, command_hash, emit_runtime_trace, emit_runtime_trace_async
+from runtime_trace import (
+    build_artifact_debug_bundle,
+    build_debug_bundle,
+    build_process_debug_bundle,
+    command_hash,
+    emit_runtime_trace,
+    emit_runtime_trace_async,
+)
 from orchestration.worker_pool import select_worker
 
 logger = logging.getLogger("skynet.bot.coding")
@@ -322,6 +330,22 @@ def _tracker_verbose_pipeline() -> bool:
     return bool(getattr(cfg, "TELEGRAM_TRACKER_VERBOSE_PIPELINE", True))
 
 
+def _tracker_default_transport() -> str:
+    execution_mode = str(cfg.get_str("OPENCLAW_EXECUTION_MODE", "") or "").strip().lower()
+    if execution_mode in {"ssh", "ssh_tunnel", "tunnel", "ssh-only"}:
+        return "ssh_first"
+    coding_transport = str(getattr(cfg, "CODING_TRANSPORT", "auto") or "auto").strip().lower()
+    if coding_transport == "ssh_first":
+        return "ssh_first"
+    if _use_acp_orchestration():
+        return "acp_local"
+    return coding_transport or "auto"
+
+
+def _tracker_default_runtime_mode() -> str:
+    return "acp" if _use_acp_orchestration() else "ssh"
+
+
 def _clamp_unit(value: float) -> float:
     return max(0.0, min(1.0, value))
 
@@ -494,25 +518,16 @@ async def _tracker_init_message(
         return
 
     now = time.monotonic()
-    use_acp = _use_acp_orchestration()
     state: dict[str, Any] = {
         "project_id": project_id,
         "project_name": str(project.get("name") or "").strip(),
         "working_dir": working_dir,
         "strict_mode": strict_mode,
-        "transport": str(getattr(cfg, "CODING_TRANSPORT", "auto") or "auto"),
+        "transport": _tracker_default_transport(),
         "run_contract_status": "pending" if strict_mode else "legacy",
         "session_id": "",
-        "runtime_mode": (
-            str(getattr(cfg, "OPENCLAW_RUNTIME", "acp") or "acp")
-            if use_acp
-            else "ssh"
-        ),
-        "queue_mode": (
-            str(getattr(cfg, "OPENCLAW_QUEUE_MODE", "require_empty_queue") or "require_empty_queue")
-            if use_acp
-            else ""
-        ),
+        "runtime_mode": _tracker_default_runtime_mode(),
+        "queue_mode": (str(getattr(cfg, "OPENCLAW_QUEUE_MODE", "require_empty_queue") or "require_empty_queue") if _use_acp_orchestration() else ""),
         "graph_id": "",
         "arch_version": "",
         "node_key": "",
@@ -587,6 +602,7 @@ async def _tracker_update(
     gates_progress: float | None = None,
     final_progress: float | None = None,
     heartbeat_elapsed: int | None = None,
+    transport: str | None = None,
     force: bool = False,
 ) -> None:
     if not _tracker_enabled():
@@ -600,6 +616,7 @@ async def _tracker_update(
         return
 
     now = time.monotonic()
+    prior = dict(state)
     if phase is not None:
         state["phase"] = str(phase).strip() or state.get("phase", "setup")
     if phase_detail is not None:
@@ -638,11 +655,46 @@ async def _tracker_update(
         state["worker_id"] = str(worker_id).strip()
     if critic_name is not None:
         state["critic_name"] = str(critic_name).strip()
+    if transport is not None:
+        state["transport"] = str(transport).strip() or state.get("transport", _tracker_default_transport())
     if heartbeat_elapsed is not None:
         state["last_signal_monotonic"] = now
         if not phase_detail:
-            state["phase_detail"] = f"{state.get('phase_detail', '').strip()} ({heartbeat_elapsed}s elapsed)".strip()
-    elif phase is not None or phase_detail is not None or stage is not None or gate is not None:
+            base_detail = str(state.get("phase_detail", "") or "").strip()
+            state["phase_detail"] = (
+                f"{base_detail} ({heartbeat_elapsed}s elapsed)".strip()
+                if base_detail
+                else f"{heartbeat_elapsed}s elapsed"
+            )
+    elif any(
+        value is not None
+        for value in (
+            phase,
+            phase_detail,
+            status,
+            milestone_index,
+            milestones_total,
+            attempt,
+            stage,
+            gate,
+            run_contract_status,
+            session_id,
+            runtime_mode,
+            queue_mode,
+            graph_id,
+            arch_version,
+            node_key,
+            node_type,
+            worker_id,
+            critic_name,
+            transport,
+            setup_progress,
+            extraction_progress,
+            execution_progress,
+            gates_progress,
+            final_progress,
+        )
+    ):
         state["last_signal_monotonic"] = now
 
     progress_updates = (
@@ -657,14 +709,40 @@ async def _tracker_update(
             continue
         state[key] = max(float(state.get(key, 0.0) or 0.0), _clamp_unit(float(raw)))
 
+    prior_percent = int(state.get("percent", 0) or 0)
     _tracker_recompute_percent(state)
     text = _tracker_render_text(state)
     if text == str(state.get("last_rendered_text") or "") and not force:
         return
 
+    significant_change = any(
+        str(prior.get(key) or "") != str(state.get(key) or "")
+        for key in (
+            "phase",
+            "phase_detail",
+            "status",
+            "milestone_index",
+            "milestones_total",
+            "attempt",
+            "stage",
+            "gate",
+            "run_contract_status",
+            "session_id",
+            "runtime_mode",
+            "queue_mode",
+            "graph_id",
+            "arch_version",
+            "node_key",
+            "node_type",
+            "worker_id",
+            "critic_name",
+            "transport",
+        )
+    ) or int(state.get("percent", 0) or 0) != prior_percent
+
     edit_interval = _tracker_edit_interval()
     since_last_edit = now - float(state.get("last_edit_monotonic", 0.0) or 0.0)
-    if not force and edit_interval > 0 and since_last_edit < edit_interval:
+    if not force and not significant_change and edit_interval > 0 and since_last_edit < edit_interval:
         return
 
     message_id = int(state.get("message_id", 0) or 0)
@@ -916,11 +994,25 @@ def _stage_payload(
     prompt: str,
     working_dir: str,
     timeout_seconds: int = 1800,
+    project_id: str = "",
+    task_id: str = "",
+    graph_id: str = "",
+    node_key: str = "",
+    node_type: str = "",
+    worker_id: str = "",
+    session_key: str = "",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "prompt": prompt,
         "working_dir": working_dir,
         "timeout_seconds": timeout_seconds,
+        "project_id": project_id,
+        "task_id": task_id,
+        "graph_id": graph_id,
+        "node_key": node_key,
+        "node_type": node_type,
+        "worker_id": worker_id or str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
+        "session_key": session_key or uuid.uuid4().hex,
     }
     if stage_name == "codex":
         payload["agent"] = "codex"
@@ -974,6 +1066,201 @@ def _action_excerpt(result: dict[str, Any], *, limit: int = 240) -> str:
     return text[:limit]
 
 
+async def _emit_remote_probe_trace(
+    *,
+    db,
+    params: dict[str, Any],
+    probe: dict[str, Any],
+    action: str,
+) -> None:
+    if action != "run_coding_agent":
+        return
+    session_key = str(params.get("session_key") or "").strip()
+    if not session_key:
+        return
+    project_id = str(params.get("project_id") or "")
+    task_id = str(params.get("task_id") or "")
+    graph_id = str(params.get("graph_id") or "")
+    node_key = str(params.get("node_key") or "")
+    node_type = str(params.get("node_type") or "")
+    stage = str(params.get("agent") or params.get("stage") or "")
+    worker_id = str(params.get("worker_id") or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary")
+    working_dir = str(params.get("working_dir") or "")
+    process_tree = probe.get("process_tree") or []
+    prompt_file = probe.get("prompt_file") or {}
+    artifact_snapshot = probe.get("artifact_snapshot") or []
+    artifact_count = int(probe.get("artifact_count") or 0)
+    remote_pid = str(probe.get("remote_pid") or "")
+    await emit_runtime_trace_async(
+        db=db,
+        event="coding.stage.remote_snapshot",
+        status="ok",
+        flow=_runtime_flow(),
+        project_id=project_id,
+        task_id=task_id,
+        graph_id=graph_id,
+        node_key=node_key,
+        node_type=node_type,
+        phase="coding_generation",
+        stage=stage,
+        worker_id=worker_id,
+        transport="ssh_first",
+        runtime_mode="ssh",
+        action_name="trace_runtime_probe",
+        working_dir=working_dir,
+        session_key=session_key,
+        remote_pid=remote_pid,
+        artifact_count=artifact_count,
+        details={"probe": probe},
+    )
+    if process_tree:
+        await emit_runtime_trace_async(
+            db=db,
+            event="coding.stage.process_tree",
+            status="ok",
+            flow=_runtime_flow(),
+            project_id=project_id,
+            task_id=task_id,
+            graph_id=graph_id,
+            node_key=node_key,
+            node_type=node_type,
+            phase="coding_generation",
+            stage=stage,
+            worker_id=worker_id,
+            transport="ssh_first",
+            runtime_mode="ssh",
+            action_name="trace_runtime_probe",
+            working_dir=working_dir,
+            session_key=session_key,
+            remote_pid=remote_pid,
+            artifact_count=artifact_count,
+            details={"process_tree_summary": process_tree[:10]},
+        )
+    if prompt_file:
+        await emit_runtime_trace_async(
+            db=db,
+            event="coding.stage.prompt_file_state",
+            status="ok",
+            flow=_runtime_flow(),
+            project_id=project_id,
+            task_id=task_id,
+            graph_id=graph_id,
+            node_key=node_key,
+            node_type=node_type,
+            phase="coding_generation",
+            stage=stage,
+            worker_id=worker_id,
+            transport="ssh_first",
+            runtime_mode="ssh",
+            action_name="trace_runtime_probe",
+            working_dir=working_dir,
+            session_key=session_key,
+            remote_pid=remote_pid,
+            artifact_count=artifact_count,
+            details={"prompt_file": prompt_file},
+        )
+    if artifact_count > 0:
+        files_touched = [str(item.get("path") or "") for item in artifact_snapshot if str(item.get("path") or "").strip()]
+        await emit_runtime_trace_async(
+            db=db,
+            event="coding.stage.artifact_detected",
+            status="ok",
+            flow=_runtime_flow(),
+            project_id=project_id,
+            task_id=task_id,
+            graph_id=graph_id,
+            node_key=node_key,
+            node_type=node_type,
+            phase="coding_generation",
+            stage=stage,
+            worker_id=worker_id,
+            transport="ssh_first",
+            runtime_mode="ssh",
+            action_name="trace_runtime_probe",
+            working_dir=working_dir,
+            session_key=session_key,
+            remote_pid=remote_pid,
+            artifact_count=artifact_count,
+            details={"artifact_delta": artifact_snapshot[:20]},
+        )
+        await emit_runtime_trace_async(
+            db=db,
+            event="ssh.command.blocked_after_artifacts",
+            status="fail",
+            level="error",
+            flow=_runtime_flow(),
+            project_id=project_id,
+            task_id=task_id,
+            graph_id=graph_id,
+            node_key=node_key,
+            node_type=node_type,
+            phase="coding_generation",
+            stage=stage,
+            worker_id=worker_id,
+            transport="ssh_first",
+            runtime_mode="ssh",
+            action_name="trace_runtime_probe",
+            working_dir=working_dir,
+            session_key=session_key,
+            remote_pid=remote_pid,
+            artifact_count=artifact_count,
+            error_code="SSH_COMMAND_BLOCKED_AFTER_ARTIFACTS",
+            error_message="Files were written but the remote coding command is still running.",
+            debug_bundle=build_debug_bundle(
+                failure_class="SSH_COMMAND_BLOCKED_AFTER_ARTIFACTS",
+                error_message="Files were written but the remote coding command is still running.",
+                process_tree=process_tree,
+                prompt_file=prompt_file if isinstance(prompt_file, dict) else {},
+                artifact_snapshot=artifact_snapshot,
+                artifact_count=artifact_count,
+                files_touched=files_touched,
+                mitigation_hint="Inspect the remote process tree and whether validation or popup execution is blocking command exit.",
+            ),
+            details={"artifact_delta": artifact_snapshot[:20], "process_tree_summary": process_tree[:10]},
+        )
+
+
+async def _maybe_probe_remote_runtime(
+    *,
+    app,
+    params: dict[str, Any],
+    action: str,
+) -> dict[str, Any]:
+    if action != "run_coding_agent":
+        return {}
+    if not bool(getattr(cfg, "RUNTIME_TRACE_HEARTBEAT_REMOTE_SNAPSHOT", True)):
+        return {}
+    session_key = str(params.get("session_key") or "").strip()
+    if not session_key:
+        return {}
+    probe_timeout = max(5, int(getattr(cfg, "RUNTIME_TRACE_REMOTE_PROBE_TIMEOUT_SECONDS", 8) or 8))
+    result = await send_action(
+        "trace_runtime_probe",
+        {
+            "session_key": session_key,
+            "working_dir": str(params.get("working_dir") or ""),
+            "stage": str(params.get("agent") or params.get("stage") or ""),
+            "started_at": str(params.get("started_at") or ""),
+            "project_id": str(params.get("project_id") or ""),
+            "task_id": str(params.get("task_id") or ""),
+            "graph_id": str(params.get("graph_id") or ""),
+            "node_key": str(params.get("node_key") or ""),
+            "node_type": str(params.get("node_type") or ""),
+            "worker_id": str(params.get("worker_id") or ""),
+        },
+        timeout=probe_timeout,
+        confirmed=True,
+    )
+    if result.get("status") == "error":
+        return {}
+    inner = _action_inner_result(result)
+    if int(inner.get("returncode", inner.get("exit_code", 0)) or 0) != 0:
+        return {}
+    db = app.bot_data.get(KEY_DB) if isinstance(app.bot_data, dict) else None
+    await _emit_remote_probe_trace(db=db, params=params, probe=inner, action=action)
+    return inner
+
+
 async def _send_action_with_heartbeat(
     *,
     app,
@@ -1016,11 +1303,138 @@ async def _send_action_with_heartbeat(
             except asyncio.TimeoutError:
                 elapsed += interval
                 if user_id is not None and app.bot_data.get(_stop_request_key(user_id)):
+                    db = app.bot_data.get(KEY_DB) if isinstance(app.bot_data, dict) else None
+                    session_key = str(params.get("session_key") or "").strip()
+                    await emit_runtime_trace_async(
+                        db=db,
+                        event="coding.stop.requested",
+                        status="start",
+                        flow=_runtime_flow(),
+                        project_id=str(params.get("project_id") or ""),
+                        task_id=str(params.get("task_id") or ""),
+                        graph_id=str(params.get("graph_id") or ""),
+                        node_key=str(params.get("node_key") or ""),
+                        node_type=str(params.get("node_type") or ""),
+                        phase="coding_generation",
+                        stage=str(params.get("agent") or params.get("stage") or ""),
+                        worker_id=str(params.get("worker_id") or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
+                        transport="ssh_first",
+                        runtime_mode="ssh",
+                        action_name=action,
+                        working_dir=str(params.get("working_dir") or ""),
+                        session_key=session_key,
+                    )
+                    if session_key and bool(getattr(cfg, "RUNTIME_TRACE_STOP_CLEANUP_EVENTS", True)):
+                        await emit_runtime_trace_async(
+                            db=db,
+                            event="coding.stop.remote_cancel",
+                            status="start",
+                            flow=_runtime_flow(),
+                            project_id=str(params.get("project_id") or ""),
+                            task_id=str(params.get("task_id") or ""),
+                            graph_id=str(params.get("graph_id") or ""),
+                            node_key=str(params.get("node_key") or ""),
+                            node_type=str(params.get("node_type") or ""),
+                            phase="coding_generation",
+                            stage=str(params.get("agent") or params.get("stage") or ""),
+                            worker_id=str(params.get("worker_id") or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
+                            transport="ssh_first",
+                            runtime_mode="ssh",
+                            action_name="cancel_runtime_session",
+                            working_dir=str(params.get("working_dir") or ""),
+                            session_key=session_key,
+                        )
+                        cancel = await send_action(
+                            "cancel_runtime_session",
+                            {
+                                "session_key": session_key,
+                                "project_id": str(params.get("project_id") or ""),
+                                "task_id": str(params.get("task_id") or ""),
+                                "graph_id": str(params.get("graph_id") or ""),
+                                "node_key": str(params.get("node_key") or ""),
+                                "node_type": str(params.get("node_type") or ""),
+                                "worker_id": str(params.get("worker_id") or ""),
+                                "working_dir": str(params.get("working_dir") or ""),
+                            },
+                            timeout=max(20, int(getattr(cfg, "RUNTIME_TRACE_REMOTE_PROBE_TIMEOUT_SECONDS", 8) or 8) * 3),
+                            confirmed=True,
+                        )
+                        cancel_inner = _action_inner_result(cancel) if cancel.get("status") != "error" else {}
+                        cancel_fail = cancel.get("status") == "error" or int(cancel_inner.get("returncode", 0) or 0) != 0
+                        process_tree = list(cancel_inner.get("process_tree") or [])
+                        prompt_file = dict(cancel_inner.get("prompt_file") or {})
+                        artifact_snapshot = list(cancel_inner.get("artifact_snapshot") or [])
+                        artifact_count = int(cancel_inner.get("artifact_count") or 0)
+                        remote_pid = str(cancel_inner.get("remote_pid") or "")
+                        cleanup_status = str(cancel_inner.get("cleanup_status") or "")
+                        await emit_runtime_trace_async(
+                            db=db,
+                            event="coding.stop.remote_cancel",
+                            status="fail" if cancel_fail else "ok",
+                            level="error" if cancel_fail else "info",
+                            flow=_runtime_flow(),
+                            project_id=str(params.get("project_id") or ""),
+                            task_id=str(params.get("task_id") or ""),
+                            graph_id=str(params.get("graph_id") or ""),
+                            node_key=str(params.get("node_key") or ""),
+                            node_type=str(params.get("node_type") or ""),
+                            phase="coding_generation",
+                            stage=str(params.get("agent") or params.get("stage") or ""),
+                            worker_id=str(params.get("worker_id") or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
+                            transport="ssh_first",
+                            runtime_mode="ssh",
+                            action_name="cancel_runtime_session",
+                            working_dir=str(params.get("working_dir") or ""),
+                            session_key=session_key,
+                            remote_pid=remote_pid,
+                            artifact_count=artifact_count,
+                            error_code="REMOTE_CANCEL_FAILED" if cancel_fail else "",
+                            error_message=str(cancel.get("error") or cancel_inner.get("stderr") or "")[:1200] if cancel_fail else "",
+                            debug_bundle=build_debug_bundle(
+                                failure_class="REMOTE_CANCEL_FAILED" if cancel_fail else "STOP_REQUESTED",
+                                error_message=str(cancel.get("error") or cancel_inner.get("stderr") or "stop cleanup attempted")[:1200],
+                                process_tree=process_tree,
+                                prompt_file=prompt_file,
+                                artifact_snapshot=artifact_snapshot,
+                                artifact_count=artifact_count,
+                                stop_cleanup_status=cleanup_status,
+                                mitigation_hint="Inspect whether the remote wrapper PID and descendants were terminated cleanly.",
+                            ),
+                            details={"stop_cleanup_status": cleanup_status, "process_tree_summary": process_tree[:10]},
+                        )
+                        if cancel_inner.get("orphaned"):
+                            await emit_runtime_trace_async(
+                                db=db,
+                                event="coding.stop.orphan_process.detected",
+                                status="fail",
+                                level="error",
+                                flow=_runtime_flow(),
+                                project_id=str(params.get("project_id") or ""),
+                                task_id=str(params.get("task_id") or ""),
+                                graph_id=str(params.get("graph_id") or ""),
+                                node_key=str(params.get("node_key") or ""),
+                                node_type=str(params.get("node_type") or ""),
+                                phase="coding_generation",
+                                stage=str(params.get("agent") or params.get("stage") or ""),
+                                worker_id=str(params.get("worker_id") or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
+                                transport="ssh_first",
+                                runtime_mode="ssh",
+                                action_name="cancel_runtime_session",
+                                working_dir=str(params.get("working_dir") or ""),
+                                session_key=session_key,
+                                remote_pid=remote_pid,
+                                artifact_count=artifact_count,
+                                error_code="ORPHAN_PROCESS_DETECTED",
+                                error_message="Remote processes or prompt files remained after stop cleanup.",
+                                details={"process_tree_summary": process_tree[:10], "prompt_file": prompt_file},
+                            )
                     raise RuntimeError("STOP_REQUESTED: session stop requested by user")
                 if max_wait_seconds is not None and elapsed >= max_wait_seconds:
                     raise RuntimeError(
                         f"WAIT_TIMEOUT: {label} exceeded {max_wait_seconds}s"
                     )
+                with contextlib.suppress(Exception):
+                    await _maybe_probe_remote_runtime(app=app, params=params, action=action)
                 await app.bot.send_message(
                     chat_id,
                     f"\u23f3 Still working on {label} ({elapsed}s elapsed)...",
@@ -1711,6 +2125,10 @@ async def _run_stage_chain_for_generation(
     working_dir: str,
     stage_chain: list[str],
     label_prefix: str,
+    graph_id: str = "",
+    node_key: str = "",
+    node_type: str = "",
+    worker_id: str = "",
     timeout_seconds: int = 1800,
     require_runnable_files: bool = True,
     notify_stage_switch: bool = True,
@@ -1731,6 +2149,7 @@ async def _run_stage_chain_for_generation(
     for idx, stage_name in enumerate(stage_chain, start=1):
         attempted_stages.append(stage_name)
         use_acp = _use_acp_orchestration()
+        stage_session_key = uuid.uuid4().hex
         payload: dict[str, Any] | None = None
         if not use_acp:
             payload = _stage_payload(
@@ -1738,6 +2157,13 @@ async def _run_stage_chain_for_generation(
                 prompt=prompt,
                 working_dir=working_dir,
                 timeout_seconds=timeout_seconds,
+                project_id=str(project.get("id") or ""),
+                task_id=str(task_id or ""),
+                graph_id=graph_id,
+                node_key=node_key,
+                node_type=node_type,
+                worker_id=worker_id,
+                session_key=stage_session_key,
             )
         session_id = ""
         queue_mode = str(getattr(cfg, "OPENCLAW_QUEUE_MODE", "require_empty_queue") or "require_empty_queue")
@@ -1754,14 +2180,18 @@ async def _run_stage_chain_for_generation(
             flow=_runtime_flow(),
             project_id=str(project.get("id") or ""),
             task_id=str(task_id or ""),
+            graph_id=str(graph_id or ""),
+            node_key=str(node_key or ""),
+            node_type=str(node_type or ""),
             phase=str(label_prefix or ""),
             stage=stage_name,
-            worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
+            worker_id=str(worker_id or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
             transport="ssh_first",
             runtime_mode=("acp" if use_acp else "ssh"),
             action_name="run_coding_agent",
             command_hash=command_hash(prompt),
             working_dir=working_dir,
+            session_key=stage_session_key,
             details={"stage_index": idx, "stage_total": len(stage_chain)},
         )
         if use_acp:
@@ -1988,14 +2418,18 @@ async def _run_stage_chain_for_generation(
                 flow=_runtime_flow(),
                 project_id=str(project.get("id") or ""),
                 task_id=str(task_id or ""),
+                graph_id=str(graph_id or ""),
+                node_key=str(node_key or ""),
+                node_type=str(node_type or ""),
                 phase=str(label_prefix or ""),
                 stage=stage_name,
-                worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
+                worker_id=str(worker_id or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
                 transport="ssh_first",
                 runtime_mode=("acp" if use_acp else "ssh"),
                 action_name="run_coding_agent",
                 command_hash=command_hash(prompt),
                 working_dir=working_dir,
+                session_key=stage_session_key,
                 details={"returncode": return_code, "files_written": len(written)},
             )
             return {
@@ -2023,9 +2457,12 @@ async def _run_stage_chain_for_generation(
             flow=_runtime_flow(),
             project_id=str(project.get("id") or ""),
             task_id=str(task_id or ""),
+            graph_id=str(graph_id or ""),
+            node_key=str(node_key or ""),
+            node_type=str(node_type or ""),
             phase=str(label_prefix or ""),
             stage=stage_name,
-            worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
+            worker_id=str(worker_id or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
             transport="ssh_first",
             runtime_mode=("acp" if use_acp else "ssh"),
             error_type="StageFailure",
@@ -2034,6 +2471,7 @@ async def _run_stage_chain_for_generation(
             action_name="run_coding_agent",
             command_hash=command_hash(prompt),
             working_dir=working_dir,
+            session_key=stage_session_key,
             failure_class="GENERATION_FAILED",
             mitigation_hint="Inspect stage output and causal chain via /trace deep.",
             details={
@@ -3237,8 +3675,8 @@ async def _start_coding_loop(
     working_dir = f"{cfg.WORKER_PROJECTS_DIR}/{slug}"
 
     await message.reply_text(
-        "Starting coding sessionÃ¢â‚¬Â¦\n"
-        f"Ã°Å¸â€œÂ Project folder: <code>{working_dir}</code>\n\n"
+        "Starting coding session...\n"
+        f"Project folder: <code>{working_dir}</code>\n\n"
         "I'll send you each milestone for approval before executing. "
         "Use /status anytime to check progress.",
         parse_mode="HTML",
@@ -3296,7 +3734,7 @@ async def coding_github_choice_handler(
             error_message="Coding GitHub choice callback missing project id.",
             failure_class="ENVIRONMENT_FAILED",
         )
-        await update.callback_query.message.reply_text("Session expired Ã¢â‚¬â€ start over.")
+        await update.callback_query.message.reply_text("Session expired - start over.")
         return
 
     db = context.bot_data.get(KEY_DB)
@@ -3442,8 +3880,8 @@ async def approve_milestone_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """User tapped Ã¢Å“â€¦ Run It Ã¢â‚¬â€ signal the coding loop to proceed."""
-    await update.callback_query.answer("RunningÃ¢â‚¬Â¦")
+    """User tapped Run It - signal the coding loop to proceed."""
+    await update.callback_query.answer("Running...")
     user_id  = update.effective_user.id
     event_key = _MS_EVENT_KEY.format(uid=user_id)
     event: asyncio.Event | None = context.bot_data.get(event_key)
@@ -3488,8 +3926,8 @@ async def skip_milestone_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """User tapped Ã¢ÂÂ­ Skip Ã¢â‚¬â€ signal the coding loop to skip this milestone."""
-    await update.callback_query.answer("SkippingÃ¢â‚¬Â¦")
+    """User tapped Skip - signal the coding loop to skip this milestone."""
+    await update.callback_query.answer("Skipping...")
     user_id   = update.effective_user.id
     event_key = _MS_EVENT_KEY.format(uid=user_id)
     event: asyncio.Event | None = context.bot_data.get(event_key)
@@ -3908,6 +4346,19 @@ async def trace_handler(
         (row for row in reversed(runtime_rows) if str(row.get("event") or "").strip() == "debug.bundle"),
         None,
     )
+    latest_session_row = next(
+        (row for row in reversed(runtime_rows) if str(row.get("session_key") or "").strip()),
+        None,
+    )
+    latest_probe_row = next(
+        (
+            row
+            for row in reversed(runtime_rows)
+            if str(row.get("event") or "").strip()
+            in {"coding.stage.remote_snapshot", "coding.stage.process_tree", "coding.stage.prompt_file_state", "coding.stage.artifact_detected"}
+        ),
+        None,
+    )
     debug_digest = ""
     if latest_debug_bundle:
         payload = latest_debug_bundle.get("payload") or {}
@@ -3921,12 +4372,41 @@ async def trace_handler(
                 f"Latest debug bundle: class={failure_class}, causal_chain={causal_len}, "
                 f"mitigation={mitigation_hint[:120]}"
             )
+    forensic_digest = ""
+    if latest_probe_row:
+        payload = latest_probe_row.get("payload") or {}
+        details = payload.get("details") if isinstance(payload, dict) else {}
+        prompt_file = details.get("prompt_file") if isinstance(details, dict) else {}
+        probe = details.get("probe") if isinstance(details, dict) else {}
+        if not isinstance(prompt_file, dict) and isinstance(probe, dict):
+            prompt_file = probe.get("prompt_file") or {}
+        process_tree = details.get("process_tree_summary") if isinstance(details, dict) else []
+        if not process_tree and isinstance(probe, dict):
+            process_tree = probe.get("process_tree") or []
+        last_artifact_change = ""
+        if isinstance(probe, dict):
+            snapshot = probe.get("artifact_snapshot") or []
+            if snapshot:
+                last_artifact_change = str(snapshot[0].get("path") or "")
+        cleanup_pending = ""
+        if isinstance(prompt_file, dict) and (prompt_file.get("exists") or prompt_file.get("pid_exists")):
+            cleanup_pending = "yes"
+        forensic_digest = (
+            "Latest forensic snapshot: "
+            f"session={str((latest_session_row or {}).get('session_key') or '')[:16]} "
+            f"remote_pid={str((latest_probe_row or {}).get('remote_pid') or '')} "
+            f"artifacts={int((latest_probe_row or {}).get('artifact_count') or 0)} "
+            f"last_artifact_change={last_artifact_change or '-'} "
+            f"prompt_cleanup_pending={cleanup_pending or 'no'} "
+            f"process_rows={len(process_tree) if isinstance(process_tree, list) else 0}"
+        )
 
     deep_body = "\n".join(runtime_lines) if runtime_lines else "No runtime trace rows."
     deep_header = (
         f"{header}\n"
         f"Runtime events: {len(runtime_rows)}"
         + (f"\n{debug_digest}" if debug_digest else "")
+        + (f"\n{forensic_digest}" if forensic_digest else "")
     )
     await update.message.reply_text(
         f"{deep_header}\n\n<pre>{html_mod.escape(body)}</pre>\n\n<pre>{html_mod.escape(deep_body)}</pre>",
@@ -4619,6 +5099,10 @@ async def _run_control_loop_v1(
             working_dir=working_dir,
             stage_chain=execution_stage_chain,
             label_prefix=f"control-loop {node.node_key}",
+            graph_id=str(graph_id),
+            node_key=str(node.node_key),
+            node_type=str(node.node_type),
+            worker_id=str(node.worker_id or ""),
             require_runnable_files=True,
             notify_stage_switch=True,
             tracker_hook=stage_tracker_hook,
@@ -5335,7 +5819,7 @@ async def _coding_loop(
                 detail="Worker unavailable before coding started",
             )
             await app.bot.send_message(
-                chat_id, "Ã¢Å¡Â Ã¯Â¸Â Worker not connected Ã¢â‚¬â€ cannot create project folder."
+                chat_id, "Worker not connected - cannot create project folder."
             )
             return
 
@@ -5400,7 +5884,7 @@ async def _coding_loop(
                 phase_detail="Initializing GitHub repository",
                 setup_progress=0.85,
             )
-            await app.bot.send_message(chat_id, "Ã°Å¸â€Â§ Setting up GitHub repo and project folderÃ¢â‚¬Â¦")
+            await app.bot.send_message(chat_id, "Setting up GitHub repo and project folder...")
             try:
                 # Step 1: git init.
                 init_result = await send_action(
@@ -5451,7 +5935,7 @@ async def _coding_loop(
                     {
                         "working_dir": working_dir,
                         "repo_name":   slug,
-                        "description": f"Created by SKYNET Ã¢â‚¬â€ {project['project_type']}",
+                        "description": f"Created by SKYNET - {project['project_type']}",
                         "private":     True,
                     },
                     timeout=120,
@@ -5462,7 +5946,7 @@ async def _coding_loop(
                 _gh_inner = gh_result.get("result", {})
                 if _gh_inner.get("returncode", 0) != 0:
                     raise RuntimeError(_gh_inner.get("stderr") or _gh_inner.get("stdout") or "gh_create_repo failed")
-                await app.bot.send_message(chat_id, "Ã¢Å“â€¦ GitHub repo created and pushed.")
+                await app.bot.send_message(chat_id, "GitHub repo created and pushed.")
                 await _update_tracker(
                     phase="setup",
                     phase_detail="GitHub setup complete",
@@ -5470,7 +5954,7 @@ async def _coding_loop(
                 )
             except Exception as exc:
                 await app.bot.send_message(
-                    chat_id, f"Ã¢Å¡Â Ã¯Â¸Â GitHub setup failed: {exc}\nContinuing anywayÃ¢â‚¬Â¦"
+                    chat_id, f"GitHub setup failed: {exc}\nContinuing anyway..."
                 )
                 await _update_tracker(
                     phase="setup",
@@ -5495,7 +5979,7 @@ async def _coding_loop(
             stage="",
             gate="",
         )
-        await app.bot.send_message(chat_id, "Ã°Å¸â€œâ€¹ Breaking the plan into milestonesÃ¢â‚¬Â¦")
+        await app.bot.send_message(chat_id, "Breaking the plan into milestones...")
         try:
             async def _extraction_heartbeat(elapsed: int) -> None:
                 prog = min(0.9, 0.15 + min(0.75, elapsed / 240.0))
@@ -5531,7 +6015,7 @@ async def _coding_loop(
                 )
                 await app.bot.send_message(
                     chat_id,
-                    "Ã°Å¸â€ºâ€˜ Session stopped before milestones were extracted.",
+                    "Session stopped before milestones were extracted.",
                 )
                 return
             if err.startswith("MILESTONE_EXTRACTION_TIMEOUT:"):
@@ -5548,7 +6032,7 @@ async def _coding_loop(
                 await app.bot.send_message(
                     chat_id,
                     (
-                        "Ã¢Å¡Â Ã¯Â¸Â Timed out while breaking the plan into milestones.\n"
+                        "Timed out while breaking the plan into milestones.\n"
                         f"<code>{html_mod.escape(err)}</code>\n\n"
                         "Tap Retry Coding after checking AI provider health."
                     ),
@@ -5677,7 +6161,7 @@ async def _coding_loop(
                 )
                 await app.bot.send_message(
                     chat_id,
-                    f"ðŸ›‘ Session stopped at milestone {i}/{total}.\n"
+                    f"Session stopped at milestone {i}/{total}.\n"
                     "Use /status to review completed milestones.",
                 )
                 return
@@ -5715,7 +6199,7 @@ async def _coding_loop(
                     ),
                 )
                 await app.bot.send_message(
-                    chat_id, f"Ã¢ÂÂ° Milestone {i} timed out Ã¢â‚¬â€ skipping."
+                    chat_id, f"Milestone {i} timed out - skipping."
                 )
                 app.bot_data.pop(event_key, None)
                 skipped_milestones += 1
@@ -5737,7 +6221,7 @@ async def _coding_loop(
                 )
                 await app.bot.send_message(
                     chat_id,
-                    f"Ã°Å¸â€ºâ€˜ Session stopped at milestone {i}/{total}.\n"
+                    f"Session stopped at milestone {i}/{total}.\n"
                     "Use /status to review completed milestones.",
                 )
                 return
@@ -5758,7 +6242,7 @@ async def _coding_loop(
                     gate="",
                     attempt=0,
                 )
-                await app.bot.send_message(chat_id, f"Ã¢ÂÂ­ Milestone {i} skipped.")
+                await app.bot.send_message(chat_id, f"Milestone {i} skipped.")
                 skipped_milestones += 1
                 continue
 
@@ -5786,7 +6270,7 @@ async def _coding_loop(
                     current_fraction=0.15,
                 ),
             )
-            await app.bot.send_message(chat_id, f"Ã¢Å¡â„¢Ã¯Â¸Â Executing milestone {i}Ã¢â‚¬Â¦")
+            await app.bot.send_message(chat_id, f"Executing milestone {i}...")
 
             # Dispatch to CLAW worker.
             if not is_worker_available():
@@ -5804,7 +6288,7 @@ async def _coding_loop(
                     ),
                 )
                 await app.bot.send_message(
-                    chat_id, "Ã¢Å¡Â Ã¯Â¸Â Worker disconnected Ã¢â‚¬â€ cannot execute. Skipping."
+                    chat_id, "Worker disconnected - cannot execute. Skipping."
                 )
                 await update_task_status(
                     db, task_rec["id"],
@@ -6005,7 +6489,7 @@ async def _coding_loop(
                             reason = "no files generated" if not written else f"exit code {return_code}"
                             await app.bot.send_message(
                                 chat_id,
-                                f"Ã¢Å¡Â Ã¯Â¸Â Attempt {attempt}/{max_attempts} Ã¢â‚¬â€ {reason}. RetryingÃ¢â‚¬Â¦"
+                                f"Attempt {attempt}/{max_attempts} - {reason}. Retrying..."
                             )
                             continue
 
@@ -6089,7 +6573,7 @@ async def _coding_loop(
                                 reason = "no files generated" if not written else f"exit code {return_code}"
                                 await app.bot.send_message(
                                     chat_id,
-                                    f"Ã¢Å¡Â Ã¯Â¸Â Attempt {attempt}/{max_attempts} Ã¢â‚¬â€ {reason}. RetryingÃ¢â‚¬Â¦"
+                                    f"Attempt {attempt}/{max_attempts} - {reason}. Retrying..."
                                 )
                                 continue
 
@@ -6129,7 +6613,7 @@ async def _coding_loop(
 
                     await app.bot.send_message(
                         chat_id,
-                        "âš ï¸ No files produced yet. Running strict recovery generationâ€¦",
+                        "No files produced yet. Running strict recovery generation...",
                     )
                     rescue_stage_result = await _run_stage_chain_for_generation(
                         db=db,
@@ -6289,7 +6773,7 @@ async def _coding_loop(
                         )
                         await app.bot.send_message(
                             chat_id,
-                            f"ÃƒÂ¢Ã‚ÂÃ…â€™ Milestone {i} failed:\n<code>{html_mod.escape(err)}</code>",
+                            f"Milestone {i} failed:\n<code>{html_mod.escape(err)}</code>",
                             parse_mode="HTML",
                         )
                         continue
@@ -6329,7 +6813,7 @@ async def _coding_loop(
                     ),
                     gates_progress=1.0 if strict_mode else None,
                 )
-                notice = f"Ã¢Å“â€¦ Milestone {i} complete!"
+                notice = f"Milestone {i} complete."
                 if summary:
                     notice += f"\n\n{summary}"
                 await app.bot.send_message(chat_id, notice)
@@ -6363,7 +6847,7 @@ async def _coding_loop(
                     )
                     await app.bot.send_message(
                         chat_id,
-                        f"ðŸ›‘ Session stopped while executing milestone {i}/{total}.\n"
+                        f"Session stopped while executing milestone {i}/{total}.\n"
                         "Use /status to review progress.",
                     )
                     return
@@ -6395,7 +6879,7 @@ async def _coding_loop(
                     await app.bot.send_message(
                         chat_id,
                         (
-                            f"âš ï¸ Milestone {i} timed out while waiting for the coding agent.\n"
+                            f"Milestone {i} timed out while waiting for the coding agent.\n"
                             f"<code>{html_mod.escape(err)}</code>\n\n"
                             "Tap Retry Coding after checking worker health."
                         ),
@@ -6421,7 +6905,7 @@ async def _coding_loop(
                     ),
                 )
                 await app.bot.send_message(
-                    chat_id, f"Ã¢ÂÅ’ Milestone {i} failed:\n<code>{html_mod.escape(str(err))}</code>",
+                    chat_id, f"Milestone {i} failed:\n<code>{html_mod.escape(str(err))}</code>",
                     parse_mode="HTML",
                 )
 

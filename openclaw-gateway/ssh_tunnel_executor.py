@@ -15,6 +15,7 @@ import re
 import shlex
 import stat
 import base64
+import json
 import threading
 import time
 import uuid
@@ -26,7 +27,14 @@ import paramiko
 _log = logging.getLogger(__name__)
 
 import config as bot_cfg
-from runtime_trace import build_debug_bundle, command_hash, emit_runtime_trace
+from runtime_trace import (
+    build_artifact_debug_bundle,
+    build_debug_bundle,
+    build_process_debug_bundle,
+    command_hash,
+    command_preview,
+    emit_runtime_trace,
+)
 from search.web_search import WebSearcher
 
 
@@ -531,6 +539,8 @@ class SSHTunnelExecutor:
             _env_int("OPENCLAW_SSH_HEALTH_PROBE_TIMEOUT", bot_cfg.SSH_HEALTH_PROBE_TIMEOUT),
         )
         self._trace_local = threading.local()
+        self._active_sessions: dict[str, dict[str, Any]] = {}
+        self._active_sessions_lock = threading.Lock()
         self._parallel_sem = threading.BoundedSemaphore(self._max_parallel)
         self._diag_lock = threading.Lock()
         self._failure_streak = 0
@@ -795,10 +805,12 @@ class SSHTunnelExecutor:
             or getattr(bot_cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "")
             or "worker-primary"
         )
+        session_key = str(raw_params.get("session_key") or "").strip()
         action_trace_id = uuid.uuid4().hex
         action_span_id = uuid.uuid4().hex[:16]
         base_trace = {
             "trace_id": action_trace_id,
+            "root_trace_id": action_trace_id,
             "span_id": action_span_id,
             "parent_span_id": "",
             "phase": "ssh_executor",
@@ -814,6 +826,7 @@ class SSHTunnelExecutor:
             "action_name": str(action or "").strip(),
             "command_hash": cmd_hash,
             "working_dir": working_dir,
+            "session_key": session_key,
         }
         emit_runtime_trace(
             "ssh.action.dispatch",
@@ -1234,6 +1247,345 @@ class SSHTunnelExecutor:
             return dict(ctx)
         return {}
 
+    def _register_active_session(self, session_key: str, **fields: Any) -> None:
+        key = str(session_key or "").strip()
+        if not key:
+            return
+        with self._active_sessions_lock:
+            entry = dict(self._active_sessions.get(key) or {})
+            entry.update(fields)
+            entry.setdefault("session_key", key)
+            entry.setdefault("started_at", time.time())
+            self._active_sessions[key] = entry
+
+    def _update_active_session(self, session_key: str, **fields: Any) -> None:
+        self._register_active_session(session_key, **fields)
+
+    def _get_active_session(self, session_key: str) -> dict[str, Any]:
+        key = str(session_key or "").strip()
+        if not key:
+            return {}
+        with self._active_sessions_lock:
+            return dict(self._active_sessions.get(key) or {})
+
+    def _pop_active_session(self, session_key: str) -> dict[str, Any]:
+        key = str(session_key or "").strip()
+        if not key:
+            return {}
+        with self._active_sessions_lock:
+            return dict(self._active_sessions.pop(key, {}) or {})
+
+    def _trace_fields(self, trace_ctx: dict[str, Any], **extra: Any) -> dict[str, Any]:
+        payload = {
+            "trace_id": str(trace_ctx.get("trace_id") or ""),
+            "root_trace_id": str(trace_ctx.get("root_trace_id") or trace_ctx.get("trace_id") or ""),
+            "parent_span_id": str(trace_ctx.get("span_id") or ""),
+            "phase": str(trace_ctx.get("phase") or "ssh_executor"),
+            "stage": str(trace_ctx.get("stage") or ""),
+            "project_id": str(trace_ctx.get("project_id") or ""),
+            "task_id": str(trace_ctx.get("task_id") or ""),
+            "graph_id": str(trace_ctx.get("graph_id") or ""),
+            "node_key": str(trace_ctx.get("node_key") or ""),
+            "node_type": str(trace_ctx.get("node_type") or ""),
+            "worker_id": str(trace_ctx.get("worker_id") or ""),
+            "transport": "ssh_first",
+            "runtime_mode": str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
+            "action_name": str(trace_ctx.get("action_name") or ""),
+            "command_hash": str(trace_ctx.get("command_hash") or ""),
+            "working_dir": str(trace_ctx.get("working_dir") or ""),
+            "session_key": str(trace_ctx.get("session_key") or ""),
+            "remote_pid": str(trace_ctx.get("remote_pid") or ""),
+            "artifact_count": max(0, int(trace_ctx.get("artifact_count") or 0)),
+        }
+        payload.update(extra)
+        return payload
+
+    def _read_channel_stream(
+        self,
+        *,
+        channel: Any,
+        trace_ctx: dict[str, Any],
+        cmd_hash: str,
+        cwd: str | None,
+        timeout: int,
+    ) -> tuple[str, str, int]:
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        stdout_total = 0
+        stderr_total = 0
+        chunk_limit = max(1024, int(getattr(bot_cfg, "RUNTIME_TRACE_STDIO_CHUNK_BYTES", 16000) or 16000))
+        end_at = time.time() + float(max(30, int(timeout or self.command_timeout)))
+
+        emit_runtime_trace(
+            "ssh.command.exit.wait",
+            status="start",
+            details={"timeout_seconds": int(timeout or self.command_timeout)},
+            **self._trace_fields(trace_ctx, phase="ssh_command", working_dir=str(cwd or "")),
+        )
+        while True:
+            progress = False
+            while channel.recv_ready():
+                data = channel.recv(min(chunk_limit, 4096))
+                if not data:
+                    break
+                chunk = data.decode("utf-8", errors="replace")
+                if self.remote_os == "windows":
+                    chunk = _sanitize_powershell_output(chunk)
+                stdout_chunks.append(chunk)
+                stdout_total += len(chunk)
+                progress = True
+                emit_runtime_trace(
+                    "ssh.command.stdout.chunk",
+                    status="ok",
+                    details={"chunk_len": len(chunk), "stdout_total": stdout_total, "chunk_preview": chunk[:800]},
+                    **self._trace_fields(
+                        trace_ctx,
+                        phase="ssh_command",
+                        command_hash=cmd_hash,
+                        working_dir=str(cwd or ""),
+                    ),
+                )
+            while channel.recv_stderr_ready():
+                data = channel.recv_stderr(min(chunk_limit, 4096))
+                if not data:
+                    break
+                chunk = data.decode("utf-8", errors="replace")
+                if self.remote_os == "windows":
+                    chunk = _sanitize_powershell_output(chunk)
+                stderr_chunks.append(chunk)
+                stderr_total += len(chunk)
+                progress = True
+                emit_runtime_trace(
+                    "ssh.command.stderr.chunk",
+                    status="ok",
+                    details={"chunk_len": len(chunk), "stderr_total": stderr_total, "chunk_preview": chunk[:800]},
+                    **self._trace_fields(
+                        trace_ctx,
+                        phase="ssh_command",
+                        command_hash=cmd_hash,
+                        working_dir=str(cwd or ""),
+                    ),
+                )
+            if channel.exit_status_ready():
+                while channel.recv_ready():
+                    data = channel.recv(min(chunk_limit, 4096))
+                    if not data:
+                        break
+                    chunk = data.decode("utf-8", errors="replace")
+                    if self.remote_os == "windows":
+                        chunk = _sanitize_powershell_output(chunk)
+                    stdout_chunks.append(chunk)
+                    stdout_total += len(chunk)
+                while channel.recv_stderr_ready():
+                    data = channel.recv_stderr(min(chunk_limit, 4096))
+                    if not data:
+                        break
+                    chunk = data.decode("utf-8", errors="replace")
+                    if self.remote_os == "windows":
+                        chunk = _sanitize_powershell_output(chunk)
+                    stderr_chunks.append(chunk)
+                    stderr_total += len(chunk)
+                break
+            if time.time() >= end_at:
+                raise TimeoutError(f"SSH command timed out after {int(timeout or self.command_timeout)}s")
+            if not progress:
+                time.sleep(0.25)
+
+        rc = int(channel.recv_exit_status())
+        emit_runtime_trace(
+            "ssh.command.exit.wait",
+            status="ok" if rc == 0 else "fail",
+            error_code="SSH_COMMAND_NONZERO" if rc != 0 else "",
+            error_message=("".join(stderr_chunks))[:1200] if rc != 0 else "",
+            details={"returncode": rc, "stdout_len": stdout_total, "stderr_len": stderr_total},
+            **self._trace_fields(trace_ctx, phase="ssh_command", command_hash=cmd_hash, working_dir=str(cwd or "")),
+        )
+        return "".join(stdout_chunks), "".join(stderr_chunks), rc
+
+    def _prompt_file_state(
+        self,
+        *,
+        client: paramiko.SSHClient,
+        prompt_path: str,
+        pid_path: str = "",
+    ) -> dict[str, Any]:
+        state: dict[str, Any] = {
+            "path": prompt_path,
+            "exists": False,
+            "size": 0,
+            "mtime": 0,
+            "pid_path": pid_path,
+            "pid_exists": False,
+            "remote_pid": "",
+        }
+        sftp = client.open_sftp()
+        try:
+            try:
+                stat_result = sftp.stat(prompt_path)
+                state["exists"] = True
+                state["size"] = int(getattr(stat_result, "st_size", 0) or 0)
+                state["mtime"] = int(getattr(stat_result, "st_mtime", 0) or 0)
+            except OSError:
+                pass
+            if pid_path:
+                try:
+                    stat_result = sftp.stat(pid_path)
+                    state["pid_exists"] = True
+                    with sftp.open(pid_path, "r") as fh:
+                        state["remote_pid"] = str((fh.read() or "")).strip()
+                    state["pid_size"] = int(getattr(stat_result, "st_size", 0) or 0)
+                except OSError:
+                    pass
+        finally:
+            sftp.close()
+        return state
+
+    def _runtime_probe(
+        self,
+        *,
+        client: paramiko.SSHClient,
+        session_key: str,
+        working_dir: str | None,
+        stage: str,
+        started_at: str = "",
+    ) -> dict[str, Any]:
+        del started_at
+        session = self._get_active_session(session_key)
+        prompt_path = str(session.get("prompt_path") or "")
+        pid_path = str(session.get("pid_path") or "")
+        prompt_state = self._prompt_file_state(client=client, prompt_path=prompt_path, pid_path=pid_path) if prompt_path else {}
+        remote_pid = str(prompt_state.get("remote_pid") or session.get("remote_pid") or "").strip()
+        topk = max(1, int(getattr(bot_cfg, "RUNTIME_TRACE_PROCESS_SNAPSHOT_TOPK", 25) or 25))
+        process_tree: list[dict[str, Any]] = []
+        if self.remote_os == "windows":
+            ps = (
+                "$names=@('cmd.exe','powershell.exe','pwsh.exe','node.exe','codex.exe','python.exe'); "
+                f"$wd={_ps_quote(str(working_dir or ''))}; "
+                f"$pp={_ps_quote(prompt_path)}; "
+                "Get-CimInstance Win32_Process | "
+                "Where-Object { $names -contains $_.Name } | "
+                "Select-Object -First "
+                f"{topk} "
+                "ProcessId,ParentProcessId,Name,CreationDate,CommandLine | ConvertTo-Json -Compress"
+            )
+            probe = self._run_command(
+                client,
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                cwd=None,
+                timeout=max(5, int(getattr(bot_cfg, "RUNTIME_TRACE_REMOTE_PROBE_TIMEOUT_SECONDS", 8) or 8)),
+            )
+            raw = str(probe.get("stdout") or "").strip()
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        parsed = [parsed]
+                    if isinstance(parsed, list):
+                        for item in parsed:
+                            if not isinstance(item, dict):
+                                continue
+                            process_tree.append(
+                                {
+                                    "pid": int(item.get("ProcessId") or 0),
+                                    "ppid": int(item.get("ParentProcessId") or 0),
+                                    "name": str(item.get("Name") or ""),
+                                    "created": str(item.get("CreationDate") or ""),
+                                    "command_line": str(item.get("CommandLine") or "")[:800],
+                                }
+                            )
+                except Exception:
+                    process_tree = []
+        artifact_snapshot: list[dict[str, Any]] = []
+        artifact_count = 0
+        if working_dir:
+            current_snapshot = self._snapshot_working_tree(client=client, working_dir=working_dir)
+            before_snapshot = session.get("before_snapshot") if isinstance(session.get("before_snapshot"), dict) else {}
+            changed = self._diff_snapshots(before_snapshot, current_snapshot)
+            artifact_count = len(changed)
+            max_files = max(1, int(getattr(bot_cfg, "RUNTIME_TRACE_ARTIFACT_SNAPSHOT_MAX_FILES", 120) or 120))
+            for rel_path in changed[:max_files]:
+                size, mtime = current_snapshot.get(rel_path, (0, 0))
+                artifact_snapshot.append({"path": rel_path, "size": int(size), "mtime": int(mtime)})
+            self._update_active_session(
+                session_key,
+                artifact_count=artifact_count,
+                artifact_snapshot=artifact_snapshot,
+                last_snapshot=current_snapshot,
+            )
+        if remote_pid:
+            self._update_active_session(session_key, remote_pid=remote_pid)
+        return {
+            "session_key": session_key,
+            "stage": stage,
+            "prompt_file": prompt_state,
+            "remote_pid": remote_pid,
+            "process_tree": process_tree,
+            "artifact_snapshot": artifact_snapshot,
+            "artifact_count": artifact_count,
+            "python_validation_processes": [row for row in process_tree if str(row.get("name") or "").lower() == "python.exe"],
+        }
+
+    def _cancel_runtime_session(
+        self,
+        *,
+        client: paramiko.SSHClient,
+        session_key: str,
+    ) -> dict[str, Any]:
+        session = self._get_active_session(session_key)
+        if not session:
+            return {"returncode": 1, "stdout": "", "stderr": f"No active session found for {session_key}"}
+        prompt_path = str(session.get("prompt_path") or "")
+        pid_path = str(session.get("pid_path") or "")
+        prompt_state = self._prompt_file_state(client=client, prompt_path=prompt_path, pid_path=pid_path) if prompt_path else {}
+        remote_pid = str(prompt_state.get("remote_pid") or session.get("remote_pid") or "").strip()
+        outputs: list[str] = []
+        rc = 0
+        if remote_pid:
+            kill = self._run_command(client, ["taskkill", "/PID", remote_pid, "/T", "/F"], cwd=None, timeout=30)
+            rc = int(kill.get("returncode", 0) or 0)
+            outputs.append(str(kill.get("stdout") or kill.get("stderr") or "").strip())
+        elif prompt_path:
+            ps = (
+                f"$pp={_ps_quote(prompt_path)}; "
+                "Get-CimInstance Win32_Process | "
+                "Where-Object { $_.CommandLine -like ('*' + $pp + '*') } | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId } | "
+                "Out-String"
+            )
+            kill = self._run_command(
+                client,
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                cwd=None,
+                timeout=30,
+            )
+            rc = int(kill.get("returncode", 0) or 0)
+            outputs.append(str(kill.get("stdout") or kill.get("stderr") or "").strip())
+        probe = self._runtime_probe(
+            client=client,
+            session_key=session_key,
+            working_dir=str(session.get("working_dir") or ""),
+            stage=str(session.get("stage") or ""),
+        )
+        cleanup_status = "killed" if int(probe.get("artifact_count") or 0) >= 0 else "unknown"
+        orphaned = bool(probe.get("prompt_file", {}).get("exists")) or bool(probe.get("prompt_file", {}).get("pid_exists"))
+        if not orphaned:
+            self._pop_active_session(session_key)
+        else:
+            self._update_active_session(session_key, status="orphaned_after_cancel")
+        return {
+            "returncode": int(rc),
+            "stdout": "\n".join(line for line in outputs if line),
+            "stderr": "" if rc == 0 else "Remote cancel reported a non-zero exit code.",
+            "session_key": session_key,
+            "cleanup_status": cleanup_status,
+            "process_tree": probe.get("process_tree") or [],
+            "prompt_file": probe.get("prompt_file") or {},
+            "artifact_snapshot": probe.get("artifact_snapshot") or [],
+            "artifact_count": int(probe.get("artifact_count") or 0),
+            "remote_pid": str(probe.get("remote_pid") or ""),
+            "orphaned": orphaned,
+        }
+
     def _execute_sync(
         self,
         action: str,
@@ -1387,32 +1739,22 @@ class SSHTunnelExecutor:
         """
 
         command = self._build_command(args, cwd=cwd, env=env)
-        cmd_hash = command_hash(command)
+        preview = command_preview(command)
+        cmd_hash = preview["command_hash"]
         trace_ctx = self._runtime_trace_context()
+        trace_ctx["command_hash"] = cmd_hash
+        trace_ctx["working_dir"] = str(cwd or "")
         emit_runtime_trace(
-            "ssh.command.exec",
+            "ssh.command.launch",
             status="start",
-            trace_id=str(trace_ctx.get("trace_id") or ""),
-            parent_span_id=str(trace_ctx.get("span_id") or ""),
-            phase="ssh_command",
-            stage=str(trace_ctx.get("stage") or ""),
-            project_id=str(trace_ctx.get("project_id") or ""),
-            task_id=str(trace_ctx.get("task_id") or ""),
-            graph_id=str(trace_ctx.get("graph_id") or ""),
-            node_key=str(trace_ctx.get("node_key") or ""),
-            node_type=str(trace_ctx.get("node_type") or ""),
-            worker_id=str(trace_ctx.get("worker_id") or ""),
-            transport="ssh_first",
-            runtime_mode=str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
-            action_name=str(trace_ctx.get("action_name") or "exec_command"),
-            command_hash=cmd_hash,
-            working_dir=str(cwd or ""),
             details={
                 "args_count": len(args or []),
                 "timeout": int(timeout or self.command_timeout),
                 "use_pty": bool(use_pty),
                 "remote_os": self.remote_os,
+                **preview,
             },
+            **self._trace_fields(trace_ctx, phase="ssh_command", action_name=str(trace_ctx.get("action_name") or "exec_command")),
         )
         try:
             _, stdout, stderr = client.exec_command(
@@ -1420,54 +1762,41 @@ class SSHTunnelExecutor:
                 timeout=timeout or self.command_timeout,
                 get_pty=use_pty,
             )
-            out = stdout.read().decode("utf-8", errors="replace")[:8192]
-            err = stderr.read().decode("utf-8", errors="replace")[:4096]
-            if self.remote_os == "windows":
-                out = _sanitize_powershell_output(out)
-                err = _sanitize_powershell_output(err)
-            rc = int(stdout.channel.recv_exit_status())
+            emit_runtime_trace(
+                "ssh.command.launch",
+                status="ok",
+                details={"channel_ready": True, **preview},
+                **self._trace_fields(trace_ctx, phase="ssh_command", command_hash=cmd_hash, working_dir=str(cwd or "")),
+            )
+            out, err, rc = self._read_channel_stream(
+                channel=stdout.channel,
+                trace_ctx=trace_ctx,
+                cmd_hash=cmd_hash,
+                cwd=cwd,
+                timeout=int(timeout or self.command_timeout),
+            )
             emit_runtime_trace(
                 "ssh.command.exec",
                 status="ok" if rc == 0 else "fail",
-                trace_id=str(trace_ctx.get("trace_id") or ""),
-                parent_span_id=str(trace_ctx.get("span_id") or ""),
-                phase="ssh_command",
-                stage=str(trace_ctx.get("stage") or ""),
-                project_id=str(trace_ctx.get("project_id") or ""),
-                task_id=str(trace_ctx.get("task_id") or ""),
-                graph_id=str(trace_ctx.get("graph_id") or ""),
-                node_key=str(trace_ctx.get("node_key") or ""),
-                node_type=str(trace_ctx.get("node_type") or ""),
-                worker_id=str(trace_ctx.get("worker_id") or ""),
-                transport="ssh_first",
-                runtime_mode=str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
-                action_name=str(trace_ctx.get("action_name") or "exec_command"),
-                command_hash=cmd_hash,
-                working_dir=str(cwd or ""),
                 error_code="SSH_COMMAND_NONZERO" if rc != 0 else "",
                 error_message=err[:1200] if rc != 0 else "",
-                details={"returncode": rc, "stdout_len": len(out), "stderr_len": len(err)},
+                details={"returncode": rc, "stdout_len": len(out), "stderr_len": len(err), **preview},
+                **self._trace_fields(trace_ctx, phase="ssh_command", command_hash=cmd_hash, working_dir=str(cwd or "")),
             )
             return {"returncode": rc, "stdout": out, "stderr": err}
         except Exception as exc:
             emit_runtime_trace(
+                "ssh.command.launch",
+                status="fail",
+                error_type=type(exc).__name__,
+                error_code="SSH_COMMAND_EXEC_ERROR",
+                error_message=str(exc)[:1200],
+                details={"channel_ready": False, **preview},
+                **self._trace_fields(trace_ctx, phase="ssh_command", command_hash=cmd_hash, working_dir=str(cwd or "")),
+            )
+            emit_runtime_trace(
                 "ssh.command.exec",
                 status="fail",
-                trace_id=str(trace_ctx.get("trace_id") or ""),
-                parent_span_id=str(trace_ctx.get("span_id") or ""),
-                phase="ssh_command",
-                stage=str(trace_ctx.get("stage") or ""),
-                project_id=str(trace_ctx.get("project_id") or ""),
-                task_id=str(trace_ctx.get("task_id") or ""),
-                graph_id=str(trace_ctx.get("graph_id") or ""),
-                node_key=str(trace_ctx.get("node_key") or ""),
-                node_type=str(trace_ctx.get("node_type") or ""),
-                worker_id=str(trace_ctx.get("worker_id") or ""),
-                transport="ssh_first",
-                runtime_mode=str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
-                action_name=str(trace_ctx.get("action_name") or "exec_command"),
-                command_hash=cmd_hash,
-                working_dir=str(cwd or ""),
                 error_type=type(exc).__name__,
                 error_code="SSH_COMMAND_EXEC_ERROR",
                 error_message=str(exc)[:1200],
@@ -1477,7 +1806,8 @@ class SSHTunnelExecutor:
                     causal_chain=["ssh.command.exec"],
                     mitigation_hint="Validate command syntax and SSH channel stability.",
                 ),
-                details={"args_count": len(args or []), "timeout": int(timeout or self.command_timeout)},
+                details={"args_count": len(args or []), "timeout": int(timeout or self.command_timeout), **preview},
+                **self._trace_fields(trace_ctx, phase="ssh_command", command_hash=cmd_hash, working_dir=str(cwd or "")),
             )
             raise
 
@@ -1492,16 +1822,64 @@ class SSHTunnelExecutor:
         env: dict[str, str] | None = None,
         use_pty: bool = False,
         prompt_via_stdin: bool = False,
+        session_key: str = "",
+        before_snapshot: dict[str, tuple[int, int]] | None = None,
     ) -> dict[str, Any]:
         temp_parent = cwd or "E:\\SKYNET-SANDBOX\\temp"
         prompt_path = str(PureWindowsPath(temp_parent) / f".skynet_prompt_{uuid.uuid4().hex}.txt")
+        pid_path = prompt_path + ".pid"
+        trace_ctx = self._runtime_trace_context()
+        active_session_key = str(session_key or trace_ctx.get("session_key") or uuid.uuid4().hex).strip()
+        trace_ctx["session_key"] = active_session_key
+        trace_ctx["working_dir"] = str(cwd or "")
+        trace_ctx["stage"] = str(trace_ctx.get("stage") or "codex")
+        self._register_active_session(
+            active_session_key,
+            prompt_path=prompt_path,
+            pid_path=pid_path,
+            working_dir=str(cwd or ""),
+            stage=str(trace_ctx.get("stage") or ""),
+            before_snapshot=dict(before_snapshot or {}),
+            status="preparing",
+        )
+        if bool(getattr(bot_cfg, "RUNTIME_TRACE_ACTIVE_SESSION_REGISTRY", True)):
+            emit_runtime_trace(
+                "ssh.session.registered",
+                status="ok",
+                details={"prompt_file": prompt_path, "pid_file": pid_path},
+                **self._trace_fields(trace_ctx, phase="ssh_command", session_key=active_session_key, working_dir=str(cwd or "")),
+            )
 
         sftp = client.open_sftp()
         try:
+            if bool(getattr(bot_cfg, "RUNTIME_TRACE_PROMPT_FILE_EVENTS", True)):
+                emit_runtime_trace(
+                    "ssh.prompt_file.write",
+                    status="start",
+                    details={"prompt_file": prompt_path, "prompt_len": len(prompt or "")},
+                    **self._trace_fields(trace_ctx, phase="ssh_command", session_key=active_session_key, working_dir=str(cwd or "")),
+                )
             self._sftp_makedirs(sftp, str(PureWindowsPath(prompt_path).parent))
             with sftp.open(prompt_path, "w") as fh:
                 fh.write(prompt)
+            if bool(getattr(bot_cfg, "RUNTIME_TRACE_PROMPT_FILE_EVENTS", True)):
+                emit_runtime_trace(
+                    "ssh.prompt_file.write",
+                    status="ok",
+                    details={"prompt_file": prompt_path, "prompt_len": len(prompt or "")},
+                    **self._trace_fields(trace_ctx, phase="ssh_command", session_key=active_session_key, working_dir=str(cwd or "")),
+                )
         except Exception as exc:
+            if bool(getattr(bot_cfg, "RUNTIME_TRACE_PROMPT_FILE_EVENTS", True)):
+                emit_runtime_trace(
+                    "ssh.prompt_file.write",
+                    status="fail",
+                    error_type=type(exc).__name__,
+                    error_code="SSH_PROMPT_FILE_WRITE_ERROR",
+                    error_message=str(exc)[:1200],
+                    details={"prompt_file": prompt_path},
+                    **self._trace_fields(trace_ctx, phase="ssh_command", session_key=active_session_key, working_dir=str(cwd or "")),
+                )
             try:
                 sftp.close()
             except Exception:
@@ -1533,9 +1911,11 @@ class SSHTunnelExecutor:
                 f"[System.Convert]::FromBase64String('{b64}'))"
             )
         script_lines.append(f"$__promptPath = {_ps_quote(prompt_path)}")
+        script_lines.append(f"$__pidPath = {_ps_quote(pid_path)}")
         script_lines.append("$__cmd = $__args[0]")
         script_lines.append("$__rest = @()")
         script_lines.append("if ($__args.Length -gt 1) { $__rest = $__args[1..($__args.Length-1)] }")
+        script_lines.append("Set-Content -LiteralPath $__pidPath -Value $PID -Encoding ascii")
         if prompt_via_stdin:
             # Preserve multiline prompts on Windows by streaming stdin instead of argv.
             script_lines.append("$__stdinArg = '-'")
@@ -1547,6 +1927,7 @@ class SSHTunnelExecutor:
         script_lines.append("$code = $LASTEXITCODE")
         script_lines.append("if ($null -eq $code) { $code = 0 }")
         script_lines.append("Remove-Item -LiteralPath $__promptPath -Force -ErrorAction SilentlyContinue")
+        script_lines.append("Remove-Item -LiteralPath $__pidPath -Force -ErrorAction SilentlyContinue")
         script_lines.append("exit $code")
 
         script = "\n".join(script_lines)
@@ -1555,16 +1936,95 @@ class SSHTunnelExecutor:
             "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass "
             f"-EncodedCommand {encoded}"
         )
-        _, stdout, stderr = client.exec_command(
-            command,
-            timeout=timeout or self.command_timeout,
-            get_pty=use_pty,
+        preview = command_preview(command)
+        try:
+            emit_runtime_trace(
+                "ssh.command.launch",
+                status="start",
+                details={"prompt_file": prompt_path, "pid_file": pid_path, **preview},
+                **self._trace_fields(trace_ctx, phase="ssh_command", session_key=active_session_key, working_dir=str(cwd or ""), command_hash=preview["command_hash"]),
+            )
+            _, stdout, _stderr = client.exec_command(
+                command,
+                timeout=timeout or self.command_timeout,
+                get_pty=use_pty,
+            )
+            emit_runtime_trace(
+                "ssh.command.launch",
+                status="ok",
+                details={"prompt_file": prompt_path, "pid_file": pid_path, **preview},
+                **self._trace_fields(trace_ctx, phase="ssh_command", session_key=active_session_key, working_dir=str(cwd or ""), command_hash=preview["command_hash"]),
+            )
+            self._update_active_session(active_session_key, status="running")
+            out, err, rc = self._read_channel_stream(
+                channel=stdout.channel,
+                trace_ctx=trace_ctx,
+                cmd_hash=preview["command_hash"],
+                cwd=cwd,
+                timeout=int(timeout or self.command_timeout),
+            )
+        except Exception as exc:
+            self._update_active_session(active_session_key, status="orphaned", last_error=str(exc))
+            emit_runtime_trace(
+                "ssh.session.orphaned",
+                status="fail",
+                error_type=type(exc).__name__,
+                error_code="SSH_SESSION_ORPHANED",
+                error_message=str(exc)[:1200],
+                details={"prompt_file": prompt_path, "pid_file": pid_path},
+                **self._trace_fields(trace_ctx, phase="ssh_command", session_key=active_session_key, working_dir=str(cwd or "")),
+            )
+            raise
+
+        emit_runtime_trace(
+            "ssh.prompt_file.cleanup",
+            status="start",
+            details={"prompt_file": prompt_path, "pid_file": pid_path},
+            **self._trace_fields(trace_ctx, phase="ssh_command", session_key=active_session_key, working_dir=str(cwd or "")),
         )
-        out = stdout.read().decode("utf-8", errors="replace")[:8192]
-        err = stderr.read().decode("utf-8", errors="replace")[:4096]
-        out = _sanitize_powershell_output(out)
-        err = _sanitize_powershell_output(err)
-        rc = stdout.channel.recv_exit_status()
+        prompt_state = self._prompt_file_state(client=client, prompt_path=prompt_path, pid_path=pid_path)
+        remote_pid = str(prompt_state.get("remote_pid") or "").strip()
+        if remote_pid:
+            trace_ctx["remote_pid"] = remote_pid
+            self._update_active_session(active_session_key, remote_pid=remote_pid)
+        cleanup_ok = not bool(prompt_state.get("exists")) and not bool(prompt_state.get("pid_exists"))
+        emit_runtime_trace(
+            "ssh.prompt_file.cleanup",
+            status="ok" if cleanup_ok else "fail",
+            error_code="" if cleanup_ok else "SSH_PROMPT_FILE_CLEANUP_PENDING",
+            error_message="" if cleanup_ok else "Prompt wrapper cleanup did not complete.",
+            details={"prompt_file_state": prompt_state},
+            **self._trace_fields(
+                trace_ctx,
+                phase="ssh_command",
+                session_key=active_session_key,
+                working_dir=str(cwd or ""),
+                remote_pid=remote_pid,
+            ),
+        )
+        self._update_active_session(
+            active_session_key,
+            status="completed" if cleanup_ok else "orphaned",
+            remote_pid=remote_pid,
+            prompt_state=prompt_state,
+            last_returncode=int(rc),
+        )
+        emit_runtime_trace(
+            "ssh.session.completed" if cleanup_ok else "ssh.session.orphaned",
+            status="ok" if cleanup_ok else "fail",
+            error_code="" if cleanup_ok else "SSH_SESSION_ORPHANED",
+            error_message="" if cleanup_ok else "Wrapper exited but prompt cleanup is still pending.",
+            details={"prompt_file_state": prompt_state},
+            **self._trace_fields(
+                trace_ctx,
+                phase="ssh_command",
+                session_key=active_session_key,
+                working_dir=str(cwd or ""),
+                remote_pid=remote_pid,
+            ),
+        )
+        if cleanup_ok:
+            self._pop_active_session(active_session_key)
         return {"returncode": int(rc), "stdout": out, "stderr": err}
 
     def _persist_generated_files_from_blocks(
@@ -2197,24 +2657,20 @@ class SSHTunnelExecutor:
             if agent == "codex":
                 args = self._build_codex_command_base_args(binary=binary)
                 trace_ctx = self._runtime_trace_context()
+                session_key = str(trace_ctx.get("session_key") or uuid.uuid4().hex).strip()
+                trace_ctx["session_key"] = session_key
                 emit_runtime_trace(
                     "coding.prompt.transport",
                     status="start",
-                    trace_id=str(trace_ctx.get("trace_id") or ""),
-                    parent_span_id=str(trace_ctx.get("span_id") or ""),
-                    phase="coding_agent",
-                    stage="codex",
-                    project_id=str(trace_ctx.get("project_id") or ""),
-                    task_id=str(trace_ctx.get("task_id") or ""),
-                    graph_id=str(trace_ctx.get("graph_id") or ""),
-                    node_key=str(trace_ctx.get("node_key") or ""),
-                    node_type=str(trace_ctx.get("node_type") or ""),
-                    worker_id=str(trace_ctx.get("worker_id") or ""),
-                    transport="ssh_first",
-                    runtime_mode=str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
-                    action_name=str(trace_ctx.get("action_name") or "run_coding_agent"),
-                    command_hash=command_hash(prompt),
-                    working_dir=str(cwd or ""),
+                    **self._trace_fields(
+                        trace_ctx,
+                        phase="coding_agent",
+                        stage="codex",
+                        action_name=str(trace_ctx.get("action_name") or "run_coding_agent"),
+                        command_hash=command_hash(prompt),
+                        working_dir=str(cwd or ""),
+                        session_key=session_key,
+                    ),
                     details={
                         "remote_os": str(self.remote_os or ""),
                         "prompt_len": len(prompt or ""),
@@ -2230,6 +2686,8 @@ class SSHTunnelExecutor:
                         cwd=cwd,
                         timeout=timeout,
                         prompt_via_stdin=True,
+                        session_key=session_key,
+                        before_snapshot=before_snapshot,
                     )
                 else:
                     args.append(prompt)
@@ -2276,6 +2734,14 @@ class SSHTunnelExecutor:
                 combined.append(path)
         if combined:
             run["files_written"] = combined
+            if agent == "codex":
+                session_key = str(self._runtime_trace_context().get("session_key") or "").strip()
+                if session_key:
+                    self._update_active_session(
+                        session_key,
+                        artifact_count=len(combined),
+                        artifact_snapshot=[{"path": path} for path in combined[:20]],
+                    )
         if agent == "codex" and not combined and self._codex_write_blocked(run):
             detail = str(run.get("stderr") or run.get("stdout") or "").strip()
             run["returncode"] = 1
@@ -2788,6 +3254,28 @@ class SSHTunnelExecutor:
             if worker_id:
                 run["worker_id"] = worker_id
             return run
+
+        if action == "trace_runtime_probe":
+            session_key = self._require_str(params, "session_key")
+            working_dir = str(params.get("working_dir") or "").strip() or None
+            stage = str(params.get("stage") or "").strip()
+            probe = self._runtime_probe(
+                client=client,
+                session_key=session_key,
+                working_dir=working_dir,
+                stage=stage,
+                started_at=str(params.get("started_at") or ""),
+            )
+            return {
+                "returncode": 0,
+                "stdout": json.dumps(probe, ensure_ascii=True),
+                "stderr": "",
+                **probe,
+            }
+
+        if action == "cancel_runtime_session":
+            session_key = self._require_str(params, "session_key")
+            return self._cancel_runtime_session(client=client, session_key=session_key)
 
         return {"returncode": 1, "stdout": "", "stderr": f"Action '{action}' is not supported in SSH tunnel mode."}
 

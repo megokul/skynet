@@ -5,7 +5,7 @@ import pytest
 import config as cfg
 from db.schema import init_db
 from db.store import list_runtime_trace_events
-from runtime_trace import emit_runtime_trace, emit_runtime_trace_async
+from runtime_trace import command_preview, emit_runtime_trace, emit_runtime_trace_async
 
 
 def _read_events(path):
@@ -17,6 +17,7 @@ def test_runtime_trace_required_fields_and_redaction(tmp_path, monkeypatch):
     trace_file = tmp_path / "skynet.trace.log"
     monkeypatch.setattr(cfg, "RUNTIME_TRACE_ENABLED", True, raising=False)
     monkeypatch.setattr(cfg, "RUNTIME_TRACE_LIVE_FILE", str(trace_file), raising=False)
+    monkeypatch.setattr(cfg, "RUNTIME_TRACE_REDACTION_MODE", "redacted_hash", raising=False)
     monkeypatch.setattr(cfg, "RUNTIME_TRACE_PAYLOAD_MODE", "redacted_hash", raising=False)
     monkeypatch.setattr(cfg, "RUNTIME_TRACE_REQUIRE_DEBUG_BUNDLE", True, raising=False)
 
@@ -51,6 +52,7 @@ def test_runtime_trace_required_fields_and_redaction(tmp_path, monkeypatch):
         "transport",
         "runtime_mode",
         "status",
+        "event_id",
         "error_type",
         "error_code",
         "error_message",
@@ -60,6 +62,10 @@ def test_runtime_trace_required_fields_and_redaction(tmp_path, monkeypatch):
         "action_name",
         "command_hash",
         "working_dir",
+        "root_trace_id",
+        "session_key",
+        "remote_pid",
+        "artifact_count",
         "details",
     }
     assert required.issubset(set(event.keys()))
@@ -116,3 +122,11 @@ async def test_runtime_trace_async_persists_to_db(tmp_path, monkeypatch):
         assert any(str(row.get("event") or "") == "unit.runtime.db" for row in rows)
     finally:
         await db.close()
+
+
+def test_command_preview_hashes_and_truncates(monkeypatch):
+    monkeypatch.setattr(cfg, "RUNTIME_TRACE_COMMAND_PREVIEW_CHARS", 24, raising=False)
+    payload = command_preview("token=abc123 " + ("x" * 200))
+    assert payload["command_hash"]
+    assert len(payload["command_preview"]) <= 120
+    assert "abc123" not in payload["command_preview"]
