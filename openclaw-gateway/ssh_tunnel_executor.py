@@ -1491,6 +1491,7 @@ class SSHTunnelExecutor:
         timeout: int,
         env: dict[str, str] | None = None,
         use_pty: bool = False,
+        prompt_via_stdin: bool = False,
     ) -> dict[str, Any]:
         temp_parent = cwd or "E:\\SKYNET-SANDBOX\\temp"
         prompt_path = str(PureWindowsPath(temp_parent) / f".skynet_prompt_{uuid.uuid4().hex}.txt")
@@ -1532,11 +1533,17 @@ class SSHTunnelExecutor:
                 f"[System.Convert]::FromBase64String('{b64}'))"
             )
         script_lines.append(f"$__promptPath = {_ps_quote(prompt_path)}")
-        script_lines.append("$__prompt = Get-Content -LiteralPath $__promptPath -Raw")
         script_lines.append("$__cmd = $__args[0]")
         script_lines.append("$__rest = @()")
         script_lines.append("if ($__args.Length -gt 1) { $__rest = $__args[1..($__args.Length-1)] }")
-        script_lines.append("& $__cmd @__rest $__prompt")
+        if prompt_via_stdin:
+            # Preserve multiline prompts on Windows by streaming stdin instead of argv.
+            script_lines.append("$__stdinArg = '-'")
+            script_lines.append("$__prompt = Get-Content -LiteralPath $__promptPath -Raw")
+            script_lines.append("$__prompt | & $__cmd @__rest $__stdinArg")
+        else:
+            script_lines.append("$__prompt = Get-Content -LiteralPath $__promptPath -Raw")
+            script_lines.append("& $__cmd @__rest $__prompt")
         script_lines.append("$code = $LASTEXITCODE")
         script_lines.append("if ($null -eq $code) { $code = 0 }")
         script_lines.append("Remove-Item -LiteralPath $__promptPath -Force -ErrorAction SilentlyContinue")
@@ -2189,6 +2196,32 @@ class SSHTunnelExecutor:
         else:
             if agent == "codex":
                 args = self._build_codex_command_base_args(binary=binary)
+                trace_ctx = self._runtime_trace_context()
+                emit_runtime_trace(
+                    "coding.prompt.transport",
+                    status="start",
+                    trace_id=str(trace_ctx.get("trace_id") or ""),
+                    parent_span_id=str(trace_ctx.get("span_id") or ""),
+                    phase="coding_agent",
+                    stage="codex",
+                    project_id=str(trace_ctx.get("project_id") or ""),
+                    task_id=str(trace_ctx.get("task_id") or ""),
+                    graph_id=str(trace_ctx.get("graph_id") or ""),
+                    node_key=str(trace_ctx.get("node_key") or ""),
+                    node_type=str(trace_ctx.get("node_type") or ""),
+                    worker_id=str(trace_ctx.get("worker_id") or ""),
+                    transport="ssh_first",
+                    runtime_mode=str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
+                    action_name=str(trace_ctx.get("action_name") or "run_coding_agent"),
+                    command_hash=command_hash(prompt),
+                    working_dir=str(cwd or ""),
+                    details={
+                        "remote_os": str(self.remote_os or ""),
+                        "prompt_len": len(prompt or ""),
+                        "prompt_newlines": int((prompt or "").count("\n")),
+                        "delivery": "stdin" if self.remote_os == "windows" else "argv",
+                    },
+                )
                 if self.remote_os == "windows":
                     initial = self._run_windows_command_with_prompt_file(
                         client=client,
@@ -2196,6 +2229,7 @@ class SSHTunnelExecutor:
                         prompt=prompt,
                         cwd=cwd,
                         timeout=timeout,
+                        prompt_via_stdin=True,
                     )
                 else:
                     args.append(prompt)

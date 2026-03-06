@@ -305,3 +305,83 @@ def test_windows_prompt_file_runner_avoids_raw_prompt_in_command(
     )
     assert result["returncode"] == 0
     assert "feature idea and dependencies" not in fake_client.command
+
+
+def test_windows_prompt_file_runner_supports_stdin_prompt_delivery(
+    ssh_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = SSHTunnelExecutor()
+    executor.remote_os = "windows"
+
+    class _FakeSftpWriter:
+        def __init__(self):
+            self.content = ""
+
+        def write(self, text):
+            self.content += text
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeSftp:
+        def __init__(self):
+            self.writer = _FakeSftpWriter()
+
+        def open(self, _path, _mode):
+            return self.writer
+
+        def close(self):
+            return None
+
+    class _FakeStdout:
+        def __init__(self, data: bytes, rc: int):
+            self._data = data
+
+            class _Chan:
+                def recv_exit_status(self_nonlocal):
+                    return rc
+
+            self.channel = _Chan()
+
+        def read(self):
+            return self._data
+
+    class _FakeStderr:
+        def __init__(self, data: bytes):
+            self._data = data
+
+        def read(self):
+            return self._data
+
+    class _FakeClient:
+        def __init__(self):
+            self.command = ""
+            self.sftp = _FakeSftp()
+
+        def open_sftp(self):
+            return self.sftp
+
+        def exec_command(self, command, timeout=None, get_pty=False):
+            del timeout, get_pty
+            self.command = command
+            return None, _FakeStdout(b"ok", 0), _FakeStderr(b"")
+
+    fake_client = _FakeClient()
+    monkeypatch.setattr(executor, "_sftp_makedirs", lambda *_args, **_kwargs: None)
+    result = executor._run_windows_command_with_prompt_file(
+        client=fake_client,
+        args_without_prompt=["codex", "exec", "--skip-git-repo-check"],
+        prompt="line1\nline2\nline3",
+        cwd="E:/SKYNET-SANDBOX/Projects/tmp",
+        timeout=120,
+        prompt_via_stdin=True,
+    )
+    assert result["returncode"] == 0
+    encoded = fake_client.command.split("-EncodedCommand ", 1)[1].strip()
+    script = base64.b64decode(encoded).decode("utf-16le")
+    assert "$__stdinArg = '-'" in script
+    assert "$__prompt | & $__cmd @__rest $__stdinArg" in script

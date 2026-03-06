@@ -2122,6 +2122,10 @@ async def _run_quality_fix_pass(
     working_dir: str,
     failing_gates: list[dict[str, str]],
     stage_chain: list[str] | None = None,
+    app=None,
+    chat_id: int | None = None,
+    user_id: int | None = None,
+    heartbeat_hook: Callable[[int], Awaitable[None]] | None = None,
 ) -> list[str]:
     failure_lines = []
     for gate in failing_gates:
@@ -2217,12 +2221,29 @@ async def _run_quality_fix_pass(
                 working_dir=working_dir,
                 timeout_seconds=1800,
             )
-            result = await send_action(
-                "run_coding_agent",
-                payload,
-                timeout=1800,
-                confirmed=True,
-            )
+            if app is not None and isinstance(chat_id, int):
+                result = await _send_action_with_heartbeat(
+                    app=app,
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    action="run_coding_agent",
+                    params=payload,
+                    timeout=1800,
+                    label=f"quality fix via {stage_name}",
+                    max_wait_seconds=max(
+                        1,
+                        int(getattr(cfg, "CODING_AGENT_MAX_WAIT_SECONDS", 900) or 900),
+                    ),
+                    confirmed=True,
+                    heartbeat_hook=heartbeat_hook,
+                )
+            else:
+                result = await send_action(
+                    "run_coding_agent",
+                    payload,
+                    timeout=1800,
+                    confirmed=True,
+                )
             if result.get("status") == "error":
                 stage_failures.append(stage_name)
                 logger.warning(
@@ -2429,6 +2450,9 @@ async def _run_strict_quality_gates(
     working_dir: str,
     tracker_hook: Callable[..., Awaitable[None]] | None = None,
     stage_chain: list[str] | None = None,
+    app=None,
+    chat_id: int | None = None,
+    user_id: int | None = None,
 ) -> dict[str, Any]:
     await delete_task_gate_results(db, task_id=task_id)
 
@@ -3007,6 +3031,14 @@ async def _run_strict_quality_gates(
             }
 
         if attempt < max_attempts:
+            async def _quality_fix_heartbeat(elapsed: int) -> None:
+                with contextlib.suppress(Exception):
+                    await _emit_gate_event(
+                        "run_contract",
+                        "running",
+                        summary=f"Auto-fix in progress ({elapsed}s elapsed)",
+                        command="run_coding_agent",
+                    )
             try:
                 fix_written_files = await _run_quality_fix_pass(
                     project=project,
@@ -3014,6 +3046,10 @@ async def _run_strict_quality_gates(
                     working_dir=working_dir,
                     failing_gates=failed_gates,
                     stage_chain=stage_chain,
+                    app=app,
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    heartbeat_hook=_quality_fix_heartbeat,
                 )
             except Exception as exc:
                 reason = str(exc).strip() or "quality auto-fix pass failed"
@@ -4609,6 +4645,9 @@ async def _run_control_loop_v1(
                 working_dir=working_dir,
                 tracker_hook=_gate_hook,
                 stage_chain=execution_stage_chain,
+                app=app,
+                chat_id=chat_id,
+                user_id=user_id,
             )
             if not bool(gate_result.get("passed")):
                 failed_names = gate_result.get("failed_gate_names") or []
@@ -6159,6 +6198,9 @@ async def _coding_loop(
                             active_stage_chain
                             or _build_coding_stage_chain(project, include_legacy=True)
                         ),
+                        app=app,
+                        chat_id=chat_id,
+                        user_id=user_id,
                     )
                     if not gate_result.get("passed"):
                         failed_names = gate_result.get("failed_gate_names") or []
