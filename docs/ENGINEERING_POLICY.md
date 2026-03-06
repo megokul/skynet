@@ -45,6 +45,16 @@ Accepted evidence markers include at least one of:
 
 Trace evidence must include enough context to correlate logs to the changed behavior.
 
+Runtime trace completeness is mandatory for E2E-path changes:
+
+- Every terminal `fail` event must include a `debug.bundle`.
+- Required runtime event envelope fields:
+  - `ts`, `level`, `event`, `trace_id`, `span_id`, `parent_span_id`, `status`
+  - flow context (`flow`, `project_id`, `task_id`, `graph_id`, `node_key`, `node_type`)
+  - execution context (`phase`, `stage`, `gate`, `worker_id`, `transport`, `runtime_mode`)
+  - transport/action context (`action_name`, `command_hash`, `working_dir`)
+- Missing required event fields or missing `debug.bundle` is a policy failure.
+
 ## Live E2E Debug Policy Requirements
 
 When the issue is a live `telegram_real` failure, `docs/DEBUG_PLAYBOOK.md` mandatory loop applies.

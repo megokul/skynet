@@ -161,6 +161,40 @@ CREATE TABLE IF NOT EXISTS task_node_events (
     created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS runtime_trace_events (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                 TEXT    NOT NULL,
+    level              TEXT    NOT NULL DEFAULT 'info',
+    event              TEXT    NOT NULL,
+    status             TEXT    NOT NULL DEFAULT '',
+    trace_id           TEXT    NOT NULL DEFAULT '',
+    span_id            TEXT    NOT NULL DEFAULT '',
+    parent_span_id     TEXT    NOT NULL DEFAULT '',
+    flow               TEXT    NOT NULL DEFAULT '',
+    project_id         TEXT    NOT NULL DEFAULT '',
+    task_id            TEXT    NOT NULL DEFAULT '',
+    graph_id           TEXT    NOT NULL DEFAULT '',
+    node_key           TEXT    NOT NULL DEFAULT '',
+    node_type          TEXT    NOT NULL DEFAULT '',
+    phase              TEXT    NOT NULL DEFAULT '',
+    stage              TEXT    NOT NULL DEFAULT '',
+    gate               TEXT    NOT NULL DEFAULT '',
+    worker_id          TEXT    NOT NULL DEFAULT '',
+    transport          TEXT    NOT NULL DEFAULT '',
+    runtime_mode       TEXT    NOT NULL DEFAULT '',
+    error_type         TEXT    NOT NULL DEFAULT '',
+    error_code         TEXT    NOT NULL DEFAULT '',
+    error_message      TEXT    NOT NULL DEFAULT '',
+    telegram_chat_id   TEXT    NOT NULL DEFAULT '',
+    telegram_user_id   TEXT    NOT NULL DEFAULT '',
+    telegram_message_id TEXT   NOT NULL DEFAULT '',
+    action_name        TEXT    NOT NULL DEFAULT '',
+    command_hash       TEXT    NOT NULL DEFAULT '',
+    working_dir        TEXT    NOT NULL DEFAULT '',
+    payload_json       TEXT    NOT NULL DEFAULT '{}',
+    created_at         TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS code_index_files (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT    NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -294,6 +328,12 @@ CREATE INDEX IF NOT EXISTS idx_project_memory_lookup
     ON project_memory(project_id, tier, memory_key);
 CREATE INDEX IF NOT EXISTS idx_task_node_events_graph_created
     ON task_node_events(graph_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_runtime_trace_trace_id_created
+    ON runtime_trace_events(trace_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_runtime_trace_project_created
+    ON runtime_trace_events(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_runtime_trace_graph_created
+    ON runtime_trace_events(graph_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_code_index_files_project_updated
     ON code_index_files(project_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_code_index_symbols_project_symbol
@@ -431,6 +471,12 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
         "ON project_memory(project_id, tier, memory_key)",
         "CREATE INDEX IF NOT EXISTS idx_task_node_events_graph_created "
         "ON task_node_events(graph_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_runtime_trace_trace_id_created "
+        "ON runtime_trace_events(trace_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_runtime_trace_project_created "
+        "ON runtime_trace_events(project_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_runtime_trace_graph_created "
+        "ON runtime_trace_events(graph_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_code_index_files_project_updated "
         "ON code_index_files(project_id, updated_at)",
         "CREATE INDEX IF NOT EXISTS idx_code_index_symbols_project_symbol "

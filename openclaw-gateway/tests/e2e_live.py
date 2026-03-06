@@ -265,6 +265,7 @@ def _run_conversation_flow(trace: LiveTrace) -> None:
     env["SKYNET_LIVE_TRACE_FILE"] = str(trace.path)
     env["SKYNET_E2E_FAIL_ON_SKIP"] = os.environ.get("SKYNET_E2E_FAIL_ON_SKIP", "1")
 
+    trace.log("e2e.step.start", step="conversation_flow", status="start")
     trace.log(
         "conversation.invoke",
         repo_root=str(repo_root),
@@ -301,19 +302,32 @@ def _run_conversation_flow(trace: LiveTrace) -> None:
     if completed.returncode == 0 and skipped > 0 and strict:
         if infra_category:
             print(f"[INFRA] Live E2E skip category: {infra_category}")
-        _fail(
-            trace,
-            "Conversation live E2E was skipped under strict mode.",
-            detail=f"pytest skipped={skipped}",
-        )
+            trace.log(
+                "e2e.step.fail",
+                step="conversation_flow",
+                status="fail",
+                error_message="Conversation live E2E was skipped under strict mode.",
+            )
+            _fail(
+                trace,
+                "Conversation live E2E was skipped under strict mode.",
+                detail=f"pytest skipped={skipped}",
+            )
     if completed.returncode != 0:
         if infra_category:
             print(f"[INFRA] Conversation live E2E infra category: {infra_category}")
+        trace.log(
+            "e2e.step.fail",
+            step="conversation_flow",
+            status="fail",
+            error_message=f"Conversation live E2E failed (exit={completed.returncode}).",
+        )
         _fail(
             trace,
             "Conversation live E2E failed.",
             detail=f"pytest exit code: {completed.returncode}",
         )
+    trace.log("e2e.step.end", step="conversation_flow", status="ok")
     trace.log("run.success", flow="conversation")
     print("[OK] Conversation live E2E passed.")
     print(f"[TRACE] {trace.path}")
@@ -331,6 +345,7 @@ def _run_telegram_real_flow(trace: LiveTrace) -> None:
     env["SKYNET_LIVE_TRACE_FILE"] = str(trace.path)
     env["SKYNET_E2E_FAIL_ON_SKIP"] = os.environ.get("SKYNET_E2E_FAIL_ON_SKIP", "1")
 
+    trace.log("e2e.step.start", step="telegram_real_flow", status="start")
     trace.log(
         "telegram_real.invoke",
         repo_root=str(repo_root),
@@ -371,17 +386,30 @@ def _run_telegram_real_flow(trace: LiveTrace) -> None:
     )
     strict = _bool_env("SKYNET_E2E_FAIL_ON_SKIP", True)
     if completed.returncode == 0 and skipped > 0 and strict:
+        trace.log(
+            "e2e.step.fail",
+            step="telegram_real_flow",
+            status="fail",
+            error_message="Telegram-real live E2E was skipped under strict mode.",
+        )
         _fail(
             trace,
             "Telegram-real live E2E was skipped under strict mode.",
             detail=f"pytest skipped={skipped}",
         )
     if completed.returncode != 0:
+        trace.log(
+            "e2e.step.fail",
+            step="telegram_real_flow",
+            status="fail",
+            error_message=f"Telegram-real live E2E failed (exit={completed.returncode}).",
+        )
         _fail(
             trace,
             "Telegram-real live E2E failed.",
             detail=f"pytest exit code: {completed.returncode}",
         )
+    trace.log("e2e.step.end", step="telegram_real_flow", status="ok")
     trace.log("run.success", flow="telegram_real")
     print("[OK] Telegram-real live E2E passed.")
     print(f"[TRACE] {trace.path}")
@@ -444,8 +472,10 @@ async def _execute_action_with_trace(
 async def _run_direct_flow(trace: LiveTrace) -> None:
     from ssh_tunnel_executor import get_ssh_executor
 
+    trace.log("e2e.step.start", step="direct_flow", status="start")
     executor = get_ssh_executor()
     if not executor.is_configured():
+        trace.log("e2e.step.fail", step="direct_flow", status="fail", error_message="SSH executor is not configured.")
         _fail(trace, "SSH executor is not configured. Check OPENCLAW_SSH_* env vars.")
 
     base_dir = os.environ.get("OPENCLAW_PROJECT_BASE_DIR", "E:\\SKYNET-SANDBOX\\Projects")
@@ -460,6 +490,7 @@ async def _run_direct_flow(trace: LiveTrace) -> None:
         timeout_s=120,
     )
     if result.get("status") == "error" or result.get("result", {}).get("returncode", 0) != 0:
+        trace.log("e2e.step.fail", step="direct_flow", status="fail", error_message="Could not create working directory.")
         _fail(trace, f"Could not create directory: {working_dir}", detail=result)
 
     model = os.environ.get("SKYNET_CLAUDE_OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:7b")
@@ -491,8 +522,10 @@ async def _run_direct_flow(trace: LiveTrace) -> None:
     )
     inner = result.get("result", result)
     if result.get("status") == "error":
+        trace.log("e2e.step.fail", step="direct_flow", status="fail", error_message="run_coding_agent action returned error.")
         _fail(trace, "run_coding_agent failed", detail=result)
     if inner.get("returncode", 0) != 0:
+        trace.log("e2e.step.fail", step="direct_flow", status="fail", error_message="run_coding_agent returned non-zero.")
         _fail(trace, "run_coding_agent returned non-zero", detail=inner)
 
     main_py = working_dir.rstrip("\\") + "\\main.py"
@@ -506,6 +539,7 @@ async def _run_direct_flow(trace: LiveTrace) -> None:
     inner = result.get("result", result)
     content = inner.get("content", inner.get("stdout", ""))
     if result.get("status") == "error" or not content:
+        trace.log("e2e.step.fail", step="direct_flow", status="fail", error_message=f"main.py missing at {main_py}")
         _fail(trace, f"main.py not found or empty at {main_py}", detail=result)
     trace.log("file.main_py", path=main_py, content_len=len(content))
 
@@ -520,12 +554,14 @@ async def _run_direct_flow(trace: LiveTrace) -> None:
     stdout = str(inner.get("stdout", ""))
     returncode = int(inner.get("returncode", inner.get("exit_code", -1)))
     if returncode != 0:
+        trace.log("e2e.step.fail", step="direct_flow", status="fail", error_message=f"exec_command returned {returncode}")
         _fail(trace, f"exec_command returned non-zero ({returncode})", detail=inner)
     if "SKYNET_E2E_OK" not in stdout:
         trace.log("run.warning", message="Expected SKYNET_E2E_OK not found", stdout=stdout[:220])
     else:
         trace.log("run.output_ok", marker="SKYNET_E2E_OK")
 
+    trace.log("e2e.step.end", step="direct_flow", status="ok")
     trace.log("run.success", flow="direct", working_dir=working_dir)
     print("[OK] Direct live E2E passed.")
     print(f"[TRACE] {trace.path}")

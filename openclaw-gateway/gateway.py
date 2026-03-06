@@ -25,6 +25,7 @@ from websockets.asyncio.server import ServerConnection
 
 import config as cfg
 from orchestration.openclaw_runner import get_openclaw_runner
+from runtime_trace import build_debug_bundle, command_hash, emit_runtime_trace
 
 logger = logging.getLogger("skynet.gateway")
 
@@ -165,6 +166,49 @@ async def send_action(
     """
     from ssh_tunnel_executor import get_ssh_executor  # lazy — avoids circular import at module load
 
+    _params = dict(params or {})
+    _project_id = str(_params.get("project_id") or "")
+    _graph_id = str(_params.get("graph_id") or "")
+    _node_key = str(_params.get("node_key") or "")
+    _node_type = str(_params.get("node_type") or "")
+    _stage = str(_params.get("agent") or _params.get("stage") or "").strip().lower()
+    _cmd_hash = command_hash(str(_params.get("command") or _params.get("prompt") or ""))
+    _working_dir = str(
+        _params.get("working_dir")
+        or _params.get("project_dir")
+        or _params.get("directory")
+        or ""
+    )
+    _runtime_mode = str(cfg.effective_orchestration_mode() or "legacy").strip().lower()
+    _transport = "websocket"
+    _trace_id = uuid.uuid4().hex
+    _span_id = uuid.uuid4().hex[:16]
+    _trace_payload = dict(
+        event="gateway.action.dispatch",
+        status="start",
+        trace_id=_trace_id,
+        span_id=_span_id,
+        parent_span_id="",
+        phase="gateway_dispatch",
+        stage=_stage,
+        project_id=_project_id,
+        task_id=str(task_id or ""),
+        graph_id=_graph_id,
+        node_key=_node_key,
+        node_type=_node_type,
+        action_name=str(action or "").strip(),
+        command_hash=_cmd_hash,
+        working_dir=_working_dir,
+        runtime_mode=_runtime_mode,
+        transport=_transport,
+        details={
+            "timeout": int(timeout),
+            "confirmed": bool(confirmed),
+            "idempotency_key": str(idempotency_key or ""),
+        },
+    )
+    emit_runtime_trace(**_trace_payload)
+
     _ssh_exec = get_ssh_executor()
     _force_ssh = cfg.get_str("OPENCLAW_EXECUTION_MODE", "").lower() in (
         "ssh", "ssh_tunnel", "tunnel", "ssh-only",
@@ -181,7 +225,67 @@ async def send_action(
             action,
             cfg.effective_orchestration_mode(),
         )
-        return await _run_local_orchestration_action(action, params or {})
+        _trace_payload["transport"] = "acp_local"
+        try:
+            response = await _run_local_orchestration_action(action, _params)
+            inner = response.get("result", {}) if isinstance(response, dict) else {}
+            is_fail = (
+                (not isinstance(response, dict))
+                or str(response.get("status") or "").strip().lower() == "error"
+                or int(inner.get("returncode", 0) or 0) != 0
+            )
+            emit_runtime_trace(
+                "gateway.action.dispatch",
+                status="fail" if is_fail else "ok",
+                trace_id=_trace_id,
+                parent_span_id=_span_id,
+                phase="gateway_dispatch",
+                stage=_stage,
+                project_id=_project_id,
+                task_id=str(task_id or ""),
+                graph_id=_graph_id,
+                node_key=_node_key,
+                node_type=_node_type,
+                action_name=str(action or "").strip(),
+                command_hash=_cmd_hash,
+                working_dir=_working_dir,
+                runtime_mode=_runtime_mode,
+                transport="acp_local",
+                error_code="GATEWAY_ACTION_FAILED" if is_fail else "",
+                error_message=str(response.get("error") or inner.get("stderr") or "")[:1200] if isinstance(response, dict) else "invalid action response",
+                details={"route": "local_orchestration"},
+            )
+            return response
+        except Exception as exc:
+            emit_runtime_trace(
+                "gateway.action.dispatch",
+                status="fail",
+                trace_id=_trace_id,
+                parent_span_id=_span_id,
+                phase="gateway_dispatch",
+                stage=_stage,
+                project_id=_project_id,
+                task_id=str(task_id or ""),
+                graph_id=_graph_id,
+                node_key=_node_key,
+                node_type=_node_type,
+                action_name=str(action or "").strip(),
+                command_hash=_cmd_hash,
+                working_dir=_working_dir,
+                runtime_mode=_runtime_mode,
+                transport="acp_local",
+                error_type=type(exc).__name__,
+                error_code="GATEWAY_LOCAL_ROUTE_ERROR",
+                error_message=str(exc)[:1200],
+                debug_bundle=build_debug_bundle(
+                    failure_class="GATEWAY_LOCAL_ROUTE_ERROR",
+                    error_message=str(exc),
+                    causal_chain=["gateway.action.dispatch"],
+                    mitigation_hint="Validate local ACP runner health and action parameters.",
+                ),
+                details={"route": "local_orchestration"},
+            )
+            raise
 
     _prefer_ssh_for_coding = (
         cfg.CODING_TRANSPORT == "ssh_first"
@@ -206,10 +310,110 @@ async def send_action(
                 _ssh_configured,
                 _ssh_selected_reason,
             )
-            return await _ssh_exec.execute_action(action, params or {}, confirmed=confirmed)
+            _trace_payload["transport"] = "ssh_first"
+            try:
+                response = await _ssh_exec.execute_action(action, _params, confirmed=confirmed)
+                inner = response.get("result", {}) if isinstance(response, dict) else {}
+                is_fail = (
+                    (not isinstance(response, dict))
+                    or str(response.get("status") or "").strip().lower() == "error"
+                    or int(inner.get("returncode", 0) or 0) != 0
+                )
+                emit_runtime_trace(
+                    "gateway.action.dispatch",
+                    status="fail" if is_fail else "ok",
+                    trace_id=_trace_id,
+                    parent_span_id=_span_id,
+                    phase="gateway_dispatch",
+                    stage=_stage,
+                    project_id=_project_id,
+                    task_id=str(task_id or ""),
+                    graph_id=_graph_id,
+                    node_key=_node_key,
+                    node_type=_node_type,
+                    action_name=str(action or "").strip(),
+                    command_hash=_cmd_hash,
+                    working_dir=_working_dir,
+                    runtime_mode=_runtime_mode,
+                    transport="ssh_first",
+                    error_code="SSH_ACTION_FAILED" if is_fail else "",
+                    error_message=str(response.get("error") or inner.get("stderr") or "")[:1200] if isinstance(response, dict) else "invalid action response",
+                    details={"route_reason": _ssh_selected_reason},
+                )
+                return response
+            except Exception as exc:
+                emit_runtime_trace(
+                    "gateway.action.dispatch",
+                    status="fail",
+                    trace_id=_trace_id,
+                    parent_span_id=_span_id,
+                    phase="gateway_dispatch",
+                    stage=_stage,
+                    project_id=_project_id,
+                    task_id=str(task_id or ""),
+                    graph_id=_graph_id,
+                    node_key=_node_key,
+                    node_type=_node_type,
+                    action_name=str(action or "").strip(),
+                    command_hash=_cmd_hash,
+                    working_dir=_working_dir,
+                    runtime_mode=_runtime_mode,
+                    transport="ssh_first",
+                    error_type=type(exc).__name__,
+                    error_code="SSH_ACTION_ROUTE_ERROR",
+                    error_message=str(exc)[:1200],
+                    debug_bundle=build_debug_bundle(
+                        failure_class="SSH_ACTION_ROUTE_ERROR",
+                        error_message=str(exc),
+                        causal_chain=["gateway.action.dispatch"],
+                        mitigation_hint="Inspect SSH transport diagnostics and executor trace events.",
+                    ),
+                    details={"route_reason": _ssh_selected_reason},
+                )
+                raise
         if _force_ssh:
+            emit_runtime_trace(
+                "gateway.action.dispatch",
+                status="fail",
+                trace_id=_trace_id,
+                parent_span_id=_span_id,
+                phase="gateway_dispatch",
+                stage=_stage,
+                project_id=_project_id,
+                task_id=str(task_id or ""),
+                graph_id=_graph_id,
+                node_key=_node_key,
+                node_type=_node_type,
+                action_name=str(action or "").strip(),
+                command_hash=_cmd_hash,
+                working_dir=_working_dir,
+                runtime_mode=_runtime_mode,
+                transport="ssh_first",
+                error_code="SSH_NOT_CONFIGURED",
+                error_message="OPENCLAW_EXECUTION_MODE forces SSH, but SSH tunnel executor is not configured.",
+            )
             raise RuntimeError("OPENCLAW_EXECUTION_MODE forces SSH, but SSH tunnel executor is not configured.")
         if _agent_ws is None:
+            emit_runtime_trace(
+                "gateway.action.dispatch",
+                status="fail",
+                trace_id=_trace_id,
+                parent_span_id=_span_id,
+                phase="gateway_dispatch",
+                stage=_stage,
+                project_id=_project_id,
+                task_id=str(task_id or ""),
+                graph_id=_graph_id,
+                node_key=_node_key,
+                node_type=_node_type,
+                action_name=str(action or "").strip(),
+                command_hash=_cmd_hash,
+                working_dir=_working_dir,
+                runtime_mode=_runtime_mode,
+                transport="websocket",
+                error_code="NO_AGENT_CONNECTED",
+                error_message="No agent connected.",
+            )
             raise RuntimeError("No agent connected.")
 
     request_id = str(uuid.uuid4())
@@ -237,10 +441,95 @@ async def send_action(
         logger.info("Sent action '%s' (req=%s) to agent.", action, request_id)
 
         result = await asyncio.wait_for(future, timeout=timeout)
+        inner = result.get("result", {}) if isinstance(result, dict) else {}
+        is_fail = (
+            (not isinstance(result, dict))
+            or str(result.get("status") or "").strip().lower() == "error"
+            or int(inner.get("returncode", 0) or 0) != 0
+        )
+        emit_runtime_trace(
+            "gateway.action.dispatch",
+            status="fail" if is_fail else "ok",
+            trace_id=_trace_id,
+            parent_span_id=_span_id,
+            phase="gateway_dispatch",
+            stage=_stage,
+            project_id=_project_id,
+            task_id=str(task_id or ""),
+            graph_id=_graph_id,
+            node_key=_node_key,
+            node_type=_node_type,
+            action_name=str(action or "").strip(),
+            command_hash=_cmd_hash,
+            working_dir=_working_dir,
+            runtime_mode=_runtime_mode,
+            transport="websocket",
+            error_code="AGENT_ACTION_FAILED" if is_fail else "",
+            error_message=str(result.get("error") or inner.get("stderr") or "")[:1200] if isinstance(result, dict) else "invalid action response",
+            details={"request_id": request_id},
+        )
         return result
 
     except asyncio.TimeoutError:
         logger.warning("Timed out waiting for response to req=%s", request_id)
+        emit_runtime_trace(
+            "gateway.action.dispatch",
+            status="fail",
+            trace_id=_trace_id,
+            parent_span_id=_span_id,
+            phase="gateway_dispatch",
+            stage=_stage,
+            project_id=_project_id,
+            task_id=str(task_id or ""),
+            graph_id=_graph_id,
+            node_key=_node_key,
+            node_type=_node_type,
+            action_name=str(action or "").strip(),
+            command_hash=_cmd_hash,
+            working_dir=_working_dir,
+            runtime_mode=_runtime_mode,
+            transport="websocket",
+            error_code="ACTION_TIMEOUT",
+            error_type="TimeoutError",
+            error_message=f"Timed out waiting for action response (request_id={request_id}).",
+            details={"request_id": request_id, "timeout": int(timeout)},
+            debug_bundle=build_debug_bundle(
+                failure_class="ACTION_TIMEOUT",
+                error_message=f"Timed out waiting for action response (request_id={request_id}).",
+                causal_chain=["gateway.action.dispatch"],
+                mitigation_hint="Check worker connectivity and long-running command progress.",
+            ),
+        )
+        raise
+    except Exception as exc:
+        emit_runtime_trace(
+            "gateway.action.dispatch",
+            status="fail",
+            trace_id=_trace_id,
+            parent_span_id=_span_id,
+            phase="gateway_dispatch",
+            stage=_stage,
+            project_id=_project_id,
+            task_id=str(task_id or ""),
+            graph_id=_graph_id,
+            node_key=_node_key,
+            node_type=_node_type,
+            action_name=str(action or "").strip(),
+            command_hash=_cmd_hash,
+            working_dir=_working_dir,
+            runtime_mode=_runtime_mode,
+            transport="websocket",
+            error_code="GATEWAY_SEND_ACTION_ERROR",
+            error_type=type(exc).__name__,
+            error_message=str(exc)[:1200],
+            details={"request_id": request_id},
+            debug_bundle=build_debug_bundle(
+                failure_class="GATEWAY_SEND_ACTION_ERROR",
+                error_message=str(exc),
+                causal_chain=["gateway.action.dispatch"],
+                mitigation_hint="Check gateway websocket and pending request lifecycle.",
+            ),
+        )
         raise
 
     finally:

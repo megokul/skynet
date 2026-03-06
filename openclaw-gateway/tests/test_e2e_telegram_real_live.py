@@ -402,7 +402,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         last_id = int(history[0].id) if history else 0
         trace("telegram.history", last_message_id=last_id)
 
-        trace("step.start", step=1, name="send_hi")
+        trace("e2e.step.start", step=1, name="send_hi")
         await client.send_message(bot, "hi")
         msg = await _wait_for_bot_message(
             client,
@@ -416,8 +416,9 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         last_id = int(msg.id)
         await _click_button_contains(msg, "Start a Project", trace_fn=trace, step="click_start_project")
         _emit_runtime_trace_snapshot(trace, checkpoint="after.start_project", tail_lines=60)
+        trace("e2e.step.end", step=1, name="send_hi", status="ok")
 
-        trace("step.start", step=2, name="project_name")
+        trace("e2e.step.start", step=2, name="project_name")
         msg = await _wait_for_bot_message(
             client,
             bot,
@@ -430,8 +431,9 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         last_id = int(msg.id)
         await client.send_message(bot, project_slug)
         trace("telegram.message.sent", step="project_name_sent", text=project_slug)
+        trace("e2e.step.end", step=2, name="project_name", status="ok")
 
-        trace("step.start", step=3, name="project_type")
+        trace("e2e.step.start", step=3, name="project_type")
         msg = await _wait_for_bot_message(
             client,
             bot,
@@ -446,8 +448,9 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
             await _click_button_contains(msg, "Python App", trace_fn=trace, step="click_python_app")
         else:
             await _click_button_contains(msg, "Other", trace_fn=trace, step="click_other_type")
+        trace("e2e.step.end", step=3, name="project_type", status="ok")
 
-        trace("step.start", step=4, name="requirements")
+        trace("e2e.step.start", step=4, name="requirements")
         msg = await _wait_for_bot_message(
             client,
             bot,
@@ -465,8 +468,9 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         await client.send_message(bot, requirement)
         trace("telegram.message.sent", step="requirements_sent", text_preview=requirement[:220])
         _emit_runtime_trace_snapshot(trace, checkpoint="after.requirements_sent", tail_lines=80)
+        trace("e2e.step.end", step=4, name="requirements", status="ok")
 
-        trace("step.start", step=5, name="generate_plan")
+        trace("e2e.step.start", step=5, name="generate_plan")
         plan_msg = None
         max_rounds = 3
         for round_idx in range(1, max_rounds + 1):
@@ -529,14 +533,23 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 continue
 
         if plan_msg is None:
+            trace(
+                "e2e.step.fail",
+                step=5,
+                name="generate_plan",
+                status="fail",
+                error_message="Planner clarification loop exhausted before plan approval",
+            )
             raise AssertionError("Planner clarification loop exhausted before plan approval")
+        trace("e2e.step.end", step=5, name="generate_plan", status="ok")
 
-        trace("step.start", step=6, name="approve_plan")
+        trace("e2e.step.start", step=6, name="approve_plan")
         msg = plan_msg
         await _click_button_contains(msg, "Approve", trace_fn=trace, step="click_plan_approve")
         _emit_runtime_trace_snapshot(trace, checkpoint="after.plan_approved", tail_lines=100)
+        trace("e2e.step.end", step=6, name="approve_plan", status="ok")
 
-        trace("step.start", step=7, name="start_coding")
+        trace("e2e.step.start", step=7, name="start_coding")
         msg = await _wait_for_bot_message(
             client,
             bot,
@@ -549,8 +562,9 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         last_id = int(msg.id)
         await _click_button_contains(msg, "Start Coding", trace_fn=trace, step="click_start_coding")
         _emit_runtime_trace_snapshot(trace, checkpoint="after.start_coding_clicked", tail_lines=120)
+        trace("e2e.step.end", step=7, name="start_coding", status="ok")
 
-        trace("step.start", step=8, name="skip_github_repo_creation")
+        trace("e2e.step.start", step=8, name="skip_github_repo_creation")
         msg = await _wait_for_bot_message(
             client,
             bot,
@@ -563,8 +577,9 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         last_id = int(msg.id)
         await _click_button_contains(msg, "Skip", trace_fn=trace, step="click_skip_github")
         _emit_runtime_trace_snapshot(trace, checkpoint="after.skip_github", tail_lines=120)
+        trace("e2e.step.end", step=8, name="skip_github_repo_creation", status="ok")
 
-        trace("step.start", step=9, name="coding_and_run")
+        trace("e2e.step.start", step=9, name="coding_and_run")
         saw_run_button = False
         saw_finish_summary = False
         saw_no_github_push = True
@@ -627,12 +642,26 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                     text_preview=text[:320],
                 )
                 _emit_runtime_trace_snapshot(trace, checkpoint="coding.preflight.failure", tail_lines=200)
+                trace(
+                    "e2e.step.fail",
+                    step=9,
+                    name="coding_and_run",
+                    status="fail",
+                    error_message=f"Terminal preflight failure: {text[:260]}",
+                )
                 raise AssertionError(
                     f"Live Telegram E2E encountered terminal preflight failure: {text[:260]}"
                 )
 
             if "session failed" in lowered and "complete=" in lowered:
                 _emit_runtime_trace_snapshot(trace, checkpoint="coding.session.failed", tail_lines=220)
+                trace(
+                    "e2e.step.fail",
+                    step=9,
+                    name="coding_and_run",
+                    status="fail",
+                    error_message=f"Session summary indicates failure: {text[:260]}",
+                )
                 raise AssertionError(
                     f"Live Telegram E2E reached failed session summary: {text[:260]}"
                 )
@@ -755,6 +784,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
             f"Live Telegram E2E did not complete any milestones (complete={complete_count}, failed={failed_count})."
         )
         assert saw_run_button and saw_run_success, "Live Telegram E2E did not reach a successful Run Project output."
+        trace("e2e.step.end", step=9, name="coding_and_run", status="ok")
         trace(
             "test.success",
             saw_run_button=saw_run_button,

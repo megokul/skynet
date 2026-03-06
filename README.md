@@ -295,6 +295,8 @@ Live trace logging:
 
 - Default live E2E trace logs are written to `E:\MyProjects\skynet\logs\`.
 - Runtime trace source defaults to `E:\MyProjects\skynet\logs\skynet.trace.log`.
+- Runtime trace is append-only JSONL with per-event flush for live monitoring.
+- Terminal failures emit a mandatory `debug.bundle` event with causal chain and mitigation hint.
 - Monitor E2E trace live in PowerShell:
 
 ```powershell
@@ -304,6 +306,18 @@ Get-Content E:\MyProjects\skynet\logs\e2e-live-*.log -Wait
 - Override trace file path if needed:
   - `SKYNET_LIVE_TRACE_FILE=E:\MyProjects\skynet\logs\my-live-trace.log`
   - `SKYNET_E2E_RUNTIME_TRACE_FILE=E:\MyProjects\skynet\logs\skynet.trace.log`
+  - `SKYNET_RUNTIME_TRACE_LIVE_FILE=E:\MyProjects\skynet\logs\skynet.trace.log`
+
+Runtime trace control flags:
+
+- `SKYNET_RUNTIME_TRACE_ENABLED=1`
+- `SKYNET_RUNTIME_TRACE_LEVEL=info`
+- `SKYNET_RUNTIME_TRACE_PAYLOAD_MODE=redacted_hash`
+- `SKYNET_RUNTIME_TRACE_INCLUDE_STDIO_TAIL=1`
+- `SKYNET_RUNTIME_TRACE_STDIO_TAIL_BYTES=4000`
+- `SKYNET_RUNTIME_TRACE_DB_ENABLED=1`
+- `SKYNET_RUNTIME_TRACE_REQUIRE_DEBUG_BUNDLE=1`
+- `SKYNET_RUNTIME_TRACE_REQUIRED_EVENT_ENFORCEMENT=1`
 
 ### Telegram Coding Tracker
 

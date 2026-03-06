@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-06 08:20
+Last updated (UTC): 2026-03-06 08:30
 
 ## Current Goal
 
@@ -20,6 +20,16 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
   - On uncaught executor exception, node and graph are now atomically marked failed with persisted failure type and event telemetry.
 - Added regression coverage:
   - `openclaw-gateway/tests/test_control_loop_integration.py::test_closed_loop_executor_exception_fails_graph_without_crash`
+
+### 2026-03-06 Runtime Trace Module Deployment Fix
+
+- CI deploy failure root cause on run `22754926134`:
+  - `ModuleNotFoundError: No module named 'runtime_trace'` during `openclaw-gateway` startup.
+  - The code imported `runtime_trace`, but module/supporting DB wiring were not included in the pushed commit.
+- Fix set staged for deployment:
+  - Add `openclaw-gateway/runtime_trace.py`.
+  - Add DB persistence support for runtime trace events in `db/schema.py` and `db/store.py`.
+  - Include gateway/e2e runtime trace integration and associated tests/docs.
 
 ### 2026-03-05 Live E2E Runtime Trace Visibility Update
 

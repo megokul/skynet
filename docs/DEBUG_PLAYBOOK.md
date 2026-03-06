@@ -10,6 +10,29 @@ Triage-first operational playbook for runtime issues.
 4. Inspect task/event/audit trails before patching behavior.
 5. Reproduce with smallest command/test path and keep evidence in handoff.
 
+## Runtime Trace Completeness Rules
+
+These are mandatory for live E2E debugging and production incident triage.
+
+1. Every critical action must emit `start` and terminal (`ok|fail|skip`) events.
+2. Every terminal `fail` must have a paired `debug.bundle` event.
+3. `debug.bundle` must include:
+   - `failure_class`
+   - `causal_chain`
+   - `last_success_event` when available
+   - redacted `stdout_tail` and `stderr_tail`
+   - `mitigation_hint`
+4. Transport failures must include endpoint diagnostics:
+   - `host`
+   - `port`
+   - `auth_mode`
+   - tunnel/health classification
+5. Stage transitions must be explicit:
+   - `stage.fail` before `stage.start` for next stage.
+6. Live trace file is append-only and must be monitorable during execution:
+   - default: `E:\MyProjects\skynet\logs\skynet.trace.log`
+7. If any required runtime event is missing in CI, treat as a hard failure.
+
 ## Live E2E Debug Policy (Mandatory Loop)
 
 Use this policy for every `telegram_real` failure. Do not stop at first symptom.

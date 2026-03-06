@@ -809,6 +809,107 @@ async def list_task_node_events(
     return rows
 
 
+async def create_runtime_trace_event(
+    db: aiosqlite.Connection,
+    *,
+    event_payload: dict[str, Any],
+) -> dict[str, Any]:
+    payload = dict(event_payload or {})
+    ts = str(payload.get("ts") or _now()).strip() or _now()
+    async with db.execute(
+        """
+        INSERT INTO runtime_trace_events
+            (
+                ts, level, event, status, trace_id, span_id, parent_span_id, flow,
+                project_id, task_id, graph_id, node_key, node_type, phase, stage, gate,
+                worker_id, transport, runtime_mode, error_type, error_code, error_message,
+                telegram_chat_id, telegram_user_id, telegram_message_id, action_name,
+                command_hash, working_dir, payload_json, created_at
+            )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            ts,
+            str(payload.get("level") or "info").strip(),
+            str(payload.get("event") or "").strip(),
+            str(payload.get("status") or "").strip(),
+            str(payload.get("trace_id") or "").strip(),
+            str(payload.get("span_id") or "").strip(),
+            str(payload.get("parent_span_id") or "").strip(),
+            str(payload.get("flow") or "").strip(),
+            str(payload.get("project_id") or "").strip(),
+            str(payload.get("task_id") or "").strip(),
+            str(payload.get("graph_id") or "").strip(),
+            str(payload.get("node_key") or "").strip(),
+            str(payload.get("node_type") or "").strip(),
+            str(payload.get("phase") or "").strip(),
+            str(payload.get("stage") or "").strip(),
+            str(payload.get("gate") or "").strip(),
+            str(payload.get("worker_id") or "").strip(),
+            str(payload.get("transport") or "").strip(),
+            str(payload.get("runtime_mode") or "").strip(),
+            str(payload.get("error_type") or "").strip(),
+            str(payload.get("error_code") or "").strip(),
+            str(payload.get("error_message") or "").strip(),
+            str(payload.get("telegram_chat_id") or "").strip(),
+            str(payload.get("telegram_user_id") or "").strip(),
+            str(payload.get("telegram_message_id") or "").strip(),
+            str(payload.get("action_name") or "").strip(),
+            str(payload.get("command_hash") or "").strip(),
+            str(payload.get("working_dir") or "").strip(),
+            _dump_json(payload, "{}"),
+            _now(),
+        ),
+    ) as cur:
+        row_id = int(cur.lastrowid)
+    await db.commit()
+    async with db.execute("SELECT * FROM runtime_trace_events WHERE id = ?", (row_id,)) as cur:
+        row = _row(await cur.fetchone())
+    if row:
+        try:
+            row["payload"] = json.loads(str(row.get("payload_json") or "{}"))
+        except Exception:
+            row["payload"] = {}
+    return row or {}
+
+
+async def list_runtime_trace_events(
+    db: aiosqlite.Connection,
+    *,
+    trace_id: str | None = None,
+    project_id: str | None = None,
+    graph_id: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if trace_id:
+        clauses.append("trace_id = ?")
+        params.append(str(trace_id).strip())
+    if project_id:
+        clauses.append("project_id = ?")
+        params.append(str(project_id).strip())
+    if graph_id:
+        clauses.append("graph_id = ?")
+        params.append(str(graph_id).strip())
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    query = (
+        "SELECT * FROM runtime_trace_events"
+        + where
+        + " ORDER BY id DESC LIMIT ?"
+    )
+    params.append(max(1, int(limit)))
+    async with db.execute(query, tuple(params)) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    rows.reverse()
+    for row in rows:
+        try:
+            row["payload"] = json.loads(str(row.get("payload_json") or "{}"))
+        except Exception:
+            row["payload"] = {}
+    return rows
+
+
 async def upsert_code_index_file(
     db: aiosqlite.Connection,
     *,
