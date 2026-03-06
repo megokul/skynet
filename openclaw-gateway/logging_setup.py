@@ -24,6 +24,7 @@ import logging
 import queue
 import sys
 import threading
+import time
 import traceback
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -211,7 +212,10 @@ class _AsyncBatchHandler(logging.Handler):
 
         try:
             self._flush_batch(batch)
-        except Exception:
+        except Exception as exc:
+            if "ssh mirror backoff active" in str(exc):
+                self._stderr(f"Log sink flush deferred: {exc}")
+                return
             self._stderr("Log sink flush failed:\n" + traceback.format_exc())
 
     def _flush_batch(self, batch: list[str]) -> None:
@@ -324,11 +328,14 @@ class _SSHMirrorFileHandler(_AsyncBatchHandler):
         self._key_path = key_path
         self._password = password
         self._strict_host_key = strict_host_key
-        self._connect_timeout = max(2, int(connect_timeout))
+        # Mirror transport is latency-sensitive but needs enough handshake headroom.
+        self._connect_timeout = max(8, int(connect_timeout))
         self._command_timeout = max(10, int(command_timeout))
         self._remote_windows_path = remote_windows_path
         self._client: paramiko.SSHClient | None = None
         self._mkdir_done = False
+        self._connect_failures = 0
+        self._next_connect_after_monotonic = 0.0
 
     def close(self) -> None:
         """
@@ -412,12 +419,18 @@ class _SSHMirrorFileHandler(_AsyncBatchHandler):
 
         if self._client is not None:
             return self._client
+        now = time.monotonic()
+        if now < self._next_connect_after_monotonic:
+            raise RuntimeError(
+                f"ssh mirror backoff active ({self._next_connect_after_monotonic - now:.1f}s remaining)"
+            )
         client = paramiko.SSHClient()
         if self._strict_host_key:
             client.load_system_host_keys()
         else:
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
+        explicit_auth = bool(self._key_path or self._password)
         kwargs: dict[str, object] = {
             "hostname": self._host,
             "port": self._port,
@@ -425,15 +438,25 @@ class _SSHMirrorFileHandler(_AsyncBatchHandler):
             "timeout": self._connect_timeout,
             "auth_timeout": self._connect_timeout,
             "banner_timeout": self._connect_timeout,
-            "look_for_keys": True,
-            "allow_agent": True,
+            "look_for_keys": not explicit_auth,
+            "allow_agent": not explicit_auth,
         }
         if self._key_path:
             kwargs["key_filename"] = self._key_path
         if self._password:
             kwargs["password"] = self._password
 
-        client.connect(**kwargs)
+        try:
+            client.connect(**kwargs)
+        except Exception:
+            self._connect_failures = min(self._connect_failures + 1, 6)
+            self._next_connect_after_monotonic = time.monotonic() + (2 ** self._connect_failures)
+            raise
+        self._connect_failures = 0
+        self._next_connect_after_monotonic = 0.0
+        transport = client.get_transport()
+        if transport is not None:
+            transport.set_keepalive(15)
         self._client = client
         return client
 

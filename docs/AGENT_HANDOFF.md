@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-06 12:20
+Last updated (UTC): 2026-03-06 12:33
 
 ## Current Goal
 
@@ -56,6 +56,18 @@ SSH-primary execution reliability hardening across gateway, live E2E, tunnel lif
     - recomputes staleness,
     - emits `coding.poll.recovered` and continues when freshness is restored.
   - Terminal stale failure now only triggers when staleness remains above threshold after refresh.
+
+### 2026-03-06 SSH Mirror Log Sink Reliability Hardening
+
+- New live E2E evidence:
+  - runtime trace file stalled while gateway container logs showed repeated `Log sink flush failed` and Paramiko `Error reading SSH protocol banner`.
+  - This indicates mirror transport instability under SSH load, not trace schema/collector gaps.
+- Applied transport hardening in `openclaw-gateway/logging_setup.py` (`_SSHMirrorFileHandler`):
+  - increased minimum connect timeout floor from `2s` to `8s` for mirror handshakes.
+  - switched to explicit auth mode (`look_for_keys=False`, `allow_agent=False`) when key/password is provided.
+  - enabled SSH transport keepalive (`15s`) after successful connect.
+  - added exponential reconnect backoff after connect failures (capped growth) to reduce handshake storms.
+  - downgraded backoff-cycle flush failures to concise deferred messages (avoid traceback flood).
 
 ### 2026-03-06 Codex Prompt Transport + Gate Heartbeat Update
 
