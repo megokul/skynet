@@ -1,10 +1,38 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-06 09:18
+Last updated (UTC): 2026-03-06 12:03
 
 ## Current Goal
 
 SSH-primary execution reliability hardening across gateway, live E2E, tunnel lifecycle, and deployment diagnostics, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-06 Trace-First Live E2E + Container Stream Update
+
+- Added trace-first live diagnostics in `openclaw-gateway/tests/test_e2e_telegram_real_live.py`:
+  - always-on EC2 container streaming events (`container.log.stream.start|ok|error|stop`, `container.log.line`)
+  - per-container ring-buffer bundles on terminal failures (`container.log.bundle`)
+  - runtime trace snapshot metadata (`mtime_iso`, `age_s`, `line_count`, `digest`)
+  - stale runtime trace hard-fail classification (`TRACE_STALE`)
+  - tracker-edit/runtime-trace/container activity checks in coding poll loop
+  - `/trace deep` capture attempt before timeout-class failure.
+- Added container-log redaction hardening:
+  - bearer/auth/token-like field masking
+  - explicit Telegram bot token URL masking (`bot[REDACTED]`).
+- Added runtime trace/config propagation updates:
+  - `openclaw-gateway/config.py`
+  - `.github/workflows/deploy-ec2-skynet.yml`
+  - `.env.example`, `.env.local-e2e.example`, `.env.ec2-gateway.example`
+  - `openclaw-gateway/settings/settings.yaml`, `openclaw-gateway/settings/settings.example.yaml`
+  - `README.md`.
+- Added regression coverage:
+  - `openclaw-gateway/tests/test_live_e2e_trace_logging.py` now covers container stream redaction + stale trace diagnostics behavior.
+- Fixed control-plane API compatibility in `skynet/ledger/task_queue.py`:
+  - `claim_next_ready_task(...)` now accepts optional `lock_timeout_seconds` to match scheduler caller.
+- Deployment status from live debug:
+  - GitHub Actions runs `22762262248` and `22762380178` failed policy gate (`Check engineering policy`) because `docs/AGENT_HANDOFF.md` was not included.
+  - As a result, EC2 stayed on previous containers and continued emitting:
+    - `TypeError: TaskQueueManager.claim_next_ready_task() got an unexpected keyword argument 'lock_timeout_seconds'`
+  - Current objective is to pass policy gate and redeploy so runtime picks up the compatibility fix.
 
 ### 2026-03-06 Codex Prompt Transport + Gate Heartbeat Update
 
