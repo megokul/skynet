@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-06 20:05
+Last updated (UTC): 2026-03-07 11:10
 
 ## Current Goal
 
@@ -732,6 +732,15 @@ WebSocket-primary worker execution with SSH fallback, while preserving strict qu
   - `1 passed` (`test_live_conversation_real_planner_codegen_and_github_push`, ~236s)
 - `$env:SKYNET_ENV_FILE='.env.local-e2e'; python openclaw-gateway/tests/e2e_live.py`
   - `1 passed` (`test_live_conversation_real_planner_codegen_and_github_push`, ~143s, trace `e2e-live-1772610595.log`)
+
+### 2026-03-07 WebSocket-first + SSH fallback hardening
+
+- `python -m pytest openclaw-gateway/tests/test_e2e.py -v` — 23 passed
+- Fix: coding preflight write probe missing `command` param in `exec_command` action
+- Fix: Claude/Cline SSH agents use `_run_windows_command_with_prompt_file()` on Windows
+- Fix: SSH log mirror truncates lines >500 chars to prevent command-line overflow
+- Fix: Container log stream SSH keepalive (`ServerAliveInterval=30`) + reconnect (3 retries)
+
 ## Trace Evidence
 
 - request_id=deploy-repair-runtime-trace-schema-order-20260306
@@ -774,6 +783,11 @@ WebSocket-primary worker execution with SSH fallback, while preserving strict qu
 - request_id=ssh-primary-reliability-hardening-20260304
 - task_id=ssh-tunnel-resilience-and-status-contract
 - /v1/events
+- request_id=websocket-first-ssh-fallback-20260307
+- task_id=ws-log-sink-prompt-file-keepalive
+- `E:\MyProjects\skynet\logs\e2e-live-1772881218.log`
+- skynet.trace.log
+
 ## Documentation Updates
 
 - `docs/AGENT_HANDOFF.md`
