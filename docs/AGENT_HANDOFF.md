@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-07 14:30
+Last updated (UTC): 2026-03-07 17:05
 
 ## Current Goal
 
@@ -743,6 +743,8 @@ WebSocket-primary worker execution with SSH fallback, while preserving strict qu
 - Gateway `send_action()` now raises a clear RuntimeError when no WebSocket worker is connected instead of silently falling back to SSH.
 - `docker-compose.yml` already defaults `OPENCLAW_SSH_FALLBACK_ENABLED` to `0`.
 - Killed stale EC2 agent process that was holding the WebSocket slot with old code.
+- Added `"command"` to agent security validator exempt keys (`openclaw-agent/security/validator.py`): the `exec_command` action sends a `command` string containing Python one-liners with parentheses/quotes that are safe since the agent uses `subprocess_exec` not shell interpolation.
+- Live E2E confirmed WebSocket-primary transport for all actions: `check_coding_agents`, `exec_command`, `create_directory`, `run_coding_agent`.
 
 ### 2026-03-07 WebSocket-first + SSH fallback hardening
 
