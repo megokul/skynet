@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-07 11:10
+Last updated (UTC): 2026-03-07 14:30
 
 ## Current Goal
 
@@ -732,6 +732,17 @@ WebSocket-primary worker execution with SSH fallback, while preserving strict qu
   - `1 passed` (`test_live_conversation_real_planner_codegen_and_github_push`, ~236s)
 - `$env:SKYNET_ENV_FILE='.env.local-e2e'; python openclaw-gateway/tests/e2e_live.py`
   - `1 passed` (`test_live_conversation_real_planner_codegen_and_github_push`, ~143s, trace `e2e-live-1772610595.log`)
+
+### 2026-03-07 WebSocket-only execution (SSH fallback disabled)
+
+- Disabled SSH fallback in production and local e2e configs to enforce WebSocket-only communication:
+  - `openclaw-gateway/settings/settings.yaml`: `OPENCLAW_SSH_FALLBACK_ENABLED: false`, `SKYNET_WEBSOCKET_FALLBACK_TO_SSH: false`
+  - `.env.local-e2e`: `OPENCLAW_SSH_FALLBACK_ENABLED=0`, `SKYNET_E2E_ALLOW_SSH_FALLBACK=0`
+  - `.env.local-e2e.example`: updated to match
+- Motivation: SSH command-line length limit (8191 chars on Windows) caused failures for long prompts. WebSocket has no such limit.
+- Gateway `send_action()` now raises a clear RuntimeError when no WebSocket worker is connected instead of silently falling back to SSH.
+- `docker-compose.yml` already defaults `OPENCLAW_SSH_FALLBACK_ENABLED` to `0`.
+- Killed stale EC2 agent process that was holding the WebSocket slot with old code.
 
 ### 2026-03-07 WebSocket-first + SSH fallback hardening
 
