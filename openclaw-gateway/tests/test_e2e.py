@@ -27,6 +27,8 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 
 from telegram.ext import ConversationHandler
 
+import gateway_config as cfg
+
 # ── Helpers from conftest ─────────────────────────────────────────────────────
 from helpers import make_callback_update, make_message_update, make_context
 
@@ -164,7 +166,10 @@ class TestProjectCreationFlow:
     async def test_requirements_done_generates_plan(self):
         fake_plan = (
             "**SkyApp — Project Plan**\n"
-            "**Overview:** A simple Python CLI.\n"
+            "**Overview:** A simple Python CLI application.\n"
+            "**Core Features:**\n  - Command-line interface\n"
+            "**Tech Stack:**\n  - Python 3.11+\n"
+            "**Project Structure:**\n  - skyapp.py\n  - tests/\n"
             "**Milestones:**\n  1. Setup\n  2. Core logic"
         )
         fake_router = MagicMock()
@@ -412,12 +417,14 @@ class TestStopSession:
                         "status": "success",
                         "result": {
                             "returncode": 0,
-                            "stdout": "claude: available (claude)",
+                            "stdout": "codex: available (codex)",
                             "stderr": "",
                         },
                     }
                 ),
             ),
+            patch("bot.handlers.coding._preflight_coding_environment",
+                  new=AsyncMock(return_value=(True, "", ["codex"]))),
         ):
             await _coding_loop(app, chat_id, user_id, self.PROJECT, do_github=False)
 
@@ -486,6 +493,7 @@ class TestRunProject:
             patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
                   new=AsyncMock(return_value=mock_result)) as mock_send,
+            patch("bot.handlers.coding._is_strict_project", return_value=False),
         ):
             await run_project_handler(update, context)
 
@@ -542,6 +550,7 @@ class TestRunProject:
                 "bot.handlers.coding.send_action",
                 new=AsyncMock(side_effect=[list_result, mock_result]),
             ) as mock_send,
+            patch("bot.handlers.coding._is_strict_project", return_value=False),
         ):
             await run_project_handler(update, context)
 
@@ -573,6 +582,7 @@ class TestRunProject:
             patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
                   new=AsyncMock(return_value=mock_result)),
+            patch("bot.handlers.coding._is_strict_project", return_value=False),
         ):
             await run_project_handler(update, context)
 
@@ -600,6 +610,7 @@ class TestRunProject:
             patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
                   new=AsyncMock(return_value=mock_result)),
+            patch("bot.handlers.coding._is_strict_project", return_value=False),
         ):
             await run_project_handler(update, context)
 
@@ -690,6 +701,9 @@ class TestRunProject:
             patch("bot.handlers.coding.create_task",
                   new=AsyncMock(return_value={"id": 99})),
             patch("bot.handlers.coding.update_task_status", new=AsyncMock()),
+            patch("bot.handlers.coding._preflight_coding_environment",
+                  new=AsyncMock(return_value=(True, "", ["codex"]))),
+            patch("bot.handlers.coding._is_strict_project", return_value=False),
         ):
             await _coding_loop(app, chat_id, user_id, project, do_github=False)
 
@@ -812,6 +826,9 @@ class TestCodingLoopErrorSurfacing:
                   new=AsyncMock(side_effect=_send_action)),
             patch("bot.handlers.coding.create_task",      new=mock_create_task),
             patch("bot.handlers.coding.update_task_status", new=mock_update_status),
+            patch("bot.handlers.coding._preflight_coding_environment",
+                  new=AsyncMock(return_value=(True, "", ["codex"]))),
+            patch("bot.handlers.coding._is_strict_project", return_value=False),
         ):
             await _coding_loop(
                 app, self.CHAT_ID, self.USER_ID, self.PROJECT, do_github=do_github,
@@ -982,6 +999,9 @@ class TestCodingLoopErrorSurfacing:
             patch("bot.handlers.coding.create_task",
                   new=AsyncMock(return_value={"id": 1})),
             patch("bot.handlers.coding.update_task_status", new=AsyncMock()),
+            patch("bot.handlers.coding._preflight_coding_environment",
+                  new=AsyncMock(return_value=(True, "", ["codex"]))),
+            patch("bot.handlers.coding._is_strict_project", return_value=False),
         ):
             await _coding_loop(
                 app, self.CHAT_ID, self.USER_ID, self.PROJECT, do_github=True,
@@ -1033,6 +1053,7 @@ class TestCodingLoopErrorSurfacing:
             patch("bot.handlers.coding.is_worker_available", return_value=True),
             patch("bot.handlers.coding.send_action",
                   new=AsyncMock(return_value=real_envelope)),
+            patch("bot.handlers.coding._is_strict_project", return_value=False),
         ):
             await run_project_handler(update, context)
 
@@ -1052,3 +1073,4 @@ class TestCodingLoopErrorSurfacing:
         assert "✅" in all_replies or "exit 0" in all_replies, (
             f"exit 0 from inner returncode must show ✅; got: {all_replies!r}"
         )
+

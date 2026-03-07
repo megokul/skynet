@@ -93,16 +93,22 @@ def _fail(trace: LiveTrace, message: str, *, detail: Any | None = None) -> None:
 
 def _check_env(trace: LiveTrace, flow: str = "conversation") -> None:
     telegram_real_flows = {"telegram_real", "telegram", "real_telegram"}
-    requires_ssh = flow not in telegram_real_flows
-    if requires_ssh:
-        required = ("OPENCLAW_SSH_HOST", "OPENCLAW_SSH_USER")
-    else:
+    transport = os.environ.get("SKYNET_E2E_TRANSPORT", "websocket").strip().lower()
+
+    if flow in telegram_real_flows:
         required = (
             "SKYNET_E2E_TELEGRAM_API_ID",
             "SKYNET_E2E_TELEGRAM_API_HASH",
             "SKYNET_E2E_TELEGRAM_SESSION",
             "SKYNET_E2E_TELEGRAM_BOT_USERNAME",
         )
+        requires_ssh = False
+    elif transport == "ssh":
+        required = ("OPENCLAW_SSH_HOST", "OPENCLAW_SSH_USER")
+        requires_ssh = True
+    else:
+        required = ("SKYNET_AUTH_TOKEN",)
+        requires_ssh = False
 
     missing = [var for var in required if not os.environ.get(var)]
     ssh_host = os.environ.get("OPENCLAW_SSH_HOST", "").strip()
@@ -111,6 +117,7 @@ def _check_env(trace: LiveTrace, flow: str = "conversation") -> None:
     trace.log(
         "env.check",
         flow=flow,
+        transport=transport,
         required=list(required),
         missing=missing,
         ssh_host=ssh_host,
@@ -125,8 +132,10 @@ def _check_env(trace: LiveTrace, flow: str = "conversation") -> None:
         print(f"[SKIP] {detail}")
         if requires_ssh:
             print("       Set OPENCLAW_SSH_* vars and retry.")
-        else:
+        elif flow in telegram_real_flows:
             print("       Set SKYNET_E2E_TELEGRAM_* vars and retry.")
+        else:
+            print("       Set SKYNET_AUTH_TOKEN and retry.")
         print(f"[TRACE] {trace.path}")
         sys.exit(0)
 

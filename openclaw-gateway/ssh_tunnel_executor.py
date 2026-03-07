@@ -26,7 +26,7 @@ import paramiko
 
 _log = logging.getLogger(__name__)
 
-import config as bot_cfg
+import gateway_config as bot_cfg
 from runtime_trace import (
     build_artifact_debug_bundle,
     build_debug_bundle,
@@ -2646,13 +2646,28 @@ class SSHTunnelExecutor:
         run: dict[str, Any]
 
         if agent == "claude":
-            args = self._build_claude_command_args(
-                binary=binary,
-                prompt=prompt,
-                model=model,
-            )
-            # Claude CLI can block indefinitely on SSH non-PTY channels.
-            run = self._run_command(client, args, cwd=cwd, timeout=timeout, use_pty=True)
+            if self.remote_os == "windows":
+                args = self._build_claude_command_args(
+                    binary=binary,
+                    prompt=None,
+                    model=model,
+                )
+                run = self._run_windows_command_with_prompt_file(
+                    client=client,
+                    args_without_prompt=args,
+                    prompt=prompt,
+                    cwd=cwd,
+                    timeout=timeout,
+                    use_pty=True,
+                )
+            else:
+                args = self._build_claude_command_args(
+                    binary=binary,
+                    prompt=prompt,
+                    model=model,
+                )
+                # Claude CLI can block indefinitely on SSH non-PTY channels.
+                run = self._run_command(client, args, cwd=cwd, timeout=timeout, use_pty=True)
         else:
             if agent == "codex":
                 args = self._build_codex_command_base_args(binary=binary)
@@ -2693,8 +2708,20 @@ class SSHTunnelExecutor:
                     args.append(prompt)
                     initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
             else:
-                args = [binary, *self._coding_prefix[agent], prompt]
-                initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
+                # Cline agent — use file-based prompt on Windows to avoid
+                # exceeding the 8191-char command-line limit.
+                if self.remote_os == "windows":
+                    args_no_prompt = [binary, *self._coding_prefix[agent]]
+                    initial = self._run_windows_command_with_prompt_file(
+                        client=client,
+                        args_without_prompt=args_no_prompt,
+                        prompt=prompt,
+                        cwd=cwd,
+                        timeout=timeout,
+                    )
+                else:
+                    args = [binary, *self._coding_prefix[agent], prompt]
+                    initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
             if agent != "cline":
                 run = initial
             elif initial["returncode"] == 0:
@@ -2870,7 +2897,7 @@ class SSHTunnelExecutor:
         self,
         *,
         binary: str,
-        prompt: str,
+        prompt: str | None,
         model: str = "",
     ) -> list[str]:
         args = [binary]
@@ -2882,7 +2909,8 @@ class SSHTunnelExecutor:
             args.append("--disable-slash-commands")
         if self._claude_dangerously_skip_permissions:
             args.append("--dangerously-skip-permissions")
-        args.extend(["-p", prompt])
+        if prompt is not None:
+            args.extend(["-p", prompt])
         return args
 
     def _run_command_action(self, client: paramiko.SSHClient, action: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -3551,7 +3579,10 @@ class SSHTunnelExecutor:
 
         attempted: list[str] = []
         last = dict(initial_result)
-        run_args = [binary, *self._coding_prefix["cline"], prompt]
+        use_prompt_file = self.remote_os == "windows"
+        run_args = [binary, *self._coding_prefix["cline"]]
+        if not use_prompt_file:
+            run_args.append(prompt)
 
         for provider in self._cline_provider_priority:
             api_key = self._default_api_key_for_provider(provider)
@@ -3573,7 +3604,16 @@ class SSHTunnelExecutor:
                 last = configured
                 continue
 
-            run = self._run_command(client, run_args, cwd=cwd, timeout=timeout)
+            if use_prompt_file:
+                run = self._run_windows_command_with_prompt_file(
+                    client=client,
+                    args_without_prompt=run_args,
+                    prompt=prompt,
+                    cwd=cwd,
+                    timeout=timeout,
+                )
+            else:
+                run = self._run_command(client, run_args, cwd=cwd, timeout=timeout)
             notice = (
                 f"Notice: auto-switched Cline provider to {provider}"
                 + (f" (model: {model})." if model else ".")
@@ -4033,4 +4073,5 @@ def get_ssh_executor() -> SSHTunnelExecutor:
     if _SSH_EXECUTOR is None:
         _SSH_EXECUTOR = SSHTunnelExecutor()
     return _SSH_EXECUTOR
+
 

@@ -1,10 +1,17 @@
-"""Live handler-path conversation E2E (simulated Telegram transport; real planner + SSH worker)."""
+"""Live handler-path conversation E2E (simulated Telegram transport; real planner + worker).
+
+Transport modes (SKYNET_E2E_TRANSPORT env var):
+  websocket  — (default) starts a gateway WS server + spawns openclaw-agent subprocess
+  ssh        — legacy SSH-only mode (requires OPENCLAW_SSH_HOST/OPENCLAW_SSH_USER)
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -261,30 +268,97 @@ async def test_live_conversation_real_planner_codegen_no_github_push():
         trace("test.skip", reason="SKYNET_E2E_LIVE is not 1")
         pytest.skip("Set SKYNET_E2E_LIVE=1 to run live conversation E2E.")
 
-    missing = [
-        key for key in ("OPENCLAW_SSH_HOST", "OPENCLAW_SSH_USER")
-        if not os.environ.get(key)
-    ]
-    if missing:
-        trace("test.skip", reason="Missing SSH env vars", missing=missing)
-        _skip_or_fail_live("Missing live E2E SSH env vars", ", ".join(missing))
+    transport = os.environ.get("SKYNET_E2E_TRANSPORT", "websocket").strip().lower()
+    use_websocket = transport != "ssh"
+    trace("transport.mode", transport=transport, use_websocket=use_websocket)
 
-    previous_env, _ = _with_env(
-        {
-            "OPENCLAW_EXECUTION_MODE": "ssh",
-            "SKYNET_STRICT_EMPTY_OUTPUT_EMERGENCY_SCAFFOLD": "1",
-        }
-    )
+    if use_websocket:
+        if not os.environ.get("SKYNET_AUTH_TOKEN"):
+            trace("test.skip", reason="Missing SKYNET_AUTH_TOKEN for WebSocket E2E")
+            _skip_or_fail_live("Missing SKYNET_AUTH_TOKEN for WebSocket E2E")
+    else:
+        missing = [
+            key for key in ("OPENCLAW_SSH_HOST", "OPENCLAW_SSH_USER")
+            if not os.environ.get(key)
+        ]
+        if missing:
+            trace("test.skip", reason="Missing SSH env vars", missing=missing)
+            _skip_or_fail_live("Missing live E2E SSH env vars", ", ".join(missing))
+
+    if use_websocket:
+        previous_env, _ = _with_env(
+            {
+                "OPENCLAW_EXECUTION_MODE": "agent_preferred",
+                "SKYNET_WEBSOCKET_FALLBACK_TO_SSH": "0",
+                "SKYNET_STRICT_EMPTY_OUTPUT_EMERGENCY_SCAFFOLD": "1",
+            }
+        )
+    else:
+        previous_env, _ = _with_env(
+            {
+                "OPENCLAW_EXECUTION_MODE": "ssh",
+                "SKYNET_STRICT_EMPTY_OUTPUT_EMERGENCY_SCAFFOLD": "1",
+            }
+        )
+
+    ws_server = None
+    agent_proc = None
     db = await init_db(":memory:")
     try:
-        executor = get_ssh_executor()
-        if not executor.is_configured():
-            trace("test.skip", reason="SSH executor is not configured")
-            _skip_or_fail_live("SSH executor is not configured for live E2E.")
-        healthy, detail = await executor.health_check()
-        if not healthy:
-            trace("test.skip", reason="SSH executor unreachable", detail=detail)
-            _skip_or_fail_live("SSH executor unreachable", detail)
+        if use_websocket:
+            import gateway as _gw
+
+            ws_server = await _gw.start_ws_server()
+            trace("websocket.server_started", port=_gw.cfg.WS_PORT)
+
+            # Spawn openclaw-agent as subprocess
+            agent_root = str(Path(__file__).resolve().parents[2] / "openclaw-agent")
+            agent_env = os.environ.copy()
+            agent_env["SKYNET_AUTH_TOKEN"] = os.environ["SKYNET_AUTH_TOKEN"]
+            agent_env["SKYNET_GATEWAY_URL"] = f"ws://localhost:{_gw.cfg.WS_PORT}/agent/ws"
+            project_base = os.environ.get(
+                "OPENCLAW_PROJECT_BASE_DIR", "E:/SKYNET-SANDBOX/Projects"
+            )
+            agent_env["SKYNET_ALLOWED_ROOTS"] = os.environ.get(
+                "SKYNET_ALLOWED_ROOTS",
+                os.environ.get("OPENCLAW_SSH_ALLOWED_ROOTS", project_base),
+            )
+            agent_env["SKYNET_LOG_LEVEL"] = "WARNING"
+            agent_proc = subprocess.Popen(
+                [sys.executable, "main.py"],
+                cwd=agent_root,
+                env=agent_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            trace("websocket.agent_spawned", pid=agent_proc.pid)
+
+            # Wait for agent to connect
+            try:
+                await asyncio.wait_for(_gw.agent_connected.wait(), timeout=15)
+            except asyncio.TimeoutError:
+                stderr_tail = ""
+                if agent_proc.poll() is not None:
+                    stderr_tail = (agent_proc.stderr.read() or b"").decode(errors="replace")[-500:]
+                trace(
+                    "websocket.agent_connect_timeout",
+                    agent_alive=agent_proc.poll() is None,
+                    stderr_tail=stderr_tail,
+                )
+                _skip_or_fail_live(
+                    "WebSocket agent did not connect within 15s",
+                    stderr_tail or "agent may have crashed",
+                )
+            trace("websocket.agent_connected", worker_available=_gw.is_agent_connected())
+        else:
+            executor = get_ssh_executor()
+            if not executor.is_configured():
+                trace("test.skip", reason="SSH executor is not configured")
+                _skip_or_fail_live("SSH executor is not configured for live E2E.")
+            healthy, detail = await executor.health_check()
+            if not healthy:
+                trace("test.skip", reason="SSH executor unreachable", detail=detail)
+                _skip_or_fail_live("SSH executor unreachable", detail)
 
         trace(
             "test.start",
@@ -464,9 +538,27 @@ async def test_live_conversation_real_planner_codegen_no_github_push():
         assert "SKYNET_LIVE_E2E_OK" in all_replies, (
             f"Expected live app output not found. Replies: {all_replies}"
         )
-        trace("test.success", actions_count=0)
+        if use_websocket and _bool_env("SKYNET_E2E_REQUIRE_WEBSOCKET_PRIMARY", False):
+            import gateway as _gw_check
+            assert _gw_check.is_agent_connected(), (
+                "WebSocket agent disconnected before E2E completed."
+            )
+            trace("websocket.transport_verified", agent_connected=True)
+
+        trace("test.success", actions_count=0, transport=transport)
         print(f"[LIVE TRACE] {trace_path}")
     finally:
-        trace("test.cleanup", closing_db=True)
+        trace("test.cleanup", closing_db=True, transport=transport)
+        if agent_proc is not None:
+            agent_proc.terminate()
+            try:
+                agent_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                agent_proc.kill()
+            trace("websocket.agent_stopped", pid=agent_proc.pid)
+        if ws_server is not None:
+            ws_server.close()
+            await ws_server.wait_closed()
+            trace("websocket.server_stopped")
         await db.close()
         _restore_env(previous_env)

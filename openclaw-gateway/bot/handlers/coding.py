@@ -1737,9 +1737,10 @@ async def _preflight_coding_environment(
             "p.write_text('ok', encoding='utf-8'); p.unlink(missing_ok=True)",
         ]
         try:
+            write_probe_command = " ".join(write_probe_argv)
             write_result = await send_action(
                 "exec_command",
-                {"working_dir": working_dir, "argv": write_probe_argv},
+                {"working_dir": working_dir, "argv": write_probe_argv, "command": write_probe_command},
                 timeout=20,
                 confirmed=True,
             )
