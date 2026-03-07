@@ -1,10 +1,18 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-07 17:05
+Last updated (UTC): 2026-03-07 18:30
 
 ## Current Goal
 
-WebSocket-primary worker execution with SSH fallback, while preserving strict quality gates and deterministic run behavior.
+WebSocket-primary worker execution with local Ollama coding backend, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-07 Ollama claude_ollama Stage as Primary Coding Backend
+
+- Enabled `SKYNET_CLAUDE_OLLAMA_STAGE_ENABLED` in `openclaw-gateway/settings/settings.yaml` and CI deploy
+- Changed `SKYNET_CODING_FALLBACK_CHAIN` to `claude_ollama,codex` (Ollama first, codex fallback)
+- Enabled `SKYNET_CLAUDE_OLLAMA_AUTO_PULL` for automatic model pulls
+- Model: `qwen2.5-coder:7b` (Q4_K_M, fits RTX 4070 8GB VRAM)
+- Agent-side: `run_coding_agent` with `backend=ollama` runs `claude --model qwen2.5-coder:7b` via `ANTHROPIC_BASE_URL=http://localhost:11434`
 
 ### 2026-03-06 WebSocket-First Execution Model Rollout
 
