@@ -127,12 +127,21 @@ docker compose -f docker-compose.skynet-only.yml up -d
 ## Config Split: Settings vs Secrets
 
 - Non-secret defaults live in:
+  - `skynet/settings/defaults.yaml`
   - `openclaw-gateway/settings/settings.yaml`
+  - `openclaw-agent/settings/defaults.yaml`
 - Secret values live in environment variables (`.env` or GitHub Actions secrets).
 - Runtime precedence is:
   - environment variable
   - settings YAML
   - code default
+
+## Configuration Source Of Truth
+
+- `skynet/settings/loader.py` is the only shared settings loader in the repo.
+- Gateway and agent settings loaders are wrappers around it.
+- Live E2E, scripts, and deployment env rendering must consume that shared loader instead of parsing `.env` or YAML themselves.
+- `scripts/ci/check_settings_policy.py` enforces this policy in CI.
 
 ## Sync Local `.env` To GitHub (No Commit)
 
@@ -174,6 +183,7 @@ SKYNET_SKIP_ENV_SYNC=1 git push
 ```bash
 make test
 make smoke
+python scripts/ci/check_settings_policy.py
 python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
 ```
 
@@ -363,13 +373,15 @@ Runtime trace control flags:
 - `SKYNET_RUNTIME_TRACE_REQUIRE_DEBUG_BUNDLE=1`
 - `SKYNET_RUNTIME_TRACE_REQUIRED_EVENT_ENFORCEMENT=1`
 
-Telegram-real container log stream flags:
+Shared live E2E container log flags:
 
 - `SKYNET_E2E_CONTAINER_LOG_STREAM_ENABLED=1`
 - `SKYNET_E2E_CONTAINER_LOG_SOURCES=openclaw-gateway,skynet-api`
 - `SKYNET_E2E_CONTAINER_LOG_REQUIRE_STREAM=1`
 - `SKYNET_E2E_CONTAINER_LOG_MAX_LINE_CHARS=1200`
 - `SKYNET_E2E_CONTAINER_LOG_RING_LINES=300`
+- `SKYNET_E2E_CONTAINER_LOG_TAIL_DEFAULT=100`
+- `SKYNET_E2E_CONTAINER_LOG_TAIL_OVERRIDES=openclaw-gateway=200,skynet-api=100`
 - `SKYNET_E2E_RUNTIME_TRACE_STALE_SECONDS=90`
 
 Container stream SSH credential resolution order:
@@ -378,7 +390,7 @@ Container stream SSH credential resolution order:
 2. `OPENCLAW_TUNNEL_EC2_HOST`, `OPENCLAW_TUNNEL_EC2_USER`, `OPENCLAW_TUNNEL_SSH_KEY`
 3. If stream is required and still unresolved, E2E fails early with `CONTAINER_LOG_STREAM_UNAVAILABLE`.
 
-During `telegram_real`, E2E now emits `container.log.stream.*`, `container.log.line`, and `container.log.bundle` events into the live E2E trace for single-timeline debugging.
+During `conversation` and `telegram_real`, live E2E now emits `container.log.stream.*`, `container.log.line`, and a final `container.log.bundle` event into the same trace file for single-timeline debugging.
 
 ### Telegram Coding Tracker
 
@@ -390,12 +402,15 @@ During coding sessions, SKYNET now maintains one live tracker message with:
 - OpenClaw orchestration session context (`session`, `runtime`, `queue`)
 - strict gate progression (`infra_preflight`, `run_contract`, `lint`, `tests`, `smoke`)
 - monotonic percent progress and stale-signal warning
+- a live `Stop and Exit` control while the session is running
 
 Tracker defaults (non-secret, from settings YAML):
 
 - `SKYNET_TELEGRAM_TRACKER_ENABLED=true`
 - `SKYNET_TELEGRAM_TRACKER_EDIT_INTERVAL_SECONDS=3`
 - `SKYNET_TELEGRAM_TRACKER_STALE_WARN_SECONDS=90`
+- `SKYNET_TELEGRAM_TRACKER_STUCK_EXIT_SECONDS=300`
+- `SKYNET_TELEGRAM_TRACKER_WATCHDOG_POLL_SECONDS=5`
 - `SKYNET_TELEGRAM_TRACKER_BAR_WIDTH=20`
 - `SKYNET_TELEGRAM_TRACKER_VERBOSE_PIPELINE=true`
 
@@ -404,6 +419,7 @@ Tracker defaults (non-secret, from settings YAML):
 Tracker troubleshooting:
 
 - If phase is stuck at `milestone_extraction`, check provider health and `SKYNET_MILESTONE_EXTRACTION_*` timeouts.
+- If the tracker has no new signal for `SKYNET_TELEGRAM_TRACKER_STUCK_EXIT_SECONDS`, the loop now finalizes as failed and exits instead of idling indefinitely.
 - If phase shows repeated `GENERATION_FAILED: codex`, inspect worker Codex setup and write permissions.
 - If phase is `quality_gates`, gate name identifies the blocker (`run_contract`, `lint`, `tests`, `smoke`).
 - If transport is healthy but no stage progress is visible, inspect `telegram.tracker.*` logs in gateway output.

@@ -80,20 +80,7 @@ def _print_banner() -> None:
 
 def _build_ai_router(db):
     from ai.provider_router import ProviderRouter, build_providers, parse_provider_priority
-    provider_cfg = {
-        "OLLAMA_DEFAULT_MODEL":       cfg.OLLAMA_DEFAULT_MODEL,
-        "GOOGLE_AI_API_KEY":          cfg.GOOGLE_AI_API_KEY,
-        "GEMINI_MODEL":               cfg.GEMINI_MODEL,
-        "GEMINI_ONLY_MODE":           "1" if cfg.GEMINI_ONLY_MODE else "0",
-        "GROQ_API_KEY":               cfg.GROQ_API_KEY,
-        "OPENROUTER_API_KEY":         cfg.OPENROUTER_API_KEY,
-        "OPENROUTER_MODEL":           cfg.OPENROUTER_MODEL,
-        "OPENROUTER_FALLBACK_MODELS": cfg.OPENROUTER_FALLBACK_MODELS,
-        "DEEPSEEK_API_KEY":           cfg.DEEPSEEK_API_KEY,
-        "OPENAI_API_KEY":             cfg.OPENAI_API_KEY,
-        "ANTHROPIC_API_KEY":          cfg.ANTHROPIC_API_KEY,
-    }
-    providers = build_providers(provider_cfg)
+    providers = build_providers(cfg.get_provider_config())
     return ProviderRouter(
         providers,
         db,

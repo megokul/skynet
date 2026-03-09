@@ -1,4 +1,4 @@
-.PHONY: help install test test-all test-unit test-gateway-e2e test-live-conversation clean clean-data run-api run-bot dev-setup manual-check-api manual-check-e2e manual-check-delegate check-stale-paths check-control-boundary check-policy smoke format lint check
+.PHONY: help install test test-all test-unit test-gateway-e2e test-live-conversation clean clean-data run-api run-bot dev-setup manual-check-api manual-check-e2e manual-check-delegate check-stale-paths check-control-boundary check-settings-policy check-policy smoke format lint check
 
 # Default target
 help:
@@ -34,6 +34,7 @@ help:
 	@echo "  make lint         - Run linters"
 	@echo "  make check-stale-paths - Fail on stale root path references"
 	@echo "  make check-control-boundary - Enforce SKYNET control-plane boundaries"
+	@echo "  make check-settings-policy - Enforce shared settings source-of-truth policy"
 	@echo "  make check-policy - Enforce engineering policy docs/evidence rules"
 	@echo "  make smoke        - Quick repo health checks"
 	@echo "  make check        - Run all checks"
@@ -94,11 +95,15 @@ check-control-boundary:
 	@echo "Checking SKYNET control-plane boundaries..."
 	python scripts/ci/check_control_plane_boundary.py
 
+check-settings-policy:
+	@echo "Checking shared settings policy..."
+	python scripts/ci/check_settings_policy.py
+
 check-policy:
 	@echo "Checking engineering policy compliance..."
 	python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
 
-smoke: check-stale-paths check-control-boundary check-policy
+smoke: check-stale-paths check-control-boundary check-settings-policy check-policy
 	@echo "Running smoke checks..."
 	python scripts/dev/smoke.py
 

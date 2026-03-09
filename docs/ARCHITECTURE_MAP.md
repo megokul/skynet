@@ -45,6 +45,7 @@ High-level flow:
 ## Ownership Boundaries
 
 - `skynet/` owns orchestration state and task scheduling authority.
+- `skynet/settings/loader.py` owns shared settings loading and env export semantics for the repo.
 - `openclaw-gateway/` owns transport orchestration and user-facing bot flows.
 - `openclaw-agent/` (or SSH fallback) owns execution of tool/actions.
 
@@ -58,4 +59,5 @@ Enforcement hooks:
 
 - `scripts/ci/check_control_plane_boundary.py`
 - `scripts/ci/check_stale_paths.py`
+- `scripts/ci/check_settings_policy.py`
 - `scripts/ci/check_engineering_policy.py`

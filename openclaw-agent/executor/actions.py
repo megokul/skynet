@@ -21,6 +21,8 @@ import os
 import re
 import logging
 import shutil
+import subprocess
+import sys
 import time
 import uuid
 from html import unescape
@@ -28,7 +30,21 @@ from pathlib import Path
 from urllib import parse, request
 from typing import Any
 
-from settings.loader import get_str as _cfg_s, get_bool as _cfg_b
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from skynet.settings.loader import get_component_settings  # noqa: E402
+
+_settings_loader = get_component_settings("agent")
+
+
+def _cfg_s(name: str, default: str = "") -> str:
+    return _settings_loader.get_str(name, default)
+
+
+def _cfg_b(name: str, default: bool = False) -> bool:
+    return _settings_loader.get_bool(name, default)
 
 logger = logging.getLogger("chathan.executor")
 
@@ -249,6 +265,31 @@ _CODING_AGENT_PREFIX_ARGS: dict[str, list[str]] = {
 _CODING_AGENT_TIMEOUT_SECONDS = 1800
 _BRAVE_SEARCH_API_KEY = _cfg_s("BRAVE_SEARCH_API_KEY")
 _WEB_SEARCH_TIMEOUT_SECONDS = 15
+
+
+class _TrackedPopen:
+    def __init__(self, proc: subprocess.Popen[bytes]) -> None:
+        self._proc = proc
+
+    @property
+    def pid(self) -> int | None:
+        return getattr(self._proc, "pid", None)
+
+    @property
+    def returncode(self) -> int | None:
+        return self._proc.returncode
+
+    def terminate(self) -> None:
+        self._proc.terminate()
+
+    def kill(self) -> None:
+        self._proc.kill()
+
+    async def wait(self) -> int:
+        return await asyncio.to_thread(self._proc.wait)
+
+    async def communicate(self, timeout: int | None = None) -> tuple[bytes, bytes]:
+        return await asyncio.to_thread(self._proc.communicate, timeout=timeout)
 
 
 # ------------------------------------------------------------------
@@ -962,12 +1003,14 @@ async def _run_tracked_coding_subprocess(
     agent: str,
     env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-        env=env,
+    proc = _TrackedPopen(
+        subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+        )
     )
     await _register_runtime_session(
         session_key,
@@ -980,10 +1023,10 @@ async def _run_tracked_coding_subprocess(
         cleanup_status="",
     )
     try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        stdout_bytes, stderr_bytes = await proc.communicate(timeout=timeout)
         status = "completed"
         cleanup_status = "completed"
-    except asyncio.TimeoutError:
+    except subprocess.TimeoutExpired:
         proc.kill()
         stdout_bytes, stderr_bytes = await proc.communicate()
         status = "timed_out"
@@ -1282,4 +1325,3 @@ ACTION_REGISTRY: dict[str, Any] = {
     "close_app": close_app,
     "zip_project": zip_project,
 }
-

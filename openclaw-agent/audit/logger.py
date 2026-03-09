@@ -128,12 +128,15 @@ async def log_event(
         duration_ms=duration_ms,
     )
     line = json.dumps(entry, default=str) + "\n"
-    path = _ensure_log_dir()
-
-    async with _write_lock:
-        # Run blocking I/O in a thread so we never stall the event loop.
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, _append_line, path, line)
+    try:
+        path = _ensure_log_dir()
+        async with _write_lock:
+            # Audit logging is best-effort and must never break action execution.
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _append_line, path, line)
+    except Exception:
+        logger.warning("audit write failed", exc_info=True)
+        return
 
     logger.info(
         "audit | %s | %s | %s | %s",

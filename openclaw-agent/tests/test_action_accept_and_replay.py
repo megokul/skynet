@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from audit import logger as audit_logger
 from connection import websocket_client
 from router import action_router
 
@@ -36,6 +37,19 @@ def test_hello_payload_contains_required_fields() -> None:
     assert isinstance(payload["allowed_roots"], list)
     assert isinstance(payload["coding_agents"], dict)
     assert "log_mirror_dir" in payload
+
+
+def test_detect_coding_agents_includes_qwen(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(websocket_client, "_cfg_s", lambda _name, default="": default)
+    monkeypatch.setattr(
+        websocket_client.shutil,
+        "which",
+        lambda binary: f"C:/bin/{binary}.cmd" if binary in {"codex", "claude", "qwen"} else None,
+    )
+
+    detected = websocket_client._detect_coding_agents()
+
+    assert detected["qwen"].endswith("qwen.cmd")
 
 
 @pytest.mark.asyncio
@@ -102,3 +116,23 @@ async def test_heartbeat_loop_sends_worker_heartbeat(monkeypatch: pytest.MonkeyP
     assert ws.sent[0]["type"] == "agent_heartbeat"
     assert ws.sent[0]["worker_id"] == websocket_client.config.WORKER_ID
     assert ws.sent[0]["coding_agents"] == {"codex": "codex"}
+
+
+@pytest.mark.asyncio
+async def test_route_survives_audit_write_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(_path: str, _line: str) -> None:
+        raise PermissionError("audit locked")
+
+    monkeypatch.setattr(audit_logger, "_append_line", _boom)
+
+    result = await action_router.route(
+        {
+            "request_id": "req-audit-fail",
+            "action": "check_coding_agents",
+            "params": {},
+            "confirmed": True,
+        }
+    )
+
+    assert result["status"] == "success"
+    assert result["action"] == "check_coding_agents"

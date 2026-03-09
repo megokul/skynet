@@ -16,6 +16,22 @@ Required updates by default:
 - `docs/AGENT_HANDOFF.md` for any code-path change in `skynet/`, `openclaw-gateway/`, `openclaw-agent/`, or `scripts/`
 - relevant docs in this pack (`ARCHITECTURE_MAP`, `IMPLEMENTATION_GUIDE`, `DEBUG_PLAYBOOK`, `KNOWN_DRIFT_AND_TEST_MATRIX`) if behavior or operational guidance changed
 
+## Configuration Source of Truth
+
+Repository policy:
+
+- Runtime defaults live in component settings files only:
+  - `skynet/settings/defaults.yaml`
+  - `openclaw-gateway/settings/settings.yaml`
+  - `openclaw-agent/settings/defaults.yaml`
+- The shared loader implementation in `skynet/settings/loader.py` is the only place allowed to:
+  - parse settings YAML
+  - read `.env` files
+  - resolve `SKYNET_*_SETTINGS_FILE`, `SKYNET_*_LOCAL_SETTINGS_FILE`, or `SKYNET_*_ENV_FILE`
+- Gateway and agent loader modules are compatibility wrappers only; they must delegate to the shared loader.
+- Deployment env files must be rendered from the shared loader. Do not duplicate defaults in workflows, scripts, or runtime test harnesses.
+- New hard-coded runtime defaults in Python, shell, Docker Compose, or GitHub Actions are policy violations unless the value is deployment wiring rather than runtime configuration.
+
 ## Testing Requirements
 
 Any code change must include one of:
@@ -28,7 +44,7 @@ Default required suites for platform changes:
 - control-plane curated tests
 - gateway test suite
 - agent test suite
-- CI guards (`check_stale_paths`, `check_control_plane_boundary`, `check_engineering_policy`)
+- CI guards (`check_stale_paths`, `check_control_plane_boundary`, `check_settings_policy`, `check_engineering_policy`)
 
 ## Tracing Requirements
 
@@ -93,5 +109,5 @@ Copy/paste for handoff entries:
 - [ ] For live `telegram_real` failures, followed `DEBUG_PLAYBOOK` loop with mitigation plan + failed/pass trace evidence.
 - [ ] For live `telegram_real` failures, commit and push succeeded before rerunning live E2E.
 - [ ] `NoTestJustification` provided if tests were not run.
-- [ ] Guard scripts executed (`check_stale_paths`, `check_control_plane_boundary`, `check_engineering_policy`).
+- [ ] Guard scripts executed (`check_stale_paths`, `check_control_plane_boundary`, `check_settings_policy`, `check_engineering_policy`).
 ```

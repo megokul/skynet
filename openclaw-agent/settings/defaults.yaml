@@ -59,6 +59,15 @@ CONFIRM_ACTIONS:
   - close_app
   - zip_project
 
+BLOCKED_ACTIONS:
+  - shell_exec
+  - format_disk
+  - modify_registry
+  - manage_users
+  - firewall_change
+  - download_exec
+  - eval_code
+
 # ---------------------------------------------------------------------------
 # Closeable Applications (for close_app action)
 # ---------------------------------------------------------------------------

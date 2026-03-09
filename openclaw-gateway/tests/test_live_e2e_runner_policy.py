@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 import e2e_live
+import test_e2e_telegram_real_live as telegram_real_live
 
 
 class _Trace:
@@ -20,6 +21,7 @@ def test_infer_infra_category_capacity() -> None:
 def test_check_env_fails_when_strict(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENCLAW_SSH_HOST", raising=False)
     monkeypatch.delenv("OPENCLAW_SSH_USER", raising=False)
+    monkeypatch.setenv("SKYNET_E2E_TRANSPORT", "ssh")
     monkeypatch.setenv("SKYNET_E2E_FAIL_ON_SKIP", "1")
 
     def _fail(trace, message, *, detail=None):
@@ -33,9 +35,23 @@ def test_check_env_fails_when_strict(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_check_env_can_skip_when_not_strict(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENCLAW_SSH_HOST", raising=False)
     monkeypatch.delenv("OPENCLAW_SSH_USER", raising=False)
+    monkeypatch.setenv("SKYNET_E2E_TRANSPORT", "ssh")
     monkeypatch.setenv("SKYNET_E2E_FAIL_ON_SKIP", "0")
 
     with pytest.raises(SystemExit) as exc:
         e2e_live._check_env(_Trace())
     assert exc.value.code == 0
 
+
+def test_terminal_coding_failure_text_detects_tracker_final_failure() -> None:
+    text = (
+        "Coding Progress [##------------------] 10%\n"
+        "Phase: Finalization - Worker unavailable before coding started\n"
+        "Status: Failed"
+    )
+    assert telegram_real_live._terminal_coding_failure_text(text) == text
+
+
+def test_terminal_coding_failure_text_detects_direct_failure_message() -> None:
+    text = "Worker not connected - cannot create project folder."
+    assert telegram_real_live._terminal_coding_failure_text(text) == text

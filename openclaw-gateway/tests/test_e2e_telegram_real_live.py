@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import re
@@ -16,10 +15,22 @@ from typing import Any, Callable
 
 import pytest
 
-try:
-    from dotenv import load_dotenv
-except Exception:  # pragma: no cover - optional dependency at runtime
-    load_dotenv = None  # type: ignore[assignment]
+REPO_ROOT = Path(__file__).resolve().parents[2]
+GATEWAY_ROOT = REPO_ROOT / "openclaw-gateway"
+import sys
+
+for candidate in (str(REPO_ROOT), str(GATEWAY_ROOT)):
+    if candidate not in sys.path:
+        sys.path.insert(0, candidate)
+
+from live_settings import bootstrap_gateway_runtime
+from live_diagnostics import (
+    LiveContainerDiagnostics,
+    container_log_error_summary,
+    make_live_trace_logger,
+)
+
+bootstrap_gateway_runtime()
 
 try:
     from telethon import TelegramClient
@@ -37,7 +48,6 @@ _CONVERSATIONAL_RESTATEMENT = (
     "It is a Windows terminal Python script that pops up \"hi\" and plays a short beep on run, "
     "using only stdlib."
 )
-_CONTAINER_LOG_ENV_PREFIX = "SKYNET_E2E_CONTAINER_LOG_"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -61,81 +71,28 @@ def _env_flag(name: str, default: bool) -> bool:
     return _env_bool(name, default)
 
 
-def _parse_csv_env(name: str, default: str) -> list[str]:
-    raw = (os.environ.get(name) or default).strip()
-    out: list[str] = []
-    for token in raw.split(","):
-        item = token.strip()
-        if item:
-            out.append(item)
-    return out
-
-
-_AUTH_BEARER_PATTERN = re.compile(r"(?i)\bauthorization\s*[:=]\s*bearer\s+\S+")
-_BARE_BEARER_PATTERN = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]+")
-_KEY_VALUE_SECRET_PATTERN = re.compile(
-    r"(?i)\b(token|password|secret|session|api[_-]?key|private[_-]?key)\b\s*[:=]\s*([^\s,;]+)"
-)
-_TELEGRAM_BOT_TOKEN_PATTERN = re.compile(r"(?i)bot\d+:[A-Za-z0-9_-]{20,}")
-
-
-def _sanitize_container_log_line(line: str, *, max_chars: int) -> str:
-    text = str(line or "").replace("\x00", "").strip()
-    if not text:
+def _terminal_coding_failure_text(text: str) -> str:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
         return ""
-    text = _AUTH_BEARER_PATTERN.sub("authorization: Bearer [REDACTED]", text)
-    text = _BARE_BEARER_PATTERN.sub("Bearer [REDACTED]", text)
-    text = _KEY_VALUE_SECRET_PATTERN.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
-    text = _TELEGRAM_BOT_TOKEN_PATTERN.sub("bot[REDACTED]", text)
-    if len(text) > max_chars:
-        text = f"{text[:max_chars]}...[truncated:{len(text) - max_chars}]"
-    return text
-
-
-def _extract_docker_log_timestamp(line: str) -> tuple[str, str]:
-    text = str(line or "")
-    if not text:
-        return "", ""
-    first, sep, rest = text.partition(" ")
-    if sep and "T" in first and (first.endswith("Z") or "+" in first or "-" in first[10:]):
-        return first, rest
-    return "", text
-
-
-def _resolve_container_log_stream_ssh() -> dict[str, Any] | None:
-    host = (
-        (os.environ.get(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_HOST") or "").strip()
-        or (os.environ.get("OPENCLAW_TUNNEL_EC2_HOST") or "").strip()
-    )
-    user = (
-        (os.environ.get(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_USER") or "").strip()
-        or (os.environ.get("OPENCLAW_TUNNEL_EC2_USER") or "").strip()
-    )
-    key_candidates = [
-        ("e2e_override", (os.environ.get(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_KEY") or "").strip()),
-        ("tunnel", (os.environ.get("OPENCLAW_TUNNEL_SSH_KEY") or "").strip()),
-        ("ssh_fallback", (os.environ.get("OPENCLAW_SSH_KEY_PATH") or "").strip()),
-    ]
-    key_options = [(source, value) for source, value in key_candidates if value]
-    key = ""
-    key_source = ""
-    for source, candidate in key_options:
-        if Path(candidate).exists():
-            key = candidate
-            key_source = source
-            break
-    if not key and key_options:
-        key_source, key = key_options[0]
-    port = _env_int(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_PORT", 22)
-    if not host or not user or not key:
-        return None
-    return {
-        "host": host,
-        "user": user,
-        "key": key,
-        "key_source": key_source or "unknown",
-        "port": max(1, port),
-    }
+    if (
+        "coding progress [" in lowered
+        and "phase: finalization" in lowered
+        and ("status: failed" in lowered or "status: stopped" in lowered)
+    ):
+        return str(text).strip()
+    for marker in (
+        "worker unavailable before coding started",
+        "worker not connected - cannot create project folder",
+        "session stopped before milestones were extracted",
+        "session stopped while executing milestone",
+        "timed out while waiting for the coding agent",
+        "coding session stopped because it appeared stuck",
+        "unexpected error occurred in the coding loop",
+    ):
+        if marker in lowered:
+            return str(text).strip()
+    return ""
 
 
 class _RuntimeTraceProgress:
@@ -166,275 +123,6 @@ class _RuntimeTraceProgress:
 
     def stale_seconds(self) -> float:
         return max(0.0, time.monotonic() - self.last_progress_monotonic)
-
-
-class _ContainerLogStreamer:
-    def __init__(
-        self,
-        *,
-        trace_fn: Callable[..., None],
-        since_utc_iso: str,
-        containers: list[str],
-        max_line_chars: int,
-        ring_lines: int,
-    ) -> None:
-        self._trace = trace_fn
-        self._since = since_utc_iso
-        self._containers = [c.strip() for c in containers if c.strip()]
-        self._max_line_chars = max(200, int(max_line_chars))
-        self._ring_lines = max(20, int(ring_lines))
-        self._ring: dict[str, deque[str]] = {
-            name: deque(maxlen=self._ring_lines) for name in self._containers
-        }
-        self._tasks: list[asyncio.Task[Any]] = []
-        self._procs: dict[str, asyncio.subprocess.Process] = {}
-        self._stop = False
-        self._seq = 0
-        self._line_count = 0
-        self._last_activity_monotonic = time.monotonic()
-        self._ssh: dict[str, Any] | None = None
-        self._errors: deque[str] = deque(maxlen=20)
-
-    def _record_error(self, *, container: str, message: str) -> None:
-        entry = f"{container}:{message}".strip()
-        if entry:
-            self._errors.append(entry)
-
-    async def start(self) -> None:
-        self._ssh = _resolve_container_log_stream_ssh()
-        if not self._ssh:
-            raise AssertionError(
-                "CONTAINER_LOG_STREAM_UNAVAILABLE: missing SSH credentials "
-                "(set SKYNET_E2E_CONTAINER_LOG_SSH_* or OPENCLAW_TUNNEL_EC2_HOST/USER/SSH_KEY)"
-            )
-        key_path = Path(str(self._ssh.get("key") or "").strip())
-        if not key_path.exists():
-            raise AssertionError(
-                "CONTAINER_LOG_STREAM_UNAVAILABLE: SSH key path does not exist "
-                f"({key_path})"
-            )
-        self._trace(
-            "container.log.stream.start",
-            status="start",
-            containers=self._containers,
-            host=self._ssh.get("host"),
-            user=self._ssh.get("user"),
-            key_source=self._ssh.get("key_source"),
-            port=int(self._ssh.get("port") or 22),
-            since=self._since,
-        )
-        for container in self._containers:
-            self._tasks.append(asyncio.create_task(self._stream_container(container)))
-
-    async def stop(self) -> None:
-        self._stop = True
-        for proc in list(self._procs.values()):
-            if proc.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.terminate()
-        if self._tasks:
-            done, pending = await asyncio.wait(self._tasks, timeout=8)
-            for task in pending:
-                task.cancel()
-            with contextlib.suppress(Exception):
-                await asyncio.gather(*pending, return_exceptions=True)
-            with contextlib.suppress(Exception):
-                await asyncio.gather(*done, return_exceptions=True)
-        self._trace(
-            "container.log.stream.stop",
-            status="ok",
-            containers=self._containers,
-            line_count=self._line_count,
-            last_activity_s=round(max(0.0, time.monotonic() - self._last_activity_monotonic), 1),
-        )
-
-    async def _stream_container(self, container: str) -> None:
-        assert self._ssh is not None
-        host = str(self._ssh.get("host") or "").strip()
-        user = str(self._ssh.get("user") or "").strip()
-        key = str(self._ssh.get("key") or "").strip()
-        port = int(self._ssh.get("port") or 22)
-        remote_cmd = f"docker logs -f --since {self._since} --timestamps {container}"
-        cmd = [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "ConnectTimeout=10",
-            "-o",
-            "ServerAliveInterval=30",
-            "-o",
-            "ServerAliveCountMax=6",
-        ]
-        if port != 22:
-            cmd.extend(["-p", str(port)])
-        if key:
-            cmd.extend(["-i", key])
-        cmd.extend([f"{user}@{host}", remote_cmd])
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except Exception as exc:
-            self._record_error(container=container, message=f"spawn:{type(exc).__name__}")
-            self._trace(
-                "container.log.stream.error",
-                status="fail",
-                container=container,
-                error=f"{type(exc).__name__}: {exc}",
-                cmd_preview=" ".join(cmd[:6]) + " ...",
-            )
-            return
-
-        max_retries = 3
-        retry_delay = 5
-        for attempt in range(max_retries + 1):
-            if attempt > 0:
-                # Reconnect after previous SSH process died
-                self._trace(
-                    "container.log.stream.reconnect",
-                    status="ok",
-                    container=container,
-                    attempt=attempt,
-                )
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                except Exception as exc:
-                    self._record_error(container=container, message=f"reconnect:{type(exc).__name__}")
-                    return
-
-            self._procs[container] = proc
-            self._trace(
-                "container.log.stream.ok",
-                status="ok",
-                container=container,
-                pid=int(proc.pid or 0),
-            )
-            stderr_task = asyncio.create_task(self._consume_stream(container, proc.stderr, stream_name="stderr"))
-            await self._consume_stream(container, proc.stdout, stream_name="stdout")
-            rc = await proc.wait()
-            with contextlib.suppress(Exception):
-                await stderr_task
-
-            if self._stop or rc == 0:
-                break  # clean exit or intentional stop
-
-            if attempt < max_retries:
-                self._trace(
-                    "container.log.stream.error",
-                    status="fail",
-                    container=container,
-                    returncode=int(rc),
-                    retrying=True,
-                )
-                await asyncio.sleep(retry_delay)
-            else:
-                self._record_error(container=container, message=f"returncode:{int(rc)}")
-                self._trace(
-                    "container.log.stream.error",
-                    status="fail",
-                    container=container,
-                    returncode=int(rc),
-                )
-
-    async def _consume_stream(self, container: str, stream, *, stream_name: str) -> None:
-        if stream is None:
-            return
-        while not self._stop:
-            line = await stream.readline()
-            if not line:
-                break
-            raw = line.decode("utf-8", errors="replace").rstrip("\r\n")
-            source_ts, payload = _extract_docker_log_timestamp(raw)
-            sanitized = _sanitize_container_log_line(payload, max_chars=self._max_line_chars)
-            if not sanitized:
-                continue
-            self._seq += 1
-            self._line_count += 1
-            self._last_activity_monotonic = time.monotonic()
-            if container in self._ring:
-                self._ring[container].append(sanitized)
-            self._trace(
-                "container.log.line",
-                status="ok",
-                container=container,
-                stream=stream_name,
-                stream_seq=self._seq,
-                source_ts=source_ts,
-                line_preview=sanitized,
-            )
-
-    def has_recent_activity(self, *, within_seconds: float) -> bool:
-        return (time.monotonic() - self._last_activity_monotonic) <= max(0.5, float(within_seconds))
-
-    def bundle(self) -> dict[str, list[str]]:
-        return {container: list(lines) for container, lines in self._ring.items()}
-
-    def has_errors(self) -> bool:
-        return bool(self._errors)
-
-    def error_tail(self) -> list[str]:
-        return list(self._errors)
-
-
-def _load_live_env_from_dotenv() -> None:
-    if load_dotenv is None:
-        return
-    repo_root = Path(__file__).resolve().parents[2]
-    candidates = []
-    explicit = os.environ.get("SKYNET_ENV_FILE", "").strip()
-    if explicit:
-        candidates.append(Path(explicit))
-    candidates.extend([repo_root / ".env", repo_root / "openclaw-gateway" / ".env"])
-    seen: set[str] = set()
-    for candidate in candidates:
-        try:
-            key = str(candidate.resolve()).lower()
-        except Exception:
-            key = str(candidate).lower()
-        if key in seen or not candidate.exists():
-            continue
-        seen.add(key)
-        load_dotenv(candidate, override=False)
-
-
-_load_live_env_from_dotenv()
-
-
-def _make_live_trace_logger(test_name: str):
-    env_path = os.environ.get("SKYNET_LIVE_TRACE_FILE", "").strip()
-    if env_path:
-        path = Path(env_path)
-    else:
-        repo_root = Path(__file__).resolve().parents[2]
-        log_dir = repo_root / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        path = log_dir / f"{test_name}-{int(time.time())}.log"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    started = time.monotonic()
-
-    def trace(event: str, **fields) -> None:
-        payload = {
-            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "elapsed_s": round(time.monotonic() - started, 1),
-            "event": event,
-        }
-        payload.update(fields)
-        line = json.dumps(payload, ensure_ascii=True, default=str)
-        print(line, flush=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-
-    trace("trace.start", test_name=test_name, trace_file=str(path))
-    return path, trace
 
 
 def _resolve_runtime_trace_file() -> Path | None:
@@ -759,16 +447,6 @@ async def _poll_tracker_message_edit(
     )
     return tracker_last_text, tracker_edit_count, True
 
-
-def _container_stream_error_summary(streamer: _ContainerLogStreamer | None) -> str:
-    if streamer is None:
-        return ""
-    tail = streamer.error_tail()
-    if not tail:
-        return ""
-    return " | ".join(tail[-5:])
-
-
 def _resolve_worker_projects_dir() -> Path:
     _home_projects = str(Path.home() / "Projects")
     candidates = [
@@ -868,7 +546,7 @@ def _validate_generated_project_artifacts(*, project_slug: str, trace_fn: Callab
 @pytest.mark.live
 @pytest.mark.asyncio
 async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
-    trace_path, trace = _make_live_trace_logger("telegram-real-live-e2e")
+    trace_path, trace = make_live_trace_logger("telegram-real-live-e2e")
     if os.environ.get("SKYNET_E2E_LIVE") != "1":
         trace("test.skip", reason="SKYNET_E2E_LIVE is not 1")
         pytest.skip("Set SKYNET_E2E_LIVE=1 to run live Telegram E2E.")
@@ -891,25 +569,23 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
     api_hash = _require_env("SKYNET_E2E_TELEGRAM_API_HASH")
     session = _require_env("SKYNET_E2E_TELEGRAM_SESSION")
     bot_username = _require_env("SKYNET_E2E_TELEGRAM_BOT_USERNAME")
-    stream_enabled = _env_bool(f"{_CONTAINER_LOG_ENV_PREFIX}STREAM_ENABLED", True)
-    stream_required = _env_bool(f"{_CONTAINER_LOG_ENV_PREFIX}REQUIRE_STREAM", True)
-    stream_sources = _parse_csv_env(
-        f"{_CONTAINER_LOG_ENV_PREFIX}SOURCES",
-        "openclaw-gateway,skynet-api",
-    )
-    stream_max_line_chars = _env_int(f"{_CONTAINER_LOG_ENV_PREFIX}MAX_LINE_CHARS", 1200)
-    stream_ring_lines = _env_int(f"{_CONTAINER_LOG_ENV_PREFIX}RING_LINES", 300)
+    container_diagnostics = LiveContainerDiagnostics(trace_fn=trace)
+    stream_config = container_diagnostics.config
+    stream_required = bool(stream_config["require_stream"])
     runtime_stale_seconds = max(30, _env_int("SKYNET_E2E_RUNTIME_TRACE_STALE_SECONDS", 90))
     require_websocket_primary = _env_flag("SKYNET_E2E_REQUIRE_WEBSOCKET_PRIMARY", True)
     allow_ssh_fallback = _env_flag("SKYNET_E2E_ALLOW_SSH_FALLBACK", True)
     runtime_progress = _RuntimeTraceProgress()
+    bundle_status = "ok"
+    bundle_reason = "test_success"
+    bundle_emitted = False
     trace(
         "test.start",
         bot_username=bot_username,
         flow="hi_to_project_completion",
-        container_stream_enabled=stream_enabled,
-        container_stream_required=stream_required,
-        container_stream_sources=stream_sources,
+        container_stream_enabled=stream_config["stream_enabled"],
+        container_stream_required=stream_config["require_stream"],
+        container_stream_sources=stream_config["sources"],
         runtime_trace_stale_seconds=runtime_stale_seconds,
     )
     runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="test.start", tail_lines=80))
@@ -919,315 +595,373 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
     trace("test.input", project_slug=project_slug, requirement_preview=requirement[:220])
     trace("test.requirement.payload", payload=requirement)
 
-    async with TelegramClient(StringSession(session), api_id, api_hash) as client:
-        container_streamer: _ContainerLogStreamer | None = None
-        trace("telegram.client.connected")
-        bot = await client.get_entity(bot_username)
-        history = await client.get_messages(bot, limit=1)
-        last_id = int(history[0].id) if history else 0
-        trace("telegram.history", last_message_id=last_id)
-        if stream_enabled:
-            container_streamer = _ContainerLogStreamer(
-                trace_fn=trace,
-                since_utc_iso=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                containers=stream_sources,
-                max_line_chars=stream_max_line_chars,
-                ring_lines=stream_ring_lines,
-            )
+    try:
+        async with TelegramClient(StringSession(session), api_id, api_hash) as client:
+            trace("telegram.client.connected")
+            bot = await client.get_entity(bot_username)
+            history = await client.get_messages(bot, limit=1)
+            last_id = int(history[0].id) if history else 0
+            trace("telegram.history", last_message_id=last_id)
             try:
-                await container_streamer.start()
-                await asyncio.sleep(1.0)
-                if stream_required and container_streamer.has_errors():
-                    summary = _container_stream_error_summary(container_streamer)
-                    trace(
-                        "container.log.stream.error",
-                        status="fail",
-                        error=f"CONTAINER_LOG_STREAM_UNAVAILABLE: {summary}",
-                    )
-                    raise AssertionError(
-                        f"CONTAINER_LOG_STREAM_UNAVAILABLE: {summary}"
-                    )
-            except Exception as exc:
-                trace(
-                    "container.log.stream.error",
-                    status="fail",
-                    error=f"{type(exc).__name__}: {exc}",
-                )
-                if stream_required:
-                    raise
-        else:
-            trace("container.log.stream.disabled", status="skip")
-        trace("e2e.step.start", step=1, name="send_hi")
-        await client.send_message(bot, "hi")
-        msg = await _wait_for_bot_message(
-            client,
-            bot,
-            last_id,
-            timeout_s=120,
-            trace_fn=trace,
-            step="menu_after_hi",
-            predicate=lambda text, btns: any("start a project" in b.lower() for b in btns),
-        )
-        last_id = int(msg.id)
-        await _click_button_contains(msg, "Start a Project", trace_fn=trace, step="click_start_project")
-        runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="after.start_project", tail_lines=60))
-        trace("e2e.step.end", step=1, name="send_hi", status="ok")
-
-        trace("e2e.step.start", step=2, name="project_name")
-        msg = await _wait_for_bot_message(
-            client,
-            bot,
-            last_id,
-            timeout_s=120,
-            trace_fn=trace,
-            step="await_project_name_prompt",
-            predicate=lambda text, _btns: "what should we call this project" in text.lower(),
-        )
-        last_id = int(msg.id)
-        await client.send_message(bot, project_slug)
-        trace("telegram.message.sent", step="project_name_sent", text=project_slug)
-        trace("e2e.step.end", step=2, name="project_name", status="ok")
-
-        trace("e2e.step.start", step=3, name="project_type")
-        msg = await _wait_for_bot_message(
-            client,
-            bot,
-            last_id,
-            timeout_s=120,
-            trace_fn=trace,
-            step="await_project_type_prompt",
-            predicate=lambda _text, btns: any("python app" in b.lower() for b in btns) or any("other" in b.lower() for b in btns),
-        )
-        last_id = int(msg.id)
-        if any("python app" in b.lower() for b in _button_texts(msg)):
-            await _click_button_contains(msg, "Python App", trace_fn=trace, step="click_python_app")
-        else:
-            await _click_button_contains(msg, "Other", trace_fn=trace, step="click_other_type")
-        trace("e2e.step.end", step=3, name="project_type", status="ok")
-
-        trace("e2e.step.start", step=4, name="requirements")
-        msg = await _wait_for_bot_message(
-            client,
-            bot,
-            last_id,
-            timeout_s=120,
-            trace_fn=trace,
-            step="await_requirements_prompt",
-            predicate=lambda text, btns: (
-                "what are you building" in text.lower()
-                or "what does this app do" in text.lower()
-                or any("generate plan" in b.lower() for b in btns)
-            ),
-        )
-        last_id = int(msg.id)
-        await client.send_message(bot, requirement)
-        trace("telegram.message.sent", step="requirements_sent", text_preview=requirement[:220])
-        runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="after.requirements_sent", tail_lines=80))
-        trace("e2e.step.end", step=4, name="requirements", status="ok")
-
-        trace("e2e.step.start", step=5, name="generate_plan")
-        plan_msg = None
-        max_rounds = 3
-        for round_idx in range(1, max_rounds + 1):
+                await container_diagnostics.start()
+            except Exception:
+                bundle_status = "fail"
+                bundle_reason = "container_stream_unavailable"
+                raise
+            trace("e2e.step.start", step=1, name="send_hi")
+            await client.send_message(bot, "hi")
             msg = await _wait_for_bot_message(
                 client,
                 bot,
                 last_id,
-                timeout_s=240,
+                timeout_s=120,
                 trace_fn=trace,
-                step=f"await_plan_flow_round_{round_idx}",
-                predicate=lambda text, btns: bool(text.strip()) or bool(btns),
+                step="menu_after_hi",
+                predicate=lambda text, btns: any("start a project" in b.lower() for b in btns),
             )
             last_id = int(msg.id)
-            text = str(getattr(msg, "message", "") or "")
-            lowered = text.lower()
-            btns = _button_texts(msg)
+            await _click_button_contains(msg, "Start a Project", trace_fn=trace, step="click_start_project")
+            runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="after.start_project", tail_lines=60))
+            trace("e2e.step.end", step=1, name="send_hi", status="ok")
 
-            if any("approve" in b.lower() for b in btns):
-                plan_msg = msg
-                trace(
-                    "planner.approve.ready",
-                    round=round_idx,
-                    message_id=last_id,
-                    text_preview=text[:220],
-                )
-                break
-
-            if any("generate plan" in b.lower() for b in btns):
-                await _click_button_contains(
-                    msg,
-                    "Generate Plan",
-                    trace_fn=trace,
-                    step=f"click_generate_plan_round_{round_idx}",
-                )
-                continue
-
-            needs_clarification = any(
-                marker in lowered
-                for marker in (
-                    "what are you building",
-                    "describe",
-                    "clarify",
-                    "confirm",
-                    "2-3 sentences",
-                )
+            trace("e2e.step.start", step=2, name="project_name")
+            msg = await _wait_for_bot_message(
+                client,
+                bot,
+                last_id,
+                timeout_s=120,
+                trace_fn=trace,
+                step="await_project_name_prompt",
+                predicate=lambda text, _btns: "what should we call this project" in text.lower(),
             )
-            if needs_clarification:
-                trace(
-                    "planner.clarification.detected",
-                    round=round_idx,
-                    message_id=last_id,
-                    text_preview=text[:220],
-                )
-                await client.send_message(bot, _CONVERSATIONAL_RESTATEMENT)
-                trace(
-                    "planner.requirement.resubmitted",
-                    round=round_idx,
-                    text_preview=_CONVERSATIONAL_RESTATEMENT[:220],
-                )
-                continue
+            last_id = int(msg.id)
+            await client.send_message(bot, project_slug)
+            trace("telegram.message.sent", step="project_name_sent", text=project_slug)
+            trace("e2e.step.end", step=2, name="project_name", status="ok")
 
-        if plan_msg is None:
-            trace(
-                "e2e.step.fail",
-                step=5,
-                name="generate_plan",
-                status="fail",
-                error_message="Planner clarification loop exhausted before plan approval",
+            trace("e2e.step.start", step=3, name="project_type")
+            msg = await _wait_for_bot_message(
+                client,
+                bot,
+                last_id,
+                timeout_s=120,
+                trace_fn=trace,
+                step="await_project_type_prompt",
+                predicate=lambda _text, btns: any("python app" in b.lower() for b in btns) or any("other" in b.lower() for b in btns),
             )
-            raise AssertionError("Planner clarification loop exhausted before plan approval")
-        trace("e2e.step.end", step=5, name="generate_plan", status="ok")
+            last_id = int(msg.id)
+            if any("python app" in b.lower() for b in _button_texts(msg)):
+                await _click_button_contains(msg, "Python App", trace_fn=trace, step="click_python_app")
+            else:
+                await _click_button_contains(msg, "Other", trace_fn=trace, step="click_other_type")
+            trace("e2e.step.end", step=3, name="project_type", status="ok")
 
-        trace("e2e.step.start", step=6, name="approve_plan")
-        msg = plan_msg
-        await _click_button_contains(msg, "Approve", trace_fn=trace, step="click_plan_approve")
-        runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="after.plan_approved", tail_lines=100))
-        trace("e2e.step.end", step=6, name="approve_plan", status="ok")
+            trace("e2e.step.start", step=4, name="requirements")
+            msg = await _wait_for_bot_message(
+                client,
+                bot,
+                last_id,
+                timeout_s=120,
+                trace_fn=trace,
+                step="await_requirements_prompt",
+                predicate=lambda text, btns: (
+                    "what are you building" in text.lower()
+                    or "what does this app do" in text.lower()
+                    or any("generate plan" in b.lower() for b in btns)
+                ),
+            )
+            last_id = int(msg.id)
+            await client.send_message(bot, requirement)
+            trace("telegram.message.sent", step="requirements_sent", text_preview=requirement[:220])
+            runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="after.requirements_sent", tail_lines=80))
+            trace("e2e.step.end", step=4, name="requirements", status="ok")
 
-        trace("e2e.step.start", step=7, name="start_coding")
-        msg = await _wait_for_bot_message(
-            client,
-            bot,
-            last_id,
-            timeout_s=180,
-            trace_fn=trace,
-            step="await_start_coding_button",
-            predicate=lambda _text, btns: any("start coding" in b.lower() for b in btns),
-        )
-        last_id = int(msg.id)
-        await _click_button_contains(msg, "Start Coding", trace_fn=trace, step="click_start_coding")
-        runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="after.start_coding_clicked", tail_lines=120))
-        trace("e2e.step.end", step=7, name="start_coding", status="ok")
-
-        trace("e2e.step.start", step=8, name="skip_github_repo_creation")
-        msg = await _wait_for_bot_message(
-            client,
-            bot,
-            last_id,
-            timeout_s=180,
-            trace_fn=trace,
-            step="await_skip_github_button",
-            predicate=lambda _text, btns: any("skip" in b.lower() and "start coding" in b.lower() for b in btns),
-        )
-        last_id = int(msg.id)
-        await _click_button_contains(msg, "Skip", trace_fn=trace, step="click_skip_github")
-        runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="after.skip_github", tail_lines=120))
-        trace("e2e.step.end", step=8, name="skip_github_repo_creation", status="ok")
-
-        trace("e2e.step.start", step=9, name="coding_and_run")
-        saw_run_button = False
-        saw_finish_summary = False
-        saw_no_github_push = True
-        saw_run_success = False
-        saw_director_phase = False
-        saw_architect_phase = False
-        saw_worker_assignment_marker = False
-        complete_count: int | None = None
-        failed_count: int | None = None
-        tracker_message_id: int | None = None
-        tracker_last_text = ""
-        tracker_edit_count = 0
-        preflight_fail_markers = (
-            "coding preflight failed",
-            "no control-plane coding agents available",
-            "no coding agents available for chain",
-            "codex_write_blocked",
-            "generation_failed: codex",
-        )
-
-        for idx in range(80):
-            try:
+            trace("e2e.step.start", step=5, name="generate_plan")
+            plan_msg = None
+            max_rounds = 3
+            for round_idx in range(1, max_rounds + 1):
                 msg = await _wait_for_bot_message(
                     client,
                     bot,
                     last_id,
-                    timeout_s=90,
+                    timeout_s=240,
                     trace_fn=trace,
-                    step=f"coding_poll_{idx + 1}",
+                    step=f"await_plan_flow_round_{round_idx}",
                     predicate=lambda text, btns: bool(text.strip()) or bool(btns),
                 )
-            except AssertionError:
-                tracker_last_text, tracker_edit_count, tracker_progress = await _poll_tracker_message_edit(
-                    client=client,
-                    bot=bot,
-                    tracker_message_id=tracker_message_id,
-                    tracker_last_text=tracker_last_text,
-                    tracker_edit_count=tracker_edit_count,
-                    trace_fn=trace,
-                )
-                if stream_required and container_streamer is not None and container_streamer.has_errors():
-                    summary = _container_stream_error_summary(container_streamer)
+                last_id = int(msg.id)
+                text = str(getattr(msg, "message", "") or "")
+                lowered = text.lower()
+                btns = _button_texts(msg)
+
+                if any("approve" in b.lower() for b in btns):
+                    plan_msg = msg
                     trace(
-                        "container.log.bundle",
-                        status="fail",
-                        reason="container_stream_unhealthy",
-                        stream_errors=summary,
-                        tails=container_streamer.bundle(),
+                        "planner.approve.ready",
+                        round=round_idx,
+                        message_id=last_id,
+                        text_preview=text[:220],
                     )
-                    raise AssertionError(f"CONTAINER_LOG_STREAM_UNAVAILABLE: {summary}")
-                if tracker_progress:
-                    lowered_tracker = tracker_last_text.lower()
-                    if "phase: director" in lowered_tracker:
-                        saw_director_phase = True
-                    if "phase: architect" in lowered_tracker:
-                        saw_architect_phase = True
-                    if "worker=" in lowered_tracker or "worker:" in lowered_tracker:
-                        saw_worker_assignment_marker = True
-                timeout_snapshot = _emit_runtime_trace_snapshot(
-                    trace,
-                    checkpoint=f"coding_poll_timeout_{idx + 1}",
-                    tail_lines=140,
-                )
-                trace_progress = runtime_progress.observe(timeout_snapshot)
-                container_progress = bool(
-                    container_streamer
-                    and container_streamer.has_recent_activity(within_seconds=max(20, runtime_stale_seconds / 2.0))
-                )
-                stale_s = runtime_progress.stale_seconds()
-                if tracker_progress or trace_progress or container_progress:
-                    trace(
-                        "coding.poll.recovered",
-                        iteration=idx + 1,
-                        tracker_progress=tracker_progress,
-                        trace_progress=trace_progress,
-                        container_progress=container_progress,
-                        runtime_trace_stale_s=round(stale_s, 1),
+                    break
+
+                if any("generate plan" in b.lower() for b in btns):
+                    await _click_button_contains(
+                        msg,
+                        "Generate Plan",
+                        trace_fn=trace,
+                        step=f"click_generate_plan_round_{round_idx}",
                     )
                     continue
-                last_id = await _request_trace_deep_snapshot(
-                    client=client,
-                    bot=bot,
-                    after_id=last_id,
-                    trace_fn=trace,
+
+                needs_clarification = any(
+                    marker in lowered
+                    for marker in (
+                        "what are you building",
+                        "describe",
+                        "clarify",
+                        "confirm",
+                        "2-3 sentences",
+                    )
                 )
-                if stale_s >= runtime_stale_seconds:
-                    if container_streamer is not None:
-                        trace(
-                            "container.log.bundle",
-                            status="fail",
-                            reason="trace_stale_timeout",
-                            tails=container_streamer.bundle(),
+                if needs_clarification:
+                    trace(
+                        "planner.clarification.detected",
+                        round=round_idx,
+                        message_id=last_id,
+                        text_preview=text[:220],
+                    )
+                    await client.send_message(bot, _CONVERSATIONAL_RESTATEMENT)
+                    trace(
+                        "planner.requirement.resubmitted",
+                        round=round_idx,
+                        text_preview=_CONVERSATIONAL_RESTATEMENT[:220],
+                    )
+                    continue
+
+            if plan_msg is None:
+                bundle_status = "fail"
+                bundle_reason = "planner_clarification_exhausted"
+                trace(
+                    "e2e.step.fail",
+                    step=5,
+                    name="generate_plan",
+                    status="fail",
+                    error_message="Planner clarification loop exhausted before plan approval",
+                )
+                raise AssertionError("Planner clarification loop exhausted before plan approval")
+            trace("e2e.step.end", step=5, name="generate_plan", status="ok")
+
+            trace("e2e.step.start", step=6, name="approve_plan")
+            msg = plan_msg
+            await _click_button_contains(msg, "Approve", trace_fn=trace, step="click_plan_approve")
+            runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="after.plan_approved", tail_lines=100))
+            trace("e2e.step.end", step=6, name="approve_plan", status="ok")
+
+            trace("e2e.step.start", step=7, name="start_coding")
+            msg = await _wait_for_bot_message(
+                client,
+                bot,
+                last_id,
+                timeout_s=180,
+                trace_fn=trace,
+                step="await_start_coding_button",
+                predicate=lambda _text, btns: any("start coding" in b.lower() for b in btns),
+            )
+            last_id = int(msg.id)
+            await _click_button_contains(msg, "Start Coding", trace_fn=trace, step="click_start_coding")
+            runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="after.start_coding_clicked", tail_lines=120))
+            trace("e2e.step.end", step=7, name="start_coding", status="ok")
+
+            trace("e2e.step.start", step=8, name="skip_github_repo_creation")
+            msg = await _wait_for_bot_message(
+                client,
+                bot,
+                last_id,
+                timeout_s=180,
+                trace_fn=trace,
+                step="await_skip_github_button",
+                predicate=lambda _text, btns: any("skip" in b.lower() and "start coding" in b.lower() for b in btns),
+            )
+            last_id = int(msg.id)
+            await _click_button_contains(msg, "Skip", trace_fn=trace, step="click_skip_github")
+            runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="after.skip_github", tail_lines=120))
+            trace("e2e.step.end", step=8, name="skip_github_repo_creation", status="ok")
+
+            trace("e2e.step.start", step=9, name="coding_and_run")
+            saw_run_button = False
+            saw_finish_summary = False
+            saw_no_github_push = True
+            saw_run_success = False
+            saw_director_phase = False
+            saw_architect_phase = False
+            saw_worker_assignment_marker = False
+            complete_count: int | None = None
+            failed_count: int | None = None
+            tracker_message_id: int | None = None
+            tracker_last_text = ""
+            tracker_edit_count = 0
+            preflight_fail_markers = (
+                "coding preflight failed",
+                "no control-plane coding agents available",
+                "no coding agents available for chain",
+                "codex_write_blocked",
+                "generation_failed: codex",
+            )
+
+            def _raise_terminal_coding_failure(failure_text: str, *, reason: str) -> None:
+                nonlocal bundle_status, bundle_reason
+                bundle_status = "fail"
+                bundle_reason = reason
+                runtime_progress.observe(
+                    _emit_runtime_trace_snapshot(
+                        trace,
+                        checkpoint=f"coding.{reason}",
+                        tail_lines=220,
+                    )
+                )
+                trace(
+                    "e2e.step.fail",
+                    step=9,
+                    name="coding_and_run",
+                    status="fail",
+                    error_message=f"Terminal coding failure: {failure_text[:260]}",
+                )
+                raise AssertionError(
+                    f"Live Telegram E2E reached terminal coding failure: {failure_text[:260]}"
+                )
+
+            for idx in range(80):
+                try:
+                    msg = await _wait_for_bot_message(
+                        client,
+                        bot,
+                        last_id,
+                        timeout_s=90,
+                        trace_fn=trace,
+                        step=f"coding_poll_{idx + 1}",
+                        predicate=lambda text, btns: bool(text.strip()) or bool(btns),
+                    )
+                except AssertionError:
+                    tracker_last_text, tracker_edit_count, tracker_progress = await _poll_tracker_message_edit(
+                        client=client,
+                        bot=bot,
+                        tracker_message_id=tracker_message_id,
+                        tracker_last_text=tracker_last_text,
+                        tracker_edit_count=tracker_edit_count,
+                        trace_fn=trace,
+                    )
+                    if stream_required and container_diagnostics.has_errors():
+                        summary = container_log_error_summary(container_diagnostics)
+                        bundle_status = "fail"
+                        bundle_reason = "container_stream_unhealthy"
+                        raise AssertionError(f"CONTAINER_LOG_STREAM_UNAVAILABLE: {summary}")
+                    if tracker_progress:
+                        lowered_tracker = tracker_last_text.lower()
+                        if "phase: director" in lowered_tracker:
+                            saw_director_phase = True
+                        if "phase: architect" in lowered_tracker:
+                            saw_architect_phase = True
+                        if "worker=" in lowered_tracker or "worker:" in lowered_tracker:
+                            saw_worker_assignment_marker = True
+                        terminal_tracker_failure = _terminal_coding_failure_text(tracker_last_text)
+                        if terminal_tracker_failure:
+                            _raise_terminal_coding_failure(
+                                terminal_tracker_failure,
+                                reason="tracker_terminal_failure",
+                            )
+                    timeout_snapshot = _emit_runtime_trace_snapshot(
+                        trace,
+                        checkpoint=f"coding_poll_timeout_{idx + 1}",
+                        tail_lines=140,
+                    )
+                    trace_progress = runtime_progress.observe(timeout_snapshot)
+                    container_progress = bool(
+                        container_diagnostics.has_recent_activity(
+                            within_seconds=max(20, runtime_stale_seconds / 2.0)
                         )
+                    )
+                    stale_s = runtime_progress.stale_seconds()
+                    if tracker_progress or trace_progress or container_progress:
+                        trace(
+                            "coding.poll.recovered",
+                            iteration=idx + 1,
+                            tracker_progress=tracker_progress,
+                            trace_progress=trace_progress,
+                            container_progress=container_progress,
+                            runtime_trace_stale_s=round(stale_s, 1),
+                        )
+                        continue
+                    last_id = await _request_trace_deep_snapshot(
+                        client=client,
+                        bot=bot,
+                        after_id=last_id,
+                        trace_fn=trace,
+                    )
+                    if stale_s >= runtime_stale_seconds:
+                        bundle_status = "fail"
+                        bundle_reason = "trace_stale_timeout"
+                        trace(
+                            "e2e.step.fail",
+                            step=9,
+                            name="coding_and_run",
+                            status="fail",
+                            error_message=(
+                                f"TRACE_STALE: runtime trace idle {round(stale_s, 1)}s "
+                                f"(threshold={runtime_stale_seconds}s)"
+                            ),
+                        )
+                        raise AssertionError(
+                            f"TRACE_STALE: runtime trace idle {round(stale_s, 1)}s "
+                            f"(threshold={runtime_stale_seconds}s)"
+                        )
+                    bundle_status = "fail"
+                    bundle_reason = "coding_poll_timeout"
+                    raise AssertionError("Coding poll timed out without progress signals")
+                last_id = int(msg.id)
+                text = str(getattr(msg, "message", "") or "")
+                btns = _button_texts(msg)
+                trace(
+                    "telegram.message.received",
+                    step="coding_loop",
+                    iteration=idx + 1,
+                    message_id=last_id,
+                    text_preview=text[:220],
+                    buttons=btns,
+                )
+                if stream_required and container_diagnostics.has_errors():
+                    summary = container_log_error_summary(container_diagnostics)
+                    bundle_status = "fail"
+                    bundle_reason = "container_stream_unhealthy"
+                    raise AssertionError(f"CONTAINER_LOG_STREAM_UNAVAILABLE: {summary}")
+                if idx == 0 or (idx + 1) % 5 == 0:
+                    runtime_progress.observe(
+                        _emit_runtime_trace_snapshot(
+                            trace,
+                            checkpoint=f"coding_poll_{idx + 1}",
+                            tail_lines=80,
+                        )
+                    )
+                stale_s = runtime_progress.stale_seconds()
+                if stale_s >= runtime_stale_seconds:
+                    stale_snapshot = _emit_runtime_trace_snapshot(
+                        trace,
+                        checkpoint=f"coding.trace_stale.{idx + 1}",
+                        tail_lines=180,
+                    )
+                    stale_progress = runtime_progress.observe(stale_snapshot)
+                    stale_s = runtime_progress.stale_seconds()
+                    if stale_progress or stale_s < runtime_stale_seconds:
+                        trace(
+                            "coding.poll.recovered",
+                            iteration=idx + 1,
+                            tracker_progress=tracker_progress,
+                            trace_progress=stale_progress,
+                            container_progress=container_diagnostics.has_recent_activity(within_seconds=60),
+                            runtime_trace_stale_s=round(stale_s, 1),
+                        )
+                        continue
+                    bundle_status = "fail"
+                    bundle_reason = "runtime_trace_stale_during_coding"
                     trace(
                         "e2e.step.fail",
                         step=9,
@@ -1242,285 +976,240 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                         f"TRACE_STALE: runtime trace idle {round(stale_s, 1)}s "
                         f"(threshold={runtime_stale_seconds}s)"
                     )
-                if container_streamer is not None:
-                    trace(
-                        "container.log.bundle",
-                        status="fail",
-                        reason="coding_poll_timeout",
-                        tails=container_streamer.bundle(),
-                    )
-                raise AssertionError("Coding poll timed out without progress signals")
-            last_id = int(msg.id)
-            text = str(getattr(msg, "message", "") or "")
-            btns = _button_texts(msg)
-            trace(
-                "telegram.message.received",
-                step="coding_loop",
-                iteration=idx + 1,
-                message_id=last_id,
-                text_preview=text[:220],
-                buttons=btns,
-            )
-            if stream_required and container_streamer is not None and container_streamer.has_errors():
-                summary = _container_stream_error_summary(container_streamer)
-                trace(
-                    "container.log.bundle",
-                    status="fail",
-                    reason="container_stream_unhealthy",
-                    stream_errors=summary,
-                    tails=container_streamer.bundle(),
-                )
-                raise AssertionError(f"CONTAINER_LOG_STREAM_UNAVAILABLE: {summary}")
-            if idx == 0 or (idx + 1) % 5 == 0:
-                runtime_progress.observe(
-                    _emit_runtime_trace_snapshot(
-                        trace,
-                        checkpoint=f"coding_poll_{idx + 1}",
-                        tail_lines=80,
-                    )
-                )
-            stale_s = runtime_progress.stale_seconds()
-            if stale_s >= runtime_stale_seconds:
-                stale_snapshot = _emit_runtime_trace_snapshot(
-                    trace,
-                    checkpoint=f"coding.trace_stale.{idx + 1}",
-                    tail_lines=180,
-                )
-                stale_progress = runtime_progress.observe(stale_snapshot)
-                stale_s = runtime_progress.stale_seconds()
-                if stale_progress or stale_s < runtime_stale_seconds:
-                    trace(
-                        "coding.poll.recovered",
-                        iteration=idx + 1,
-                        tracker_progress=tracker_progress,
-                        trace_progress=stale_progress,
-                        container_progress=bool(
-                            container_streamer and container_streamer.has_recent_activity(within_seconds=60)
-                        ),
-                        runtime_trace_stale_s=round(stale_s, 1),
-                    )
-                    continue
-                if container_streamer is not None:
-                    trace(
-                        "container.log.bundle",
-                        status="fail",
-                        reason="runtime_trace_stale_during_coding",
-                        tails=container_streamer.bundle(),
-                    )
-                trace(
-                    "e2e.step.fail",
-                    step=9,
-                    name="coding_and_run",
-                    status="fail",
-                    error_message=(
-                        f"TRACE_STALE: runtime trace idle {round(stale_s, 1)}s "
-                        f"(threshold={runtime_stale_seconds}s)"
-                    ),
-                )
-                raise AssertionError(
-                    f"TRACE_STALE: runtime trace idle {round(stale_s, 1)}s "
-                    f"(threshold={runtime_stale_seconds}s)"
-                )
-            lowered = text.lower()
-            if "phase: director" in lowered:
-                saw_director_phase = True
-            if "phase: architect" in lowered:
-                saw_architect_phase = True
-            if "worker=" in lowered or "worker:" in lowered:
-                saw_worker_assignment_marker = True
-
-            if any(marker in lowered for marker in preflight_fail_markers):
-                trace(
-                    "coding.preflight.failure",
-                    message_id=last_id,
-                    text_preview=text[:320],
-                )
-                runtime_progress.observe(
-                    _emit_runtime_trace_snapshot(trace, checkpoint="coding.preflight.failure", tail_lines=200)
-                )
-                trace(
-                    "e2e.step.fail",
-                    step=9,
-                    name="coding_and_run",
-                    status="fail",
-                    error_message=f"Terminal preflight failure: {text[:260]}",
-                )
-                raise AssertionError(
-                    f"Live Telegram E2E encountered terminal preflight failure: {text[:260]}"
-                )
-
-            if "session failed" in lowered and "complete=" in lowered:
-                runtime_progress.observe(
-                    _emit_runtime_trace_snapshot(trace, checkpoint="coding.session.failed", tail_lines=220)
-                )
-                trace(
-                    "e2e.step.fail",
-                    step=9,
-                    name="coding_and_run",
-                    status="fail",
-                    error_message=f"Session summary indicates failure: {text[:260]}",
-                )
-                raise AssertionError(
-                    f"Live Telegram E2E reached failed session summary: {text[:260]}"
-                )
-
-            if "coding progress [" in lowered:
-                if tracker_message_id is None:
-                    tracker_message_id = int(getattr(msg, "id", 0))
-                    tracker_last_text = text
-                    trace(
-                        "tracker.message.detected",
-                        message_id=tracker_message_id,
-                        text_preview=text[:220],
-                    )
-                elif tracker_message_id == int(getattr(msg, "id", 0)) and text != tracker_last_text:
-                    tracker_edit_count += 1
-                    tracker_last_text = text
-                    trace(
-                        "tracker.message.edited",
-                        message_id=tracker_message_id,
-                        edits=tracker_edit_count,
-                        text_preview=text[:220],
-                    )
-
-            tracker_last_text, tracker_edit_count, tracker_progress = await _poll_tracker_message_edit(
-                client=client,
-                bot=bot,
-                tracker_message_id=tracker_message_id,
-                tracker_last_text=tracker_last_text,
-                tracker_edit_count=tracker_edit_count,
-                trace_fn=trace,
-            )
-            if tracker_progress:
-                lowered_tracker = tracker_last_text.lower()
-                if "phase: director" in lowered_tracker:
+                lowered = text.lower()
+                if "phase: director" in lowered:
                     saw_director_phase = True
-                if "phase: architect" in lowered_tracker:
+                if "phase: architect" in lowered:
                     saw_architect_phase = True
-                if "worker=" in lowered_tracker or "worker:" in lowered_tracker:
+                if "worker=" in lowered or "worker:" in lowered:
                     saw_worker_assignment_marker = True
-
-            if "github repo created and pushed" in lowered:
-                saw_no_github_push = False
-                break
-
-            if any("run it" in b.lower() for b in btns):
-                await _click_button_contains(msg, "Run It", trace_fn=trace, step="click_milestone_run_it")
-                runtime_progress.observe(
-                    _emit_runtime_trace_snapshot(
-                        trace,
-                        checkpoint=f"milestone.run_it.clicked.{idx + 1}",
-                        tail_lines=120,
+                terminal_failure_text = _terminal_coding_failure_text(text)
+                if terminal_failure_text:
+                    _raise_terminal_coding_failure(
+                        terminal_failure_text,
+                        reason="message_terminal_failure",
                     )
-                )
-                continue
 
-            if "session finished" in lowered or "complete=" in lowered:
-                saw_finish_summary = True
-                if "complete=" in lowered:
-                    try:
-                        complete_count = int(lowered.split("complete=", 1)[1].split(",", 1)[0].strip())
-                    except Exception:
-                        complete_count = complete_count
-                if "failed=" in lowered:
-                    try:
-                        failed_count = int(lowered.split("failed=", 1)[1].split(",", 1)[0].strip())
-                    except Exception:
-                        failed_count = failed_count
-                if complete_count is not None and complete_count < 1:
+                if any(marker in lowered for marker in preflight_fail_markers):
+                    bundle_status = "fail"
+                    bundle_reason = "coding_preflight_failure"
                     trace(
-                        "coding.session.no_completion",
-                        complete_count=complete_count,
-                        failed_count=failed_count,
-                        text_preview=text[:220],
+                        "coding.preflight.failure",
+                        message_id=last_id,
+                        text_preview=text[:320],
                     )
+                    runtime_progress.observe(
+                        _emit_runtime_trace_snapshot(trace, checkpoint="coding.preflight.failure", tail_lines=200)
+                    )
+                    trace(
+                        "e2e.step.fail",
+                        step=9,
+                        name="coding_and_run",
+                        status="fail",
+                        error_message=f"Terminal preflight failure: {text[:260]}",
+                    )
+                    raise AssertionError(
+                        f"Live Telegram E2E encountered terminal preflight failure: {text[:260]}"
+                    )
+
+                if "session failed" in lowered and "complete=" in lowered:
+                    bundle_status = "fail"
+                    bundle_reason = "coding_session_failed"
+                    runtime_progress.observe(
+                        _emit_runtime_trace_snapshot(trace, checkpoint="coding.session.failed", tail_lines=220)
+                    )
+                    trace(
+                        "e2e.step.fail",
+                        step=9,
+                        name="coding_and_run",
+                        status="fail",
+                        error_message=f"Session summary indicates failure: {text[:260]}",
+                    )
+                    raise AssertionError(
+                        f"Live Telegram E2E reached failed session summary: {text[:260]}"
+                    )
+
+                if "coding progress [" in lowered:
+                    if tracker_message_id is None:
+                        tracker_message_id = int(getattr(msg, "id", 0))
+                        tracker_last_text = text
+                        trace(
+                            "tracker.message.detected",
+                            message_id=tracker_message_id,
+                            text_preview=text[:220],
+                        )
+                    elif tracker_message_id == int(getattr(msg, "id", 0)) and text != tracker_last_text:
+                        tracker_edit_count += 1
+                        tracker_last_text = text
+                        trace(
+                            "tracker.message.edited",
+                            message_id=tracker_message_id,
+                            edits=tracker_edit_count,
+                            text_preview=text[:220],
+                        )
+
+                tracker_last_text, tracker_edit_count, tracker_progress = await _poll_tracker_message_edit(
+                    client=client,
+                    bot=bot,
+                    tracker_message_id=tracker_message_id,
+                    tracker_last_text=tracker_last_text,
+                    tracker_edit_count=tracker_edit_count,
+                    trace_fn=trace,
+                )
+                if tracker_progress:
+                    lowered_tracker = tracker_last_text.lower()
+                    if "phase: director" in lowered_tracker:
+                        saw_director_phase = True
+                    if "phase: architect" in lowered_tracker:
+                        saw_architect_phase = True
+                    if "worker=" in lowered_tracker or "worker:" in lowered_tracker:
+                        saw_worker_assignment_marker = True
+                    terminal_tracker_failure = _terminal_coding_failure_text(tracker_last_text)
+                    if terminal_tracker_failure:
+                        _raise_terminal_coding_failure(
+                            terminal_tracker_failure,
+                            reason="tracker_terminal_failure",
+                        )
+
+                if "github repo created and pushed" in lowered:
+                    saw_no_github_push = False
                     break
 
-            if any("run project" in b.lower() for b in btns):
-                saw_run_button = True
-                await _click_button_contains(msg, "Run Project", trace_fn=trace, step="click_run_project")
-                run_msg = await _wait_for_bot_message(
-                    client,
-                    bot,
-                    last_id,
-                    timeout_s=240,
-                    trace_fn=trace,
-                    step="await_run_project_output",
-                    predicate=lambda t, _b: "exit" in t.lower() or "finished" in t.lower(),
-                )
-                last_id = int(run_msg.id)
-                run_text = str(getattr(run_msg, "message", "") or "")
-                trace(
-                    "run_project.output",
-                    text_preview=run_text[:320],
-                )
+                if any("run it" in b.lower() for b in btns):
+                    await _click_button_contains(msg, "Run It", trace_fn=trace, step="click_milestone_run_it")
+                    runtime_progress.observe(
+                        _emit_runtime_trace_snapshot(
+                            trace,
+                            checkpoint=f"milestone.run_it.clicked.{idx + 1}",
+                            tail_lines=120,
+                        )
+                    )
+                    continue
+
+                if "session finished" in lowered or "complete=" in lowered:
+                    saw_finish_summary = True
+                    if "complete=" in lowered:
+                        try:
+                            complete_count = int(lowered.split("complete=", 1)[1].split(",", 1)[0].strip())
+                        except Exception:
+                            complete_count = complete_count
+                    if "failed=" in lowered:
+                        try:
+                            failed_count = int(lowered.split("failed=", 1)[1].split(",", 1)[0].strip())
+                        except Exception:
+                            failed_count = failed_count
+                    if complete_count is not None and complete_count < 1:
+                        trace(
+                            "coding.session.no_completion",
+                            complete_count=complete_count,
+                            failed_count=failed_count,
+                            text_preview=text[:220],
+                        )
+                        break
+
+                if any("run project" in b.lower() for b in btns):
+                    saw_run_button = True
+                    await _click_button_contains(msg, "Run Project", trace_fn=trace, step="click_run_project")
+                    run_msg = await _wait_for_bot_message(
+                        client,
+                        bot,
+                        last_id,
+                        timeout_s=240,
+                        trace_fn=trace,
+                        step="await_run_project_output",
+                        predicate=lambda t, _b: "exit" in t.lower() or "finished" in t.lower(),
+                    )
+                    last_id = int(run_msg.id)
+                    run_text = str(getattr(run_msg, "message", "") or "")
+                    trace(
+                        "run_project.output",
+                        text_preview=run_text[:320],
+                    )
+                    runtime_progress.observe(
+                        _emit_runtime_trace_snapshot(trace, checkpoint="run_project.output", tail_lines=220)
+                    )
+                    if "exit 0" in run_text.lower() or "finished (exit 0)" in run_text.lower():
+                        saw_run_success = True
+                    break
+
+            if saw_run_success:
+                _validate_generated_project_artifacts(project_slug=project_slug, trace_fn=trace)
                 runtime_progress.observe(
-                    _emit_runtime_trace_snapshot(trace, checkpoint="run_project.output", tail_lines=220)
+                    _emit_runtime_trace_snapshot(trace, checkpoint="artifact.validation.ok", tail_lines=160)
                 )
-                if "exit 0" in run_text.lower() or "finished (exit 0)" in run_text.lower():
-                    saw_run_success = True
-                break
+            transport_summary = _runtime_trace_transport_summary()
+            trace(
+                "runtime.trace.transport.summary",
+                require_websocket_primary=require_websocket_primary,
+                allow_ssh_fallback=allow_ssh_fallback,
+                **transport_summary,
+            )
 
-        if saw_run_success:
-            _validate_generated_project_artifacts(project_slug=project_slug, trace_fn=trace)
-            runtime_progress.observe(
-                _emit_runtime_trace_snapshot(trace, checkpoint="artifact.validation.ok", tail_lines=160)
-            )
-        transport_summary = _runtime_trace_transport_summary()
-        trace(
-            "runtime.trace.transport.summary",
-            require_websocket_primary=require_websocket_primary,
-            allow_ssh_fallback=allow_ssh_fallback,
-            **transport_summary,
-        )
-
-        try:
-            assert saw_no_github_push, "Live Telegram E2E unexpectedly created/pushed a GitHub repo."
-            assert tracker_message_id is not None, "Live Telegram E2E did not observe tracker message."
-            assert tracker_edit_count >= 1, "Live Telegram E2E did not observe tracker edits."
-            assert saw_director_phase or "arch=" in tracker_last_text.lower(), (
-                "Live Telegram E2E did not observe director/architecture tracker phase."
-            )
-            assert saw_architect_phase or "arch=" in tracker_last_text.lower(), (
-                "Live Telegram E2E did not observe architect/architecture tracker phase."
-            )
-            assert saw_worker_assignment_marker or "worker=" in tracker_last_text.lower(), (
-                "Live Telegram E2E did not observe worker assignment marker in tracker."
-            )
-            assert saw_finish_summary, "Live Telegram E2E did not reach session summary."
-            assert complete_count is None or complete_count >= 1, (
-                f"Live Telegram E2E did not complete any milestones (complete={complete_count}, failed={failed_count})."
-            )
-            assert saw_run_button and saw_run_success, "Live Telegram E2E did not reach a successful Run Project output."
-            if require_websocket_primary:
-                assert transport_summary["websocket_primary_select_count"] >= 1, (
-                    "Live Telegram E2E did not observe websocket-primary transport selection in runtime trace."
+            try:
+                assert saw_no_github_push, "Live Telegram E2E unexpectedly created/pushed a GitHub repo."
+                assert tracker_message_id is not None, "Live Telegram E2E did not observe tracker message."
+                assert tracker_edit_count >= 1, "Live Telegram E2E did not observe tracker edits."
+                assert saw_director_phase or "arch=" in tracker_last_text.lower(), (
+                    "Live Telegram E2E did not observe director/architecture tracker phase."
                 )
-            if not allow_ssh_fallback:
-                assert transport_summary["ssh_fallback_count"] == 0, (
-                    "Live Telegram E2E observed SSH fallback when SKYNET_E2E_ALLOW_SSH_FALLBACK=0: "
-                    + ", ".join(transport_summary["fallback_reasons"])
+                assert saw_architect_phase or "arch=" in tracker_last_text.lower(), (
+                    "Live Telegram E2E did not observe architect/architecture tracker phase."
                 )
-        except Exception:
-            if container_streamer is not None:
-                trace(
-                    "container.log.bundle",
-                    status="fail",
-                    reason="final_assertion_failure",
-                    tails=container_streamer.bundle(),
+                assert saw_worker_assignment_marker or "worker=" in tracker_last_text.lower(), (
+                    "Live Telegram E2E did not observe worker assignment marker in tracker."
                 )
-            raise
-        trace("e2e.step.end", step=9, name="coding_and_run", status="ok")
-        trace(
-            "test.success",
-            saw_run_button=saw_run_button,
-            saw_run_success=saw_run_success,
-            complete_count=complete_count,
-            failed_count=failed_count,
-            tracker_message_id=tracker_message_id,
-            tracker_edit_count=tracker_edit_count,
-        )
-        runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="test.success", tail_lines=180))
-        if container_streamer is not None:
-            await container_streamer.stop()
-        print(f"[LIVE TRACE] {trace_path}")
+                assert saw_finish_summary, "Live Telegram E2E did not reach session summary."
+                assert complete_count is None or complete_count >= 1, (
+                    f"Live Telegram E2E did not complete any milestones (complete={complete_count}, failed={failed_count})."
+                )
+                assert saw_run_button and saw_run_success, "Live Telegram E2E did not reach a successful Run Project output."
+                if require_websocket_primary:
+                    assert transport_summary["websocket_primary_select_count"] >= 1, (
+                        "Live Telegram E2E did not observe websocket-primary transport selection in runtime trace."
+                    )
+                if not allow_ssh_fallback:
+                    assert transport_summary["ssh_fallback_count"] == 0, (
+                        "Live Telegram E2E observed SSH fallback when SKYNET_E2E_ALLOW_SSH_FALLBACK=0: "
+                        + ", ".join(transport_summary["fallback_reasons"])
+                    )
+            except Exception:
+                bundle_status = "fail"
+                bundle_reason = "final_assertion_failure"
+                bundle_emitted = True
+                await container_diagnostics.emit_bundle(
+                    status=bundle_status,
+                    reason=bundle_reason,
+                    flow="telegram_real",
+                )
+                raise
+            trace("e2e.step.end", step=9, name="coding_and_run", status="ok")
+            trace(
+                "test.success",
+                saw_run_button=saw_run_button,
+                saw_run_success=saw_run_success,
+                complete_count=complete_count,
+                failed_count=failed_count,
+                tracker_message_id=tracker_message_id,
+                tracker_edit_count=tracker_edit_count,
+            )
+            runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="test.success", tail_lines=180))
+            bundle_emitted = True
+            await container_diagnostics.emit_bundle(
+                status=bundle_status,
+                reason=bundle_reason,
+                flow="telegram_real",
+            )
+            print(f"[LIVE TRACE] {trace_path}")
+    except Exception:
+        bundle_status = "fail"
+        if bundle_reason == "test_success":
+            bundle_reason = "test_failure"
+        raise
+    finally:
+        if not bundle_emitted:
+            await container_diagnostics.emit_bundle(
+                status=bundle_status,
+                reason=bundle_reason,
+                flow="telegram_real",
+            )
+        await container_diagnostics.stop()

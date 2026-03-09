@@ -55,6 +55,7 @@ from bot.handlers.coding import (
     stop_milestone_handler,
     run_project_handler,
     _coding_loop,
+    _tracker_init_message,
     _MS_EVENT_KEY,
     _MS_DECISION_KEY,
     _ACTIVE_LOOP_KEY,
@@ -444,6 +445,61 @@ class TestStopSession:
         )
 
     # ── 2c: request_changes returns to requirements chat ──────────────────────
+
+    @pytest.mark.asyncio
+    async def test_coding_loop_exits_when_tracker_looks_stuck(self, monkeypatch: pytest.MonkeyPatch):
+        user_id = 42
+        chat_id = 100
+        app = MagicMock()
+        app.bot_data = {}
+        sent: list[str] = []
+        message_seq = {"value": 100}
+
+        async def _send(cid, text, **kwargs):
+            sent.append(str(text))
+            message_seq["value"] += 1
+            return MagicMock(message_id=message_seq["value"])
+
+        app.bot.send_message = AsyncMock(side_effect=_send)
+        app.bot.edit_message_text = AsyncMock()
+
+        monkeypatch.setattr("bot.handlers.coding._tracker_stuck_exit_seconds", lambda: 1)
+        monkeypatch.setattr("bot.handlers.coding._tracker_watchdog_poll_seconds", lambda: 1)
+
+        await _tracker_init_message(
+            app=app,
+            chat_id=chat_id,
+            user_id=user_id,
+            project=self.PROJECT,
+            working_dir="E:/SKYNET-SANDBOX/Projects/skyapp",
+            strict_mode=False,
+        )
+
+        async def _hung_preflight(*args, **kwargs):
+            await asyncio.sleep(30)
+            return True, "", ["codex"]
+
+        with (
+            patch("bot.handlers.coding.is_worker_available", return_value=True),
+            patch(
+                "bot.handlers.coding.send_action",
+                new=AsyncMock(
+                    return_value={
+                        "status": "success",
+                        "result": {"returncode": 0, "stdout": "", "stderr": ""},
+                    }
+                ),
+            ),
+            patch("bot.handlers.coding._preflight_coding_environment", new=_hung_preflight),
+        ):
+            await asyncio.wait_for(
+                _coding_loop(app, chat_id, user_id, self.PROJECT, do_github=False),
+                timeout=5,
+            )
+
+        assert any("appeared stuck" in msg.lower() for msg in sent), (
+            f"Expected stuck-session notification; got: {sent}"
+        )
 
     @pytest.mark.asyncio
     async def test_request_changes_returns_to_requirements(self):

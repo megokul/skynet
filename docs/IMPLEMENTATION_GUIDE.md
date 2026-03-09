@@ -44,6 +44,7 @@ Read models:
 Primary modules:
 
 - `openclaw-gateway/main.py`: bootstraps DB/router/server/bot.
+- `openclaw-gateway/live_settings.py`: shared gateway runtime/bootstrap entrypoint for live tests and tooling.
 - `openclaw-gateway/gateway.py`: WS auth + pending request map + send_action.
 - `openclaw-gateway/api.py`: `/status`, `/action`, idempotency cache, SSH fallback routing.
 - `openclaw-gateway/bot/`: Telegram handlers (`project.py`, `coding.py`, `chat.py`, `greeting.py`).
@@ -88,6 +89,18 @@ Execution tiers are defined in `openclaw-agent/config.py`:
 - unknown actions are blocked.
 
 ## Environment Precedence and Critical Flags
+
+Shared settings topology:
+
+- `skynet/settings/loader.py` is the single shared settings loader for control plane, gateway, and agent.
+- Component wrappers are:
+  - `openclaw-gateway/settings/loader.py`
+  - `openclaw-agent/settings/loader.py`
+- Component default files are:
+  - `skynet/settings/defaults.yaml`
+  - `openclaw-gateway/settings/settings.yaml`
+  - `openclaw-agent/settings/defaults.yaml`
+- Live E2E bootstrap must use the shared loader path (`openclaw-gateway/live_settings.py`), not ad hoc `load_dotenv` or YAML parsing.
 
 Control plane:
 
@@ -192,6 +205,7 @@ Policy and guardrails:
 ```bash
 python scripts/ci/check_stale_paths.py
 python scripts/ci/check_control_plane_boundary.py
+python scripts/ci/check_settings_policy.py
 python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
 ```
 

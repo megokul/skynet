@@ -13,9 +13,25 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
+from pathlib import Path
 from typing import Any
 
-from settings.loader import get_str as _s, get_int as _i
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from skynet.settings.loader import get_component_settings  # noqa: E402
+
+_settings_loader = get_component_settings("agent")
+
+
+def _s(name: str, default: str = "") -> str:
+    return _settings_loader.get_str(name, default)
+
+
+def _i(name: str, default: int = 0) -> int:
+    return _settings_loader.get_int(name, default)
 
 logger = logging.getLogger("chathan.executor.ollama")
 

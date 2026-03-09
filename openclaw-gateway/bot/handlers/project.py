@@ -351,6 +351,29 @@ def _planner_action_text(result: dict) -> str:
     return text
 
 
+def _planner_primary_agent() -> str:
+    agent = str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router") or "router").strip().lower()
+    if agent == "claude_ollama":
+        return "claude"
+    return agent
+
+
+def _planner_worker_agents() -> set[str]:
+    return {
+        str(item).strip().lower()
+        for item in getattr(cfg, "PLANNER_WORKER_AGENTS", ())
+        if str(item).strip()
+    }
+
+
+def _planner_acp_agents() -> set[str]:
+    return {
+        str(item).strip().lower()
+        for item in getattr(cfg, "PLANNER_ACP_AGENTS", ())
+        if str(item).strip()
+    }
+
+
 async def _planner_via_codex_then_router(
     *,
     router,
@@ -360,9 +383,10 @@ async def _planner_via_codex_then_router(
     task_type: str,
     user_id: int,
 ) -> str:
-    use_codex = str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router")).strip().lower() == "codex"
+    planner_agent = _planner_primary_agent()
+    use_planner_agent = planner_agent in _planner_worker_agents()
     allow_router_fallback = bool(getattr(cfg, "PLANNER_ROUTER_FALLBACK_ENABLED", True))
-    if use_codex:
+    if use_planner_agent:
         sandbox_dir = _planner_sandbox_dir(user_id)
         planner_prompt = (
             "You are the planner assistant for a Telegram product workflow.\n"
@@ -386,13 +410,13 @@ async def _planner_via_codex_then_router(
         try:
             orchestration_mode = str(cfg.effective_orchestration_mode() or "legacy").strip().lower()
             planner_session_key = uuid.uuid4().hex
-            if orchestration_mode == "acp_first":
+            if orchestration_mode == "acp_first" and planner_agent in _planner_acp_agents():
                 runner = get_openclaw_runner()
                 session = await runner.start_session(
                     phase="planner",
                     project_id=f"user-{user_id}",
                     task_id=None,
-                    stage="codex",
+                    stage=planner_agent,
                     runtime=str(getattr(cfg, "OPENCLAW_RUNTIME", "acp") or "acp"),
                     queue_mode="soft",
                 )
@@ -400,17 +424,21 @@ async def _planner_via_codex_then_router(
                     session_id=str(session.get("session_id") or ""),
                     prompt=planner_prompt,
                     timeout_seconds=timeout,
-                    stage="codex",
+                    stage=planner_agent,
                     backend="native",
                 )
                 return_code = int(run_result.get("returncode", 1) or 1)
                 if return_code != 0:
-                    detail = str(run_result.get("stderr") or run_result.get("stdout") or "planner codex failed")
+                    detail = str(
+                        run_result.get("stderr")
+                        or run_result.get("stdout")
+                        or f"planner {planner_agent} failed"
+                    )
                     raise RuntimeError(detail)
                 text = str(run_result.get("stdout") or "").strip()
             else:
                 if not is_worker_available():
-                    raise RuntimeError("Worker unavailable for planner codex call")
+                    raise RuntimeError(f"Worker unavailable for planner {planner_agent} call")
                 await send_action(
                     "create_directory",
                     {
@@ -425,7 +453,7 @@ async def _planner_via_codex_then_router(
                 result = await send_action(
                     "run_coding_agent",
                     {
-                        "agent": "codex",
+                        "agent": planner_agent,
                         "backend": "auto",
                         "prompt": planner_prompt,
                         "working_dir": sandbox_dir,
@@ -443,25 +471,32 @@ async def _planner_via_codex_then_router(
                 inner = result.get("result", result)
                 return_code = int(inner.get("returncode", inner.get("exit_code", 0)) or 0)
                 if return_code != 0:
-                    detail = str(inner.get("stderr") or inner.get("stdout") or "planner codex failed")
+                    detail = str(
+                        inner.get("stderr")
+                        or inner.get("stdout")
+                        or f"planner {planner_agent} failed"
+                    )
                     raise RuntimeError(detail)
                 text = _planner_action_text(result)
             if not text:
-                raise RuntimeError("planner codex returned empty output")
+                raise RuntimeError(f"planner {planner_agent} returned empty output")
             if _looks_like_meta_planner_output(text):
-                raise RuntimeError("planner codex returned meta assistant text")
+                raise RuntimeError(f"planner {planner_agent} returned meta assistant text")
             return text
         except Exception as exc:
             logger.warning(
-                "planner.primary.failover user_id=%s stage=codex error=%s",
+                "planner.primary.failover user_id=%s stage=%s error=%s",
                 user_id,
+                planner_agent,
                 str(exc)[:220],
             )
             if not allow_router_fallback:
                 raise
 
-    if not allow_router_fallback and use_codex:
-        raise RuntimeError("Planner fallback is disabled and codex path did not return a response.")
+    if not allow_router_fallback and use_planner_agent:
+        raise RuntimeError(
+            f"Planner fallback is disabled and the primary agent '{planner_agent}' did not return a response."
+        )
     response = await router.chat(
         messages=messages,
         system=system,

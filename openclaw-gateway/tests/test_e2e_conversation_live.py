@@ -8,13 +8,10 @@ Transport modes (SKYNET_E2E_TRANSPORT env var):
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import subprocess
 import sys
-import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,11 +19,18 @@ from typing import Any
 import pytest
 from telegram.ext import ConversationHandler
 
-try:
-    from dotenv import load_dotenv
-except Exception:  # pragma: no cover - optional dependency at runtime
-    load_dotenv = None  # type: ignore[assignment]
+REPO_ROOT = Path(__file__).resolve().parents[2]
+GATEWAY_ROOT = REPO_ROOT / "openclaw-gateway"
+for candidate in (str(REPO_ROOT), str(GATEWAY_ROOT)):
+    if candidate not in sys.path:
+        sys.path.insert(0, candidate)
 
+from live_settings import bootstrap_gateway_runtime
+from live_diagnostics import LiveContainerDiagnostics, make_live_trace_logger
+
+bootstrap_gateway_runtime()
+
+import config as cfg
 from ai.provider_router import ProviderRouter, build_providers, parse_provider_priority
 from db.schema import init_db
 from db.store import list_tasks
@@ -37,6 +41,7 @@ from bot.handlers.coding import (
     _CODING_PID_KEY,
     _MS_DECISION_KEY,
     _MS_EVENT_KEY,
+    _tracker_state_key,
     coding_github_choice_handler,
     run_project_handler,
     start_coding_handler,
@@ -66,35 +71,6 @@ from bot.keyboards import (
 from bot.state import KEY_DB, KEY_ROUTER
 
 
-def _load_live_env_from_dotenv() -> None:
-    if load_dotenv is None:
-        return
-    repo_root = Path(__file__).resolve().parents[2]
-    candidates = []
-    explicit = os.environ.get("SKYNET_ENV_FILE", "").strip()
-    if explicit:
-        candidates.append(Path(explicit))
-    candidates.extend(
-        [
-            repo_root / ".env",
-            repo_root / "openclaw-gateway" / ".env",
-        ]
-    )
-    seen: set[str] = set()
-    for candidate in candidates:
-        try:
-            key = str(candidate.resolve()).lower()
-        except Exception:
-            key = str(candidate).lower()
-        if key in seen or not candidate.exists():
-            continue
-        seen.add(key)
-        load_dotenv(candidate, override=False)
-
-
-_load_live_env_from_dotenv()
-
-
 def _bool_env(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -107,35 +83,6 @@ def _skip_or_fail_live(reason: str, detail: str | None = None) -> None:
     if _bool_env("SKYNET_E2E_FAIL_ON_SKIP", True):
         raise AssertionError(message)
     pytest.skip(message)
-
-
-def _make_live_trace_logger(test_name: str):
-    env_path = os.environ.get("SKYNET_LIVE_TRACE_FILE", "").strip()
-    if env_path:
-        path = Path(env_path)
-    else:
-        repo_root = Path(__file__).resolve().parents[2]
-        log_dir = repo_root / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        path = log_dir / f"{test_name}-{int(time.time())}.log"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    started = time.monotonic()
-
-    def trace(event: str, **fields) -> None:
-        payload = {
-            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "elapsed_s": round(time.monotonic() - started, 1),
-            "event": event,
-        }
-        payload.update(fields)
-        line = json.dumps(payload, ensure_ascii=True, default=str)
-        print(line, flush=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-
-    trace("trace.start", test_name=test_name, trace_file=str(path))
-    return path, trace
-
 
 @dataclass
 class _SimpleChat:
@@ -220,10 +167,14 @@ class _TraceBot:
     def __init__(self, trace_fn) -> None:
         self._trace = trace_fn
         self.sent_messages: list[dict[str, Any]] = []
+        self._next_message_id = 1
 
-    async def send_message(self, chat_id: int, text: str, **kwargs: Any) -> None:
+    async def send_message(self, chat_id: int, text: str, **kwargs: Any) -> Any:
+        message_id = self._next_message_id
+        self._next_message_id += 1
         payload = {
             "chat_id": chat_id,
+            "message_id": message_id,
             "text": str(text),
             "kwargs": dict(kwargs),
         }
@@ -235,6 +186,32 @@ class _TraceBot:
             has_reply_markup=bool(kwargs.get("reply_markup")),
             parse_mode=str(kwargs.get("parse_mode", "")),
         )
+        return SimpleNamespace(message_id=message_id)
+
+    async def edit_message_text(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        **kwargs: Any,
+    ) -> None:
+        for payload in reversed(self.sent_messages):
+            if int(payload.get("message_id", 0) or 0) != int(message_id):
+                continue
+            payload["chat_id"] = chat_id
+            payload["text"] = str(text)
+            payload["kwargs"] = dict(kwargs)
+            self._trace(
+                "bot.edit_message_text",
+                chat_id=chat_id,
+                message_id=message_id,
+                text_preview=str(text)[:220],
+                has_reply_markup=bool(kwargs.get("reply_markup")),
+                parse_mode=str(kwargs.get("parse_mode", "")),
+            )
+            return
+        raise RuntimeError("message to edit not found")
 
 
 class _HarnessApp:
@@ -263,7 +240,7 @@ def _restore_env(previous: dict[str, str | None]) -> None:
 @pytest.mark.live
 @pytest.mark.asyncio
 async def test_live_conversation_real_planner_codegen_no_github_push():
-    trace_path, trace = _make_live_trace_logger("live-conversation-e2e")
+    trace_path, trace = make_live_trace_logger("live-conversation-e2e")
     if os.environ.get("SKYNET_E2E_LIVE") != "1":
         trace("test.skip", reason="SKYNET_E2E_LIVE is not 1")
         pytest.skip("Set SKYNET_E2E_LIVE=1 to run live conversation E2E.")
@@ -303,8 +280,18 @@ async def test_live_conversation_real_planner_codegen_no_github_push():
 
     ws_server = None
     agent_proc = None
+    container_diagnostics = LiveContainerDiagnostics(trace_fn=trace)
+    bundle_status = "ok"
+    bundle_reason = "test_success"
     db = await init_db(":memory:")
     try:
+        try:
+            await container_diagnostics.start()
+        except Exception:
+            bundle_status = "fail"
+            bundle_reason = "container_stream_unavailable"
+            raise
+
         if use_websocket:
             import gateway as _gw
 
@@ -365,26 +352,16 @@ async def test_live_conversation_real_planner_codegen_no_github_push():
             trace_file=str(trace_path),
             ssh_host=os.environ.get("OPENCLAW_SSH_HOST", ""),
             ssh_port=os.environ.get("OPENCLAW_SSH_PORT", ""),
+            container_stream_enabled=container_diagnostics.config["stream_enabled"],
+            container_stream_required=container_diagnostics.config["require_stream"],
+            container_stream_sources=container_diagnostics.config["sources"],
         )
 
-        provider_cfg = {
-            "OLLAMA_DEFAULT_MODEL": os.environ.get("OLLAMA_DEFAULT_MODEL", ""),
-            "GOOGLE_AI_API_KEY": os.environ.get("GOOGLE_AI_API_KEY", ""),
-            "GEMINI_MODEL": os.environ.get("GEMINI_MODEL", ""),
-            "GEMINI_ONLY_MODE": os.environ.get("GEMINI_ONLY_MODE", "0"),
-            "GROQ_API_KEY": os.environ.get("GROQ_API_KEY", ""),
-            "OPENROUTER_API_KEY": os.environ.get("OPENROUTER_API_KEY", ""),
-            "OPENROUTER_MODEL": os.environ.get("OPENROUTER_MODEL", ""),
-            "OPENROUTER_FALLBACK_MODELS": os.environ.get("OPENROUTER_FALLBACK_MODELS", ""),
-            "DEEPSEEK_API_KEY": os.environ.get("DEEPSEEK_API_KEY", ""),
-            "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", ""),
-            "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
-        }
-        providers = build_providers(provider_cfg)
+        providers = build_providers(cfg.get_provider_config())
         router = ProviderRouter(
             providers,
             db,
-            provider_priority=parse_provider_priority(os.environ.get("AI_PROVIDER_PRIORITY")),
+            provider_priority=parse_provider_priority(cfg.AI_PROVIDER_PRIORITY),
         )
 
         user_id = 91572
@@ -462,6 +439,7 @@ async def test_live_conversation_real_planner_codegen_no_github_push():
         loop_key = _ACTIVE_LOOP_KEY.format(uid=user_id)
         event_key = _MS_EVENT_KEY.format(uid=user_id)
         decision_key = _MS_DECISION_KEY.format(uid=user_id)
+        tracker_key = _tracker_state_key(user_id, project_id)
 
         async def auto_approve_until_complete() -> None:
             seen_loop = False
@@ -498,6 +476,42 @@ async def test_live_conversation_real_planner_codegen_no_github_push():
                 await asyncio.sleep(0.25)
             raise AssertionError("Timed out auto-approving live milestones.")
 
+        async def wait_for_loop_terminal() -> None:
+            terminal_grace_seconds = 10
+            max_wait_seconds = max(
+                terminal_grace_seconds,
+                int(getattr(cfg, "TELEGRAM_TRACKER_STUCK_EXIT_SECONDS", 300) or 300) + 60,
+            )
+            started = asyncio.get_running_loop().time()
+            while True:
+                loop_task = bot_data.get(loop_key)
+                if loop_task is None:
+                    trace("coding_loop.monitor", loop_present=False, reason="loop_task_missing")
+                    return
+                if loop_task.done():
+                    await loop_task
+                    trace("coding_loop.monitor", loop_present=True, reason="loop_task_done")
+                    return
+                tracker_state = bot_data.get(tracker_key)
+                if isinstance(tracker_state, dict):
+                    status = str(tracker_state.get("status") or "").strip().lower()
+                    phase = str(tracker_state.get("phase") or "").strip().lower()
+                    detail = str(tracker_state.get("phase_detail") or "").strip()
+                    if phase == "finalization" and status in {"failed", "stopped", "completed"}:
+                        trace(
+                            "coding_loop.monitor.terminal_tracker",
+                            status=status,
+                            phase=phase,
+                            detail=detail[:220],
+                        )
+                        await asyncio.wait_for(loop_task, timeout=terminal_grace_seconds)
+                        return
+                if (asyncio.get_running_loop().time() - started) >= max_wait_seconds:
+                    raise AssertionError(
+                        f"Live coding loop did not exit within {max_wait_seconds}s."
+                    )
+                await asyncio.sleep(1)
+
         approve_task = asyncio.create_task(auto_approve_until_complete())
         upd = _make_callback_update(CB_CODING_GITHUB_SKIP, user_id=user_id, chat_id=chat_id)
         ctx = make_ctx(extra_user_data={_CODING_PID_KEY: project_id})
@@ -506,7 +520,7 @@ async def test_live_conversation_real_planner_codegen_no_github_push():
         await coding_github_choice_handler(upd, ctx)
         loop_task = bot_data.get(loop_key)
         assert loop_task is not None, "Live coding loop did not start."
-        await asyncio.wait_for(loop_task, timeout=1500)
+        await wait_for_loop_terminal()
         await approve_task
 
         tasks = await list_tasks(db, project_id=project_id)
@@ -545,9 +559,27 @@ async def test_live_conversation_real_planner_codegen_no_github_push():
             )
             trace("websocket.transport_verified", agent_connected=True)
 
+        if container_diagnostics.config["require_stream"] and container_diagnostics.has_errors():
+            bundle_status = "fail"
+            bundle_reason = "container_stream_unhealthy"
+            raise AssertionError(
+                f"CONTAINER_LOG_STREAM_UNAVAILABLE: {container_diagnostics.error_tail()[-5:]}"
+            )
+
         trace("test.success", actions_count=0, transport=transport)
         print(f"[LIVE TRACE] {trace_path}")
+    except Exception:
+        bundle_status = "fail"
+        if bundle_reason == "test_success":
+            bundle_reason = "test_failure"
+        raise
     finally:
+        await container_diagnostics.emit_bundle(
+            status=bundle_status,
+            reason=bundle_reason,
+            flow="conversation",
+        )
+        await container_diagnostics.stop()
         trace("test.cleanup", closing_db=True, transport=transport)
         if agent_proc is not None:
             agent_proc.terminate()

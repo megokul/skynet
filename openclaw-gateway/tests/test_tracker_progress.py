@@ -10,11 +10,14 @@ import pytest
 from bot.handlers import coding
 from bot.handlers.coding import (
     _render_progress_bar,
+    _tracker_init_message,
     _tracker_default_runtime_mode,
     _tracker_default_transport,
     _tracker_progress_weights,
     _tracker_recompute_percent,
+    _tracker_update,
 )
+from bot.keyboards import CB_MAIN_MENU, CB_MILESTONE_STOP
 
 
 def test_render_progress_bar_clamps_bounds() -> None:
@@ -141,3 +144,96 @@ async def test_tracker_update_edits_immediately_on_significant_change(
     bot.edit_message_text.assert_awaited_once()
     assert state["stage"] == "codex"
     assert state["last_rendered_text"] == "setup|codex|10"
+
+
+@pytest.mark.asyncio
+async def test_tracker_init_message_shows_stop_and_exit_button(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send_message = AsyncMock(return_value=types.SimpleNamespace(message_id=321))
+    app = types.SimpleNamespace(bot=types.SimpleNamespace(send_message=send_message), bot_data={})
+
+    monkeypatch.setattr(coding, "_tracker_enabled", lambda: True)
+    monkeypatch.setattr(coding, "_tracker_default_transport", lambda: "websocket_primary")
+    monkeypatch.setattr(coding, "_tracker_default_runtime_mode", lambda: "worker_agent")
+
+    await _tracker_init_message(
+        app=app,
+        chat_id=7,
+        user_id=99,
+        project={"id": "proj-1", "name": "SkyApp"},
+        working_dir="E:/SKYNET-SANDBOX/Projects/skyapp",
+        strict_mode=False,
+    )
+
+    markup = send_message.await_args.kwargs["reply_markup"]
+    all_data = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+    assert CB_MILESTONE_STOP in all_data
+
+
+@pytest.mark.asyncio
+async def test_tracker_terminal_update_swaps_to_main_menu_controls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "proj-1"
+    user_id = 99
+    state = {
+        "project_id": project_id,
+        "message_id": 123,
+        "phase": "milestone_execution",
+        "phase_detail": "Running milestone",
+        "status": "running",
+        "milestone_index": 1,
+        "milestones_total": 1,
+        "attempt": 0,
+        "stage": "",
+        "gate": "",
+        "run_contract_status": "pending",
+        "session_id": "",
+        "runtime_mode": "ssh",
+        "queue_mode": "",
+        "graph_id": "",
+        "arch_version": "",
+        "node_key": "",
+        "node_type": "",
+        "worker_id": "",
+        "critic_name": "",
+        "transport": "ssh_first",
+        "setup_progress": 1.0,
+        "extraction_progress": 1.0,
+        "execution_progress": 1.0,
+        "gates_progress": 0.0,
+        "final_progress": 0.0,
+        "percent": 95,
+        "last_rendered_text": "",
+        "last_edit_monotonic": 0.0,
+        "last_signal_monotonic": 100.0,
+        "created_monotonic": 100.0,
+    }
+    edit_message_text = AsyncMock()
+    app = types.SimpleNamespace(
+        bot=types.SimpleNamespace(edit_message_text=edit_message_text),
+        bot_data={
+            coding._tracker_state_key(user_id, project_id): state,
+            coding._active_project_key(user_id): project_id,
+        },
+    )
+
+    monkeypatch.setattr(coding, "_tracker_enabled", lambda: True)
+    monkeypatch.setattr(coding, "_tracker_edit_interval", lambda: 0)
+
+    await _tracker_update(
+        app=app,
+        chat_id=7,
+        user_id=user_id,
+        project_id=project_id,
+        phase="finalization",
+        phase_detail="Session failed",
+        status="failed",
+        final_progress=1.0,
+        force=True,
+    )
+
+    markup = edit_message_text.await_args.kwargs["reply_markup"]
+    all_data = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+    assert CB_MAIN_MENU in all_data

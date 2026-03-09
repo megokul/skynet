@@ -1,4 +1,4 @@
-services:
+﻿services:
   skynet-api:
     build:
       context: .
@@ -7,11 +7,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - CORS_ORIGINS
       - SKYNET_DB_PATH=/app/data/skynet.db
-      - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL:-http://host.docker.internal:8766}
-      - OPENCLAW_GATEWAY_URLS=${OPENCLAW_GATEWAY_URLS:-}
-      - SKYNET_API_KEY=${SKYNET_API_KEY:-}
+      - OPENCLAW_GATEWAY_URL=http://host.docker.internal:8766
+      - OPENCLAW_GATEWAY_URLS
+      - SKYNET_API_KEY
     volumes:
       - skynet-data:/app/data
       - ./skynet:/app/skynet:ro
@@ -35,3 +35,4 @@ volumes:
 networks:
   skynet-network:
     driver: bridge
+

@@ -1,10 +1,54 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-07 18:30
+Last updated (UTC): 2026-03-09 15:19
 
 ## Current Goal
 
 WebSocket-primary worker execution with local Ollama coding backend, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-09 Shared Live E2E Container Diagnostics
+
+- Added gateway-backed live container-log settings in `openclaw-gateway/settings/settings.yaml` and `openclaw-gateway/config.py`:
+  - `SKYNET_E2E_CONTAINER_LOG_STREAM_ENABLED`
+  - `SKYNET_E2E_CONTAINER_LOG_REQUIRE_STREAM`
+  - `SKYNET_E2E_CONTAINER_LOG_SOURCES`
+  - `SKYNET_E2E_CONTAINER_LOG_MAX_LINE_CHARS`
+  - `SKYNET_E2E_CONTAINER_LOG_RING_LINES`
+  - `SKYNET_E2E_CONTAINER_LOG_TAIL_DEFAULT`
+  - `SKYNET_E2E_CONTAINER_LOG_TAIL_OVERRIDES`
+- Added `get_live_e2e_container_log_config()` in `openclaw-gateway/config.py` so live tests consume one normalized config source instead of ad hoc env parsing.
+- Extracted live trace creation, container stream handling, SSH resolution, log redaction, and final snapshot bundling into `openclaw-gateway/tests/live_diagnostics.py`.
+- Rewired the shared live runner and both live flows to consume the helper:
+  - `openclaw-gateway/tests/e2e_live.py`
+  - `openclaw-gateway/tests/test_e2e_conversation_live.py`
+  - `openclaw-gateway/tests/test_e2e_telegram_real_live.py`
+- `conversation` and `telegram_real` now both emit a terminal `container.log.bundle` event into the same live trace file; `direct` remains unchanged.
+- Added coverage in `openclaw-gateway/tests/test_live_e2e_trace_logging.py` for:
+  - config defaults and env overrides
+  - snapshot tail selection via `TAIL_DEFAULT` and `TAIL_OVERRIDES`
+  - require-stream early failure
+  - final bundle emission on success and failure
+
+### 2026-03-09 Shared Settings Single-Source-Of-Truth Policy + Repo Restructure
+
+- Replaced the three ad hoc settings loaders with one shared implementation in `skynet/settings/loader.py`.
+- Gateway and agent loader modules now act as thin compatibility wrappers instead of owning parsing logic.
+- Structured YAML is now parsed centrally, so agent policy tables in `openclaw-agent/settings/defaults.yaml` are real runtime configuration, not dead defaults.
+- Moved agent allowlists and closeable-app mappings in `openclaw-agent/config.py` onto settings-backed values:
+  - `AUTO_ACTIONS`
+  - `CONFIRM_ACTIONS`
+  - `BLOCKED_ACTIONS`
+  - `CLOSEABLE_APPS`
+- Refactored live runtime bootstrap so gateway live E2E paths use `openclaw-gateway/live_settings.py` instead of manual `.env` and YAML loading:
+  - `openclaw-gateway/tests/e2e_live.py`
+  - `openclaw-gateway/tests/test_e2e_conversation_live.py`
+  - `openclaw-gateway/tests/test_e2e_telegram_real_live.py`
+- Replaced deployment env rendering in `.github/workflows/deploy-ec2-skynet.yml` with `scripts/ci/render_settings_env.py`.
+- Added repo guard `scripts/ci/check_settings_policy.py` and wired it into:
+  - `Makefile`
+  - `scripts/dev/smoke.py`
+  - `.github/workflows/deploy-ec2-skynet.yml`
+- Compose manifests were normalized to pass through env values instead of carrying duplicated runtime defaults, while preserving compose-specific service wiring constants.
 
 ### 2026-03-07 Ollama claude_ollama Stage as Primary Coding Backend
 
@@ -663,6 +707,24 @@ WebSocket-primary worker execution with local Ollama coding backend, while prese
 
 ## Test Results
 
+- `E:\\MyProjects\\skynet\\venv\\Scripts\\python.exe -m py_compile skynet\\settings\\__init__.py skynet\\settings\\loader.py openclaw-gateway\\settings\\loader.py openclaw-agent\\settings\\loader.py openclaw-agent\\config.py openclaw-gateway\\config.py openclaw-gateway\\main.py openclaw-gateway\\live_settings.py openclaw-gateway\\tests\\e2e_live.py openclaw-gateway\\tests\\test_e2e_conversation_live.py openclaw-gateway\\tests\\test_e2e_telegram_real_live.py scripts\\dev\\run_api.py scripts\\manual\\check_api.py scripts\\ci\\render_settings_env.py scripts\\ci\\check_settings_policy.py`
+  - pass
+- `E:\\MyProjects\\skynet\\venv\\Scripts\\python.exe scripts\\ci\\check_settings_policy.py`
+  - pass
+- `E:\\MyProjects\\skynet\\venv\\Scripts\\python.exe -m pytest openclaw-gateway\\tests\\test_project_planner_fallback.py openclaw-gateway\\tests\\test_planner_resilience.py -q`
+  - `12 passed`
+- `E:\\MyProjects\\skynet\\venv\\Scripts\\python.exe -m pytest openclaw-agent\\tests\\test_action_accept_and_replay.py -q -k "detect_coding_agents_includes_qwen or route_survives_audit_write_failure"`
+  - `2 passed`
+- `E:\\MyProjects\\skynet\\venv\\Scripts\\python.exe -m pytest tests\\test_api_provider_config.py -q`
+  - `3 passed`
+- Direct probe: shared gateway loader still treats `SKYNET_SETTINGS_FILE=<settings.local.yaml>` as a local override layer.
+  - observed values: `BASE_ONLY=base`, `LOCAL_ONLY=local`, `SHARED=local`
+- Direct probe: agent runtime policy tables now resolve from settings-backed data.
+  - observed values: `trace_runtime_probe in AUTO_ACTIONS == True`, `CLOSEABLE_APPS['code'] == Code.exe`, `eval_code in BLOCKED_ACTIONS == True`
+- Direct probe: `scripts/ci/render_settings_env.py` produced an effective merged env file from shared settings.
+- Pytest caveat:
+  - tempdir-dependent cases still hit sandbox ACL failures under Windows (`WinError 5` during pytest tempdir setup/cleanup), so loader/env-render behavior was additionally verified with direct probes inside the workspace.
+
 - `python -m py_compile openclaw-gateway/db/schema.py openclaw-gateway/tests/test_runtime_trace_forensic.py`
   - pass
 - `python -m pytest openclaw-gateway/tests/test_runtime_trace.py openclaw-gateway/tests/test_runtime_trace_forensic.py openclaw-gateway/tests/test_ssh_executor_trace_forensics.py openclaw-gateway/tests/test_trace_command.py openclaw-gateway/tests/test_tracker_progress.py -q`
@@ -764,6 +826,10 @@ WebSocket-primary worker execution with local Ollama coding backend, while prese
 
 ## Trace Evidence
 
+- request_id=settings-single-source-of-truth-20260309
+- task_id=shared-settings-loader-repo-policy
+- audit.jsonl
+
 - request_id=deploy-repair-runtime-trace-schema-order-20260306
 - task_id=runtime-trace-legacy-migration-index-fix
 - GitHub Actions run `22769176004`
@@ -811,6 +877,12 @@ WebSocket-primary worker execution with local Ollama coding backend, while prese
 
 ## Documentation Updates
 
+- `CONTRIBUTING.md`
+- `README.md`
+- `docs/INDEX.md`
+- `docs/ARCHITECTURE_MAP.md`
+- `docs/IMPLEMENTATION_GUIDE.md`
+- `docs/ENGINEERING_POLICY.md`
 - `docs/AGENT_HANDOFF.md`
 - `.github/workflows/deploy-ec2-skynet.yml`
 - `README.md`
@@ -837,4 +909,4 @@ WebSocket-primary worker execution with local Ollama coding backend, while prese
 - [x] Documentation updated for behavior/interface/ops changes.
 - [x] Tests run, commands listed, and outcomes recorded.
 - [x] Trace evidence recorded for behavior changes (request/task/trace markers).
-- [x] Guard scripts executed (`check_stale_paths`, `check_control_plane_boundary`, `check_engineering_policy`).
+- [x] Guard scripts executed (`check_stale_paths`, `check_control_plane_boundary`, `check_settings_policy`, `check_engineering_policy`).

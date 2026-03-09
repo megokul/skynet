@@ -37,6 +37,7 @@ from bot.keyboards import (
     milestone_review,
     retry_coding,
     run_project,
+    tracker_session_controls,
 )
 from bot.state import KEY_DB, KEY_ROUTER
 from db.store import (
@@ -169,6 +170,22 @@ _STAGE_ENV_HINT = {
     "cline": "OPENCLAW_SSH_CLINE_BIN",
     "qwen": "SKYNET_QWEN_BIN",
 }
+
+
+def _planner_worker_agents() -> set[str]:
+    return {
+        str(item).strip().lower()
+        for item in getattr(cfg, "PLANNER_WORKER_AGENTS", ())
+        if str(item).strip()
+    }
+
+
+def _planner_acp_agents() -> set[str]:
+    return {
+        str(item).strip().lower()
+        for item in getattr(cfg, "PLANNER_ACP_AGENTS", ())
+        if str(item).strip()
+    }
 
 
 def _runtime_flow() -> str:
@@ -328,6 +345,18 @@ def _tracker_stale_warn_seconds() -> int:
     return max(30, timeout)
 
 
+def _tracker_stuck_exit_seconds() -> int:
+    timeout = int(getattr(cfg, "TELEGRAM_TRACKER_STUCK_EXIT_SECONDS", 300) or 0)
+    if timeout <= 0:
+        return 0
+    return max(_tracker_stale_warn_seconds(), timeout)
+
+
+def _tracker_watchdog_poll_seconds() -> int:
+    interval = int(getattr(cfg, "TELEGRAM_TRACKER_WATCHDOG_POLL_SECONDS", 5) or 5)
+    return max(1, interval)
+
+
 def _tracker_verbose_pipeline() -> bool:
     return bool(getattr(cfg, "TELEGRAM_TRACKER_VERBOSE_PIPELINE", True))
 
@@ -450,6 +479,14 @@ def _tracker_get_active_state(
     if state is None:
         return None
     return project_id, state
+
+
+def _tracker_is_terminal_status(status: str | None) -> bool:
+    return str(status or "").strip().lower() in {"completed", "failed", "stopped"}
+
+
+def _tracker_reply_markup(state: dict[str, Any]):
+    return tracker_session_controls(status=str(state.get("status") or "running"))
 
 
 def _tracker_render_text(state: dict[str, Any]) -> str:
@@ -579,7 +616,11 @@ async def _tracker_init_message(
     }
     _tracker_recompute_percent(state)
     text = _tracker_render_text(state)
-    msg = await app.bot.send_message(chat_id, text)
+    msg = await app.bot.send_message(
+        chat_id,
+        text,
+        reply_markup=_tracker_reply_markup(state),
+    )
     state["message_id"] = int(getattr(msg, "message_id", 0) or 0)
     state["last_rendered_text"] = text
     state["last_edit_monotonic"] = now
@@ -777,6 +818,7 @@ async def _tracker_update(
             chat_id=chat_id,
             message_id=message_id,
             text=text,
+            reply_markup=_tracker_reply_markup(state),
         )
     except Exception as exc:  # pragma: no cover - network behavior
         err_text = str(exc).lower()
@@ -786,7 +828,11 @@ async def _tracker_update(
             return
         if "message to edit not found" in err_text or "message can't be edited" in err_text:
             try:
-                replacement = await app.bot.send_message(chat_id, text)
+                replacement = await app.bot.send_message(
+                    chat_id,
+                    text,
+                    reply_markup=_tracker_reply_markup(state),
+                )
                 state["message_id"] = int(getattr(replacement, "message_id", 0) or 0)
                 logger.info(
                     "telegram.tracker.replace_message project_id=%s task_id=%s phase=%s percent=%s status=%s",
@@ -4019,7 +4065,7 @@ async def stop_milestone_handler(
                 user_id=user_id,
                 phase="finalization",
                 phase_detail="Stop requested by user",
-                status="stopped",
+                status="failed",
                 final_progress=1.0,
                 stage="",
                 gate="",
@@ -4038,6 +4084,19 @@ async def stop_milestone_handler(
     loop_key = _ACTIVE_LOOP_KEY.format(uid=user_id)
     active_loop = context.bot_data.get(loop_key)
     if active_loop and not active_loop.done():
+        with contextlib.suppress(Exception):
+            await _tracker_update(
+                app=context.application,
+                chat_id=update.effective_chat.id,
+                user_id=user_id,
+                phase="finalization",
+                phase_detail="Stop requested by user",
+                status="stopped",
+                final_progress=1.0,
+                stage="",
+                gate="",
+                force=True,
+            )
         await update.callback_query.message.reply_text(
             "Stopping current milestone execution... this may take a few seconds."
         )
@@ -5683,7 +5742,7 @@ async def _run_control_loop_v1(
         await update_tracker(
             phase="finalization",
             phase_detail=f"Graph {graph_id} stopped",
-            status="stopped",
+            status="failed",
             final_progress=1.0,
             stage="",
             gate="",
@@ -5695,7 +5754,7 @@ async def _run_control_loop_v1(
             critic_name="",
         )
         await finalize_tracker(
-            status="stopped",
+            status="failed",
             detail=f"Graph {graph_id} stopped ({milestone_summary})",
         )
         await app.bot.send_message(
@@ -5768,6 +5827,14 @@ async def _coding_loop(
     stop_request_cache_key = _stop_request_key(user_id)
     last_valid_run_contract: dict[str, Any] | None = None
     tracker_finalized = False
+    current_loop_task = asyncio.current_task()
+    watchdog_task: asyncio.Task[None] | None = None
+    loop_exit_request: dict[str, Any] = {
+        "status": "",
+        "detail": "",
+        "notify_text": "",
+        "reason": "",
+    }
     await emit_runtime_trace_async(
         db=db,
         event="coding.loop.enter",
@@ -5812,6 +5879,115 @@ async def _coding_loop(
             )
         tracker_finalized = True
 
+    async def _request_loop_exit(
+        *,
+        status: str,
+        detail: str,
+        reason: str,
+        notify_text: str = "",
+    ) -> None:
+        loop_exit_request["status"] = str(status).strip().lower()
+        loop_exit_request["detail"] = str(detail).strip()
+        loop_exit_request["notify_text"] = str(notify_text).strip()
+        loop_exit_request["reason"] = str(reason).strip()
+        app.bot_data[stop_request_cache_key] = True
+        event_key = _MS_EVENT_KEY.format(uid=user_id)
+        decision_key = _MS_DECISION_KEY.format(uid=user_id)
+        event = app.bot_data.get(event_key)
+        if event is not None:
+            app.bot_data[decision_key] = "stop"
+            event.set()
+        if not tracker_finalized:
+            await _update_tracker(
+                phase="finalization",
+                phase_detail=detail,
+                status=status,
+                final_progress=1.0,
+                stage="",
+                gate="",
+                force=True,
+            )
+        if current_loop_task is not None and not current_loop_task.done():
+            current_loop_task.cancel()
+
+    async def _tracker_watchdog() -> None:
+        poll_seconds = _tracker_watchdog_poll_seconds()
+        stuck_timeout = _tracker_stuck_exit_seconds()
+        terminal_since = 0.0
+        while True:
+            await asyncio.sleep(poll_seconds)
+            state = _tracker_get_state(
+                bot_data=app.bot_data,
+                user_id=user_id,
+                project_id=project_id,
+            )
+            if state is None:
+                if tracker_finalized:
+                    return
+                continue
+            status = str(state.get("status") or "").strip().lower()
+            phase = str(state.get("phase") or "").strip().lower()
+            now = time.monotonic()
+            created = float(state.get("created_monotonic", now) or now)
+            last_signal = float(state.get("last_signal_monotonic", created) or created)
+            stale_seconds = max(0.0, now - last_signal)
+
+            if _tracker_is_terminal_status(status) and phase == "finalization":
+                if terminal_since <= 0.0:
+                    terminal_since = now
+                    continue
+                if (now - terminal_since) >= poll_seconds:
+                    await _request_loop_exit(
+                        status=status,
+                        detail=str(state.get("phase_detail") or "Tracker reached terminal state").strip(),
+                        reason="terminal_tracker_state",
+                    )
+                    return
+                continue
+
+            terminal_since = 0.0
+            if (
+                stuck_timeout > 0
+                and status == "running"
+                and phase not in {"milestone_review", "finalization"}
+                and stale_seconds >= stuck_timeout
+            ):
+                await emit_runtime_trace_async(
+                    db=db,
+                    event="coding.loop.stuck_exit",
+                    status="fail",
+                    level="error",
+                    flow=_runtime_flow(),
+                    project_id=project_id,
+                    phase=phase or "finalization",
+                    worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
+                    transport=_runtime_transport_label(),
+                    runtime_mode=_runtime_mode_label(),
+                    error_type="LoopStuck",
+                    error_code="TRACKER_STALE_TIMEOUT",
+                    error_message=(
+                        f"Coding loop had no progress signal for {int(stale_seconds)}s "
+                        f"(threshold={stuck_timeout}s)."
+                    ),
+                    failure_class="ENVIRONMENT_FAILED",
+                    mitigation_hint="Inspect runtime trace, tracker state, and worker/container logs.",
+                    working_dir=working_dir,
+                    details={
+                        "stale_seconds": round(stale_seconds, 1),
+                        "threshold_seconds": stuck_timeout,
+                    },
+                )
+                await _request_loop_exit(
+                    status="failed",
+                    detail=f"No progress signal for {int(stale_seconds)}s; stopping stuck session",
+                    reason="stuck_tracker_timeout",
+                    notify_text=(
+                        "Coding session stopped because it appeared stuck. "
+                        "Use /status to inspect the last completed step."
+                    ),
+                )
+                return
+
     def _execution_progress_value(
         *,
         successful: int,
@@ -5830,6 +6006,7 @@ async def _coding_loop(
 
     try:
         app.bot_data.pop(stop_request_cache_key, None)
+        watchdog_task = asyncio.create_task(_tracker_watchdog())
         await _update_tracker(
             phase="setup",
             phase_detail="Preparing worker project directory",
@@ -6052,11 +6229,11 @@ async def _coding_loop(
                 await _update_tracker(
                     phase="finalization",
                     phase_detail="Stopped during milestone extraction",
-                    status="stopped",
+                    status="failed",
                     extraction_progress=0.5,
                 )
                 await _finalize_tracker(
-                    status="stopped",
+                    status="failed",
                     detail="Stopped during milestone extraction",
                 )
                 await app.bot.send_message(
@@ -6198,11 +6375,11 @@ async def _coding_loop(
                 await _update_tracker(
                     phase="finalization",
                     phase_detail=f"Stopped at milestone {i}/{total}",
-                    status="stopped",
+                    status="failed",
                     milestone_index=i,
                 )
                 await _finalize_tracker(
-                    status="stopped",
+                    status="failed",
                     detail=f"Stopped at milestone {i}/{total}",
                 )
                 await app.bot.send_message(
@@ -6883,7 +7060,7 @@ async def _coding_loop(
                     await _update_tracker(
                         phase="finalization",
                         phase_detail=f"Stopped while executing milestone {i}/{total}",
-                        status="stopped",
+                        status="failed",
                         milestone_index=i,
                         execution_progress=_execution_progress_value(
                             successful=successful_milestones,
@@ -6894,7 +7071,7 @@ async def _coding_loop(
                         ),
                     )
                     await _finalize_tracker(
-                        status="stopped",
+                        status="failed",
                         detail=f"Stopped at milestone {i}/{total}",
                     )
                     await app.bot.send_message(
@@ -7099,6 +7276,63 @@ async def _coding_loop(
                 },
             )
 
+    except asyncio.CancelledError:
+        cancel_status = str(loop_exit_request.get("status") or "").strip().lower()
+        if cancel_status not in {"failed", "stopped", "completed"}:
+            cancel_status = "stopped" if app.bot_data.get(stop_request_cache_key) else "failed"
+        cancel_detail = str(loop_exit_request.get("detail") or "").strip()
+        if not cancel_detail:
+            cancel_detail = (
+                "Session stopped by user"
+                if cancel_status == "stopped"
+                else "Coding loop cancelled before clean exit"
+            )
+        notify_text = str(loop_exit_request.get("notify_text") or "").strip()
+        exit_status = "ok" if cancel_status == "completed" else "fail"
+        failure_class = (
+            ""
+            if cancel_status == "completed"
+            else ("STOP_REQUESTED" if cancel_status == "stopped" else "ENVIRONMENT_FAILED")
+        )
+        await emit_runtime_trace_async(
+            db=db,
+            event="coding.loop.exit",
+            status=exit_status,
+            level="info" if exit_status == "ok" else "error",
+            flow=_runtime_flow(),
+            project_id=project_id,
+            phase="finalization",
+            worker_id=str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or ""),
+            transport=_runtime_transport_label(),
+            runtime_mode=_runtime_mode_label(),
+            error_type="LoopCancelled",
+            error_code=str(loop_exit_request.get("reason") or "LOOP_CANCELLED"),
+            error_message=cancel_detail,
+            failure_class=failure_class,
+            mitigation_hint="Inspect the tracker state and latest runtime trace events.",
+            working_dir=working_dir,
+        )
+        await _update_tracker(
+            phase="finalization",
+            phase_detail=cancel_detail,
+            status=cancel_status,
+            final_progress=1.0,
+            stage="",
+            gate="",
+            force=True,
+        )
+        await _finalize_tracker(
+            status=cancel_status,
+            detail=cancel_detail,
+        )
+        if notify_text:
+            with contextlib.suppress(Exception):
+                await app.bot.send_message(
+                    chat_id,
+                    notify_text,
+                    reply_markup=main_menu(),
+                )
+        return
     except Exception:
         logger.exception("Coding loop crashed for project %s user %s", project["id"], user_id)
         await emit_runtime_trace_async(
@@ -7138,6 +7372,10 @@ async def _coding_loop(
             reply_markup=main_menu(),
         )
     finally:
+        if watchdog_task is not None and not watchdog_task.done():
+            watchdog_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watchdog_task
         app.bot_data.pop(stop_request_cache_key, None)
         app.bot_data.pop(_MS_EVENT_KEY.format(uid=user_id), None)
         app.bot_data.pop(_MS_DECISION_KEY.format(uid=user_id), None)
@@ -7735,8 +7973,11 @@ async def _extract_milestones_codex_then_router(
         project["_loop_risk_assessment"] = []
         project["_loop_node_specs"] = []
 
+    planner_agent = str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router") or "router").strip().lower()
+    if planner_agent == "claude_ollama":
+        planner_agent = "claude"
     allow_router_fallback = bool(getattr(cfg, "CONTROL_LOOP_ROUTER_FALLBACK_ENABLED", False))
-    if str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router")).strip().lower() != "codex":
+    if planner_agent not in _planner_worker_agents():
         if allow_router_fallback:
             return await _extract_milestones_router(router, project)
         fallback = _deterministic_fallback()
@@ -7769,13 +8010,13 @@ async def _extract_milestones_codex_then_router(
     timeout = max(30, int(getattr(cfg, "MILESTONE_CODEX_TIMEOUT_SECONDS", 120) or 120))
 
     try:
-        if _use_acp_orchestration():
+        if _use_acp_orchestration() and planner_agent in _planner_acp_agents():
             runner = get_openclaw_runner()
             session = await runner.start_session(
                 phase="milestone_extraction",
                 project_id=str(project.get("id") or ""),
                 task_id=None,
-                stage="codex",
+                stage=planner_agent,
                 runtime=str(getattr(cfg, "OPENCLAW_RUNTIME", "acp") or "acp"),
                 queue_mode="soft",
             )
@@ -7783,11 +8024,13 @@ async def _extract_milestones_codex_then_router(
                 session_id=str(session.get("session_id") or ""),
                 prompt=prompt,
                 timeout_seconds=timeout,
-                stage="codex",
+                stage=planner_agent,
                 backend="native",
             )
             if int(run_result.get("returncode", 1) or 1) != 0:
-                raise RuntimeError(str(run_result.get("stderr") or run_result.get("stdout") or "codex failed"))
+                raise RuntimeError(
+                    str(run_result.get("stderr") or run_result.get("stdout") or f"{planner_agent} failed")
+                )
             output = str(run_result.get("stdout") or "").strip()
         else:
             await send_action(
@@ -7799,7 +8042,7 @@ async def _extract_milestones_codex_then_router(
             result = await send_action(
                 "run_coding_agent",
                 {
-                    "agent": "codex",
+                    "agent": planner_agent,
                     "backend": "auto",
                     "prompt": prompt,
                     "working_dir": working_dir,
@@ -7836,8 +8079,9 @@ async def _extract_milestones_codex_then_router(
         return fallback
     except Exception as exc:
         logger.warning(
-            "milestone.primary.failover project_id=%s stage=codex error=%s",
+            "milestone.primary.failover project_id=%s stage=%s error=%s",
             project.get("id"),
+            planner_agent,
             str(exc)[:220],
         )
         fallback = _deterministic_fallback()
@@ -8013,7 +8257,3 @@ def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9-]", "", name.lower().replace(" ", "-"))
     slug = re.sub(r"-+", "-", slug).strip("-")
     return slug or "project"
-
-
-
-

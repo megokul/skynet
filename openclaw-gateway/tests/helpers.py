@@ -4,6 +4,10 @@ Shared fixtures and sys.path bootstrap for SKYNET handler tests.
 import os
 import sys
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 # Add the gateway package root so all bot.* / db.* / gateway imports resolve.
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:

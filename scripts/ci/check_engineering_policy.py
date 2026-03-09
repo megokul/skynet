@@ -55,6 +55,7 @@ REQUIRED_DOC_HEADINGS: dict[str, list[str]] = {
     "docs/ENGINEERING_POLICY.md": [
         "# Engineering Policy",
         "## Documentation Requirements",
+        "## Configuration Source of Truth",
         "## Testing Requirements",
         "## Tracing Requirements",
         "## Merge and Handoff Evidence",

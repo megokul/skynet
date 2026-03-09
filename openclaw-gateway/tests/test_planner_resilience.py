@@ -103,6 +103,51 @@ async def test_extract_milestones_invalid_codex_json_uses_local_fallback():
 
 
 @pytest.mark.asyncio
+async def test_extract_milestones_qwen_uses_primary_agent_without_router():
+    project = {
+        "id": "proj-qwen",
+        "name": "qwen-plan",
+        "description": "Build a Windows Python script with popup hi and beep using stdlib only.",
+    }
+    router = MagicMock()
+    router.chat = AsyncMock()
+
+    async def _send_action(action, params, **kwargs):
+        del kwargs
+        if action == "create_directory":
+            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
+        if action == "run_coding_agent":
+            assert params["agent"] == "qwen"
+            return {
+                "status": "success",
+                "result": {
+                    "returncode": 0,
+                    "stdout": '["Implement main script", "Add tests", "Add skynet_run.json"]',
+                    "stderr": "",
+                },
+            }
+        raise AssertionError(f"Unexpected action: {action}")
+
+    with (
+        patch("bot.handlers.coding.cfg.PLANNER_PRIMARY_AGENT", "qwen"),
+        patch("bot.handlers.coding._use_acp_orchestration", return_value=False),
+        patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action)),
+    ):
+        milestones = await _extract_milestones_codex_then_router(
+            router=router,
+            project=project,
+            working_dir="E:/SKYNET-SANDBOX/Projects/qwen-plan",
+        )
+
+    assert milestones == [
+        "Implement main script",
+        "Add tests",
+        "Add skynet_run.json",
+    ]
+    router.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_extract_milestones_prefers_numbered_plan_without_codex_call():
     project = {
         "id": "proj-3",

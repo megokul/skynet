@@ -10,9 +10,38 @@ Environment variables always override YAML defaults.
 """
 
 import os
+import sys
 from enum import Enum
+from pathlib import Path
 
-from settings.loader import get_str as _s, get_int as _i, get_bool as _b
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from skynet.settings.loader import get_component_settings  # noqa: E402
+
+
+_settings_loader = get_component_settings("agent")
+
+
+def _setting(name: str, default=None, required: bool = False):
+    return _settings_loader.get(name, default, required)
+
+
+def _s(name: str, default: str = "", required: bool = False) -> str:
+    return _settings_loader.get_str(name, default, required)
+
+
+def _i(name: str, default: int = 0, required: bool = False) -> int:
+    return _settings_loader.get_int(name, default, required)
+
+
+def _b(name: str, default: bool = False, required: bool = False) -> bool:
+    return _settings_loader.get_bool(name, default, required)
+
+
+def _list(name: str, default: list[str] | None = None, required: bool = False) -> list[str]:
+    return _settings_loader.get_list(name, default=default, required=required)
 
 
 # ---------------------------------------------------------------------------
@@ -66,68 +95,38 @@ class Tier(str, Enum):
     BLOCKED = "BLOCKED"   # Never execute — reject instantly.
 
 
+def _required_action_set(name: str) -> set[str]:
+    items = _list(name, default=[], required=True)
+    return {str(item).strip() for item in items if str(item).strip()}
+
+
+def _required_string_map(name: str) -> dict[str, str]:
+    raw = _setting(name, required=True)
+    if not isinstance(raw, dict):
+        raise ValueError(f"Required mapping setting '{name}' must be a dict")
+    normalized: dict[str, str] = {}
+    for key, value in raw.items():
+        key_text = str(key).strip().lower()
+        value_text = str(value).strip()
+        if key_text and value_text:
+            normalized[key_text] = value_text
+    if not normalized:
+        raise ValueError(f"Required mapping setting '{name}' is empty")
+    return normalized
+
+
 # ---------------------------------------------------------------------------
 # Action → Tier mapping
-# Only actions listed here are permitted. Everything else is BLOCKED.
+# Only actions listed in settings are permitted. Everything else is BLOCKED.
 # ---------------------------------------------------------------------------
-AUTO_ACTIONS: set[str] = {
-    "git_status",
-    "web_search",
-    "run_tests",
-    "lint_project",
-    "start_dev_server",
-    "build_project",
-    "file_read",
-    "list_directory",
-    "ollama_chat",
-    "check_coding_agents",
-    "trace_runtime_probe",
-    "cancel_runtime_session",
-}
+AUTO_ACTIONS: set[str] = _required_action_set("AUTO_ACTIONS")
+CONFIRM_ACTIONS: set[str] = _required_action_set("CONFIRM_ACTIONS")
 
-CONFIRM_ACTIONS: set[str] = {
-    "git_commit",
-    "install_dependencies",
-    "file_write",
-    "create_directory",
-    "git_init",
-    "git_add_all",
-    "git_push",
-    "gh_create_repo",
-    "open_in_vscode",
-    "run_coding_agent",
-    "exec_command",
-    "docker_build",
-    "docker_compose_up",
-    "close_app",
-    "zip_project",
-}
-
-# Hardcoded allowlist of process names that close_app can terminate.
 # Only these executables can be closed — anything else is rejected.
-CLOSEABLE_APPS: dict[str, str] = {
-    "chrome": "chrome.exe",
-    "firefox": "firefox.exe",
-    "edge": "msedge.exe",
-    "notepad": "notepad.exe",
-    "code": "Code.exe",
-    "explorer": "explorer.exe",
-    "slack": "slack.exe",
-    "discord": "Discord.exe",
-    "spotify": "Spotify.exe",
-    "teams": "Teams.exe",
-}
+CLOSEABLE_APPS: dict[str, str] = _required_string_map("CLOSEABLE_APPS")
 
 # Explicitly listed so the validator can log attempts against known-bad ops.
-BLOCKED_ACTIONS: set[str] = {
-    "shell_exec",
-    "format_disk",
-    "modify_registry",
-    "manage_users",
-    "firewall_change",
-    "download_exec",
-    "eval_code",
-}
+BLOCKED_ACTIONS: set[str] = _required_action_set("BLOCKED_ACTIONS")
 
 
 # ---------------------------------------------------------------------------

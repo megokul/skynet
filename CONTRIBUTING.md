@@ -8,6 +8,11 @@ This repository enforces one boundary:
 
 Source of truth: `docs/SKYNET_OPENCLAW_CONTRACT.md`.
 
+Configuration source of truth:
+- runtime defaults belong in component settings files
+- the shared loader in `skynet/settings/loader.py` is the only settings parser/env bootstrap path
+- do not add duplicate defaults to scripts, tests, Docker Compose, or workflows
+
 ## Local Setup
 
 ```bash
@@ -42,3 +47,4 @@ python scripts/dev/smoke.py
    - `README.md`
    - `AGENT_GUIDE.md`
    - `docs/SKYNET_OPENCLAW_CONTRACT.md` (if contract changes)
+4. Keep runtime settings changes centralized in the shared settings loader + component settings files.

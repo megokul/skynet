@@ -11,20 +11,18 @@ This module now uses the unified settings loader for consistency.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
-# Import unified settings loader
-from settings.loader import (
-    get_settings as _get_loader,
-    get_str as _loader_get_str,
-    get_int as _loader_get_int,
-    get_bool as _loader_get_bool,
-    get_list as _loader_get_list,
-)
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from skynet.settings.loader import get_component_settings  # noqa: E402
 
 # Initialize global settings loader
-_settings_loader = _get_loader()
+_settings_loader = get_component_settings("gateway")
 
 # ---------------------------------------------------------------------------
 # Backward compatibility wrappers - these delegate to the unified loader
@@ -32,17 +30,17 @@ _settings_loader = _get_loader()
 
 def get_str(name: str, default: str = "") -> str:
     """Get string setting (backward compatible with old _s function)."""
-    return _loader_get_str(name, default)
+    return _settings_loader.get_str(name, default)
 
 
 def get_int(name: str, default: int = 0) -> int:
     """Get integer setting (backward compatible with old _i function)."""
-    return _loader_get_int(name, default)
+    return _settings_loader.get_int(name, default)
 
 
 def get_bool(name: str, default: bool = False) -> bool:
     """Get boolean setting (backward compatible with old _b function)."""
-    return _loader_get_bool(name, default)
+    return _settings_loader.get_bool(name, default)
 
 
 # Aliases for backward compatibility with existing code
@@ -57,9 +55,14 @@ __all__ = [
     "get_bool",
     "get_list",
     "get_settings",
+    "get_provider_config",
     "get_coding_fallback_chain",
     "get_openclaw_stage_chain",
     "get_code_index_globs",
+    "get_live_e2e_flow",
+    "get_live_e2e_backend",
+    "get_live_e2e_agent",
+    "get_live_e2e_container_log_config",
     "get_provider_priority",
     "get_ssh_config",
     "dump_config",
@@ -73,7 +76,22 @@ def get_settings() -> Any:
 
 def get_list(name: str, separator: str = ",", default: list[str] | None = None) -> list[str]:
     """Get list setting."""
-    return _loader_get_list(name, separator, default)
+    return _settings_loader.get_list(name, separator, default)
+
+
+def _normalized_agent_list(name: str, default: list[str]) -> tuple[str, ...]:
+    items = get_list(name, default=default)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in items:
+        agent = str(raw or "").strip().lower()
+        if agent == "claude_ollama":
+            agent = "claude"
+        if not agent or agent in seen:
+            continue
+        seen.add(agent)
+        normalized.append(agent)
+    return tuple(normalized)
 
 
 # Backward compatibility: SETTINGS_FILE path
@@ -349,6 +367,14 @@ OPENCLAW_CODEX_BIN: str = _s("OPENCLAW_CODEX_BIN", _s("OPENCLAW_SSH_CODEX_BIN", 
 OPENCLAW_CLAUDE_BIN: str = _s("OPENCLAW_CLAUDE_BIN", _s("OPENCLAW_SSH_CLAUDE_BIN", "claude"))
 OPENCLAW_CLINE_BIN: str = _s("OPENCLAW_CLINE_BIN", _s("OPENCLAW_SSH_CLINE_BIN", "cline"))
 PLANNER_PRIMARY_AGENT: str = _s("SKYNET_PLANNER_PRIMARY_AGENT", "codex").lower()
+PLANNER_WORKER_AGENTS: tuple[str, ...] = _normalized_agent_list(
+    "SKYNET_PLANNER_WORKER_AGENTS",
+    ["codex", "qwen", "claude", "cline"],
+)
+PLANNER_ACP_AGENTS: tuple[str, ...] = _normalized_agent_list(
+    "SKYNET_PLANNER_ACP_AGENTS",
+    ["codex", "claude", "cline"],
+)
 PLANNER_ROUTER_FALLBACK_ENABLED: bool = _b(
     "SKYNET_PLANNER_ROUTER_FALLBACK_ENABLED",
     True,
@@ -357,6 +383,18 @@ PLANNER_CODEX_TIMEOUT_SECONDS: int = _i("SKYNET_PLANNER_CODEX_TIMEOUT_SECONDS", 
 MILESTONE_CODEX_TIMEOUT_SECONDS: int = _i("SKYNET_MILESTONE_CODEX_TIMEOUT_SECONDS", 120)
 CODING_TRANSPORT: str = _s("SKYNET_CODING_TRANSPORT", "websocket_primary").lower()
 E2E_FAIL_ON_SKIP: bool = _b("SKYNET_E2E_FAIL_ON_SKIP", True)
+E2E_CONTAINER_LOG_STREAM_ENABLED: bool = _b("SKYNET_E2E_CONTAINER_LOG_STREAM_ENABLED", True)
+E2E_CONTAINER_LOG_REQUIRE_STREAM: bool = _b("SKYNET_E2E_CONTAINER_LOG_REQUIRE_STREAM", True)
+E2E_CONTAINER_LOG_SOURCES: tuple[str, ...] = tuple(
+    get_list("SKYNET_E2E_CONTAINER_LOG_SOURCES", default=["openclaw-gateway", "skynet-api"])
+)
+E2E_CONTAINER_LOG_MAX_LINE_CHARS: int = _i("SKYNET_E2E_CONTAINER_LOG_MAX_LINE_CHARS", 1200)
+E2E_CONTAINER_LOG_RING_LINES: int = _i("SKYNET_E2E_CONTAINER_LOG_RING_LINES", 300)
+E2E_CONTAINER_LOG_TAIL_DEFAULT: int = _i("SKYNET_E2E_CONTAINER_LOG_TAIL_DEFAULT", 100)
+E2E_CONTAINER_LOG_TAIL_OVERRIDES: str = _s(
+    "SKYNET_E2E_CONTAINER_LOG_TAIL_OVERRIDES",
+    "openclaw-gateway=200,skynet-api=100",
+).strip()
 CODING_PROGRESS_HEARTBEAT_SECONDS: int = _i("SKYNET_CODING_PROGRESS_HEARTBEAT_SECONDS", 30)
 CODING_AGENT_MAX_WAIT_SECONDS: int = _i("SKYNET_CODING_AGENT_MAX_WAIT_SECONDS", 900)
 MILESTONE_EXTRACTION_HEARTBEAT_SECONDS: int = _i(
@@ -372,11 +410,20 @@ TELEGRAM_TRACKER_EDIT_INTERVAL_SECONDS: int = _i(
 TELEGRAM_TRACKER_STALE_WARN_SECONDS: int = _i(
     "SKYNET_TELEGRAM_TRACKER_STALE_WARN_SECONDS", 90
 )
+TELEGRAM_TRACKER_STUCK_EXIT_SECONDS: int = _i(
+    "SKYNET_TELEGRAM_TRACKER_STUCK_EXIT_SECONDS", 300
+)
+TELEGRAM_TRACKER_WATCHDOG_POLL_SECONDS: int = _i(
+    "SKYNET_TELEGRAM_TRACKER_WATCHDOG_POLL_SECONDS", 5
+)
 TELEGRAM_TRACKER_BAR_WIDTH: int = _i("SKYNET_TELEGRAM_TRACKER_BAR_WIDTH", 20)
 TELEGRAM_TRACKER_VERBOSE_PIPELINE: bool = _b(
     "SKYNET_TELEGRAM_TRACKER_VERBOSE_PIPELINE",
     True,
 )
+LIVE_E2E_FLOW: str = _s("SKYNET_LIVE_E2E_FLOW", "conversation").strip().lower()
+LIVE_E2E_BACKEND: str = _s("SKYNET_LIVE_E2E_BACKEND", "auto").strip().lower()
+LIVE_E2E_AGENT: str = _s("SKYNET_LIVE_E2E_AGENT", "").strip().lower()
 
 # SSH tunnel reliability controls
 SSH_MAX_PARALLEL: int = _i("OPENCLAW_SSH_MAX_PARALLEL", 2)
@@ -475,6 +522,23 @@ def get_coding_fallback_chain() -> list[str]:
     return [c.strip() for c in raw.split(",") if c.strip()]
 
 
+def get_provider_config() -> dict[str, str]:
+    """Return the provider-router config payload from effective settings."""
+    return {
+        "OLLAMA_DEFAULT_MODEL": OLLAMA_DEFAULT_MODEL,
+        "GOOGLE_AI_API_KEY": GOOGLE_AI_API_KEY,
+        "GEMINI_MODEL": GEMINI_MODEL,
+        "GEMINI_ONLY_MODE": "1" if GEMINI_ONLY_MODE else "0",
+        "GROQ_API_KEY": GROQ_API_KEY,
+        "OPENROUTER_API_KEY": OPENROUTER_API_KEY,
+        "OPENROUTER_MODEL": OPENROUTER_MODEL,
+        "OPENROUTER_FALLBACK_MODELS": OPENROUTER_FALLBACK_MODELS,
+        "DEEPSEEK_API_KEY": DEEPSEEK_API_KEY,
+        "OPENAI_API_KEY": OPENAI_API_KEY,
+        "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY,
+    }
+
+
 def get_openclaw_stage_chain() -> list[str]:
     """Return the OpenClaw stage chain as a list."""
     raw = OPENCLAW_STAGE_CHAIN or "codex"
@@ -491,6 +555,84 @@ def get_provider_priority() -> list[str]:
     """Return the AI provider priority list."""
     raw = AI_PROVIDER_PRIORITY or ""
     return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def get_live_e2e_flow() -> str:
+    """Return the configured live E2E flow mode."""
+    return LIVE_E2E_FLOW or "conversation"
+
+
+def get_live_e2e_backend() -> str:
+    """Return the configured direct live E2E backend."""
+    return LIVE_E2E_BACKEND or "auto"
+
+
+def get_live_e2e_agent() -> str:
+    """Return the configured direct live E2E agent, derived from coding policy when unset."""
+    if LIVE_E2E_AGENT:
+        return LIVE_E2E_AGENT
+    chain = get_coding_fallback_chain()
+    return chain[0] if chain else "codex"
+
+
+def _parse_container_log_tail_overrides(raw: str) -> dict[str, int]:
+    overrides: dict[str, int] = {}
+    for token in str(raw or "").split(","):
+        item = token.strip()
+        if not item or "=" not in item:
+            continue
+        name, value = item.split("=", 1)
+        container = name.strip()
+        if not container:
+            continue
+        try:
+            tail_lines = int(value.strip())
+        except ValueError:
+            continue
+        if tail_lines < 1:
+            continue
+        overrides[container] = tail_lines
+    return overrides
+
+
+def get_live_e2e_container_log_config() -> dict[str, Any]:
+    """Return normalized live E2E container-log settings."""
+    sources = get_list(
+        "SKYNET_E2E_CONTAINER_LOG_SOURCES",
+        default=list(E2E_CONTAINER_LOG_SOURCES) or ["openclaw-gateway", "skynet-api"],
+    )
+    tail_default = max(
+        1,
+        get_int("SKYNET_E2E_CONTAINER_LOG_TAIL_DEFAULT", E2E_CONTAINER_LOG_TAIL_DEFAULT),
+    )
+    tail_overrides_raw = get_str(
+        "SKYNET_E2E_CONTAINER_LOG_TAIL_OVERRIDES",
+        E2E_CONTAINER_LOG_TAIL_OVERRIDES,
+    )
+    return {
+        "stream_enabled": get_bool(
+            "SKYNET_E2E_CONTAINER_LOG_STREAM_ENABLED",
+            E2E_CONTAINER_LOG_STREAM_ENABLED,
+        ),
+        "require_stream": get_bool(
+            "SKYNET_E2E_CONTAINER_LOG_REQUIRE_STREAM",
+            E2E_CONTAINER_LOG_REQUIRE_STREAM,
+        ),
+        "sources": sources,
+        "max_line_chars": max(
+            200,
+            get_int(
+                "SKYNET_E2E_CONTAINER_LOG_MAX_LINE_CHARS",
+                E2E_CONTAINER_LOG_MAX_LINE_CHARS,
+            ),
+        ),
+        "ring_lines": max(
+            20,
+            get_int("SKYNET_E2E_CONTAINER_LOG_RING_LINES", E2E_CONTAINER_LOG_RING_LINES),
+        ),
+        "tail_default": tail_default,
+        "tail_overrides": _parse_container_log_tail_overrides(tail_overrides_raw),
+    }
 
 
 def get_ssh_config() -> dict:

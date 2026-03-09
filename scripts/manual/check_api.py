@@ -2,17 +2,27 @@
 
 import asyncio
 import json
-import os
 import sys
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
-from dotenv import load_dotenv
 
-load_dotenv()
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-API_BASE = "http://localhost:8000"
-API_KEY = os.getenv("SKYNET_API_KEY", "").strip()
+from skynet.settings.loader import bootstrap_component_env, get_settings  # noqa: E402
+
+
+bootstrap_component_env("control")
+_SETTINGS = get_settings()
+
+_API_HOST = _SETTINGS.get_str("SKYNET_HTTP_HOST", "localhost").strip() or "localhost"
+if _API_HOST in {"0.0.0.0", "::"}:
+    _API_HOST = "localhost"
+API_BASE = f"http://{_API_HOST}:{_SETTINGS.get_int('SKYNET_HTTP_PORT', 8000)}"
+API_KEY = _SETTINGS.get_str("SKYNET_API_KEY", "").strip()
 
 
 def _headers() -> dict[str, str]:

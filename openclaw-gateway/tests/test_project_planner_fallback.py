@@ -44,6 +44,65 @@ async def test_planner_codex_success_skips_router_fallback():
 
 
 @pytest.mark.asyncio
+async def test_planner_qwen_success_skips_router_fallback():
+    router = MagicMock()
+    router.chat = AsyncMock()
+
+    async def _send_action(action, params, **kwargs):
+        del kwargs
+        if action == "create_directory":
+            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
+        if action == "run_coding_agent":
+            assert params["agent"] == "qwen"
+            return {
+                "status": "success",
+                "result": {"returncode": 0, "stdout": "Qwen planner reply", "stderr": ""},
+            }
+        raise AssertionError(f"Unexpected action: {action}")
+
+    with (
+        patch("bot.handlers.project.cfg.PLANNER_PRIMARY_AGENT", "qwen"),
+        patch("bot.handlers.project.is_worker_available", return_value=True),
+        patch("bot.handlers.project.send_action", new=AsyncMock(side_effect=_send_action)),
+    ):
+        reply = await _planner_via_codex_then_router(
+            router=router,
+            messages=[{"role": "user", "content": "plan this"}],
+            system="planner system",
+            max_tokens=512,
+            task_type="planning",
+            user_id=42,
+        )
+
+    assert reply == "Qwen planner reply"
+    router.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_planner_worker_agent_list_is_configurable():
+    router = MagicMock()
+    router.chat = AsyncMock(return_value=MagicMock(text="Router fallback reply"))
+
+    with (
+        patch("bot.handlers.project.cfg.PLANNER_PRIMARY_AGENT", "qwen"),
+        patch("bot.handlers.project.cfg.PLANNER_WORKER_AGENTS", ("codex",)),
+        patch("bot.handlers.project.cfg.PLANNER_ROUTER_FALLBACK_ENABLED", True),
+        patch("bot.handlers.project.send_action", new=AsyncMock()),
+    ):
+        reply = await _planner_via_codex_then_router(
+            router=router,
+            messages=[{"role": "user", "content": "plan this"}],
+            system="planner system",
+            max_tokens=512,
+            task_type="planning",
+            user_id=42,
+        )
+
+    assert reply == "Router fallback reply"
+    router.chat.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_planner_codex_failure_falls_back_to_router():
     router = MagicMock()
     router.chat = AsyncMock(return_value=MagicMock(text="Router fallback reply"))

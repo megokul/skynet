@@ -16,15 +16,28 @@ import platform
 import shutil
 import socket
 import ssl
+import sys
 import time
 from typing import Any
 
 import websockets
 from websockets.asyncio.client import ClientConnection
 
+from pathlib import Path
 import agent_config as config
 from router.action_router import route
-from settings.loader import get_str as _cfg_s
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from skynet.settings.loader import get_component_settings  # noqa: E402
+
+_settings_loader = get_component_settings("agent")
+
+
+def _cfg_s(name: str, default: str = "") -> str:
+    return _settings_loader.get_str(name, default)
 
 logger = logging.getLogger("chathan.connection")
 _SESSION_STARTED_AT = time.monotonic()
@@ -44,6 +57,7 @@ def _detect_coding_agents() -> dict[str, str]:
         "codex": _cfg_s("SKYNET_CODEX_BIN") or _cfg_s("OPENCLAW_CODEX_BIN", "codex"),
         "claude": _cfg_s("SKYNET_CLAUDE_BIN") or _cfg_s("OPENCLAW_CLAUDE_BIN", "claude"),
         "cline": _cfg_s("SKYNET_CLINE_BIN") or _cfg_s("OPENCLAW_CLINE_BIN", "cline"),
+        "qwen": _cfg_s("SKYNET_QWEN_BIN") or _cfg_s("OPENCLAW_QWEN_BIN", "qwen"),
     }
     detected: dict[str, str] = {}
     for name, binary in probes.items():

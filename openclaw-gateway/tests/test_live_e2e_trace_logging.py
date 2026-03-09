@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+import config as gateway_config
 import e2e_live
+import live_diagnostics
 import test_e2e_telegram_real_live as telegram_live
 
 
@@ -18,7 +22,7 @@ def test_live_trace_defaults_to_repo_logs(monkeypatch) -> None:
 
 def test_telegram_trace_defaults_to_repo_logs(monkeypatch) -> None:
     monkeypatch.delenv("SKYNET_LIVE_TRACE_FILE", raising=False)
-    path, trace = telegram_live._make_live_trace_logger("unit-telegram-trace")
+    path, trace = live_diagnostics.make_live_trace_logger("unit-telegram-trace")
     try:
         assert path.exists()
         assert path.parent.name == "logs"
@@ -79,7 +83,7 @@ def test_container_log_ssh_resolution_prefers_e2e_override(monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_TUNNEL_EC2_USER", "ignored-user")
     monkeypatch.setenv("OPENCLAW_TUNNEL_SSH_KEY", "ignored-key")
 
-    resolved = telegram_live._resolve_container_log_stream_ssh()
+    resolved = live_diagnostics.resolve_container_log_stream_ssh()
     assert resolved is not None
     assert resolved["host"] == "ec2.example"
     assert resolved["user"] == "ubuntu"
@@ -95,7 +99,7 @@ def test_container_log_ssh_resolution_falls_back_to_tunnel(monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_TUNNEL_EC2_USER", "ubuntu")
     monkeypatch.setenv("OPENCLAW_TUNNEL_SSH_KEY", "C:/keys/fallback.pem")
 
-    resolved = telegram_live._resolve_container_log_stream_ssh()
+    resolved = live_diagnostics.resolve_container_log_stream_ssh()
     assert resolved is not None
     assert resolved["host"] == "ec2-fallback"
     assert resolved["user"] == "ubuntu"
@@ -108,13 +112,150 @@ def test_container_log_line_redaction_masks_secrets() -> None:
         "authorization: Bearer ABCDEF123 token=my-token password=supersecret "
         "https://api.telegram.org/bot123456:ABCdefGhIJklMNopQRstUVwxYZ/sendMessage"
     )
-    sanitized = telegram_live._sanitize_container_log_line(raw, max_chars=500)
+    sanitized = live_diagnostics.sanitize_container_log_line(raw, max_chars=500)
     lowered = sanitized.lower()
     assert "abcdef123" not in lowered
     assert "my-token" not in lowered
     assert "supersecret" not in lowered
     assert "bot123456:" not in lowered
     assert "redacted" in lowered
+
+
+def test_live_e2e_container_log_config_defaults(monkeypatch) -> None:
+    for key in (
+        "SKYNET_E2E_CONTAINER_LOG_STREAM_ENABLED",
+        "SKYNET_E2E_CONTAINER_LOG_REQUIRE_STREAM",
+        "SKYNET_E2E_CONTAINER_LOG_SOURCES",
+        "SKYNET_E2E_CONTAINER_LOG_MAX_LINE_CHARS",
+        "SKYNET_E2E_CONTAINER_LOG_RING_LINES",
+        "SKYNET_E2E_CONTAINER_LOG_TAIL_DEFAULT",
+        "SKYNET_E2E_CONTAINER_LOG_TAIL_OVERRIDES",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    cfg = gateway_config.get_live_e2e_container_log_config()
+    assert cfg["stream_enabled"] is True
+    assert cfg["require_stream"] is True
+    assert cfg["sources"] == ["openclaw-gateway", "skynet-api"]
+    assert cfg["max_line_chars"] == 1200
+    assert cfg["ring_lines"] == 300
+    assert cfg["tail_default"] == 100
+    assert cfg["tail_overrides"] == {"openclaw-gateway": 200, "skynet-api": 100}
+
+
+def test_live_e2e_container_log_config_env_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("SKYNET_E2E_CONTAINER_LOG_STREAM_ENABLED", "0")
+    monkeypatch.setenv("SKYNET_E2E_CONTAINER_LOG_REQUIRE_STREAM", "false")
+    monkeypatch.setenv("SKYNET_E2E_CONTAINER_LOG_SOURCES", "gateway,worker")
+    monkeypatch.setenv("SKYNET_E2E_CONTAINER_LOG_MAX_LINE_CHARS", "900")
+    monkeypatch.setenv("SKYNET_E2E_CONTAINER_LOG_RING_LINES", "44")
+    monkeypatch.setenv("SKYNET_E2E_CONTAINER_LOG_TAIL_DEFAULT", "55")
+    monkeypatch.setenv(
+        "SKYNET_E2E_CONTAINER_LOG_TAIL_OVERRIDES",
+        "gateway=250,worker=70,broken,nope=x,empty=",
+    )
+
+    cfg = gateway_config.get_live_e2e_container_log_config()
+    assert cfg["stream_enabled"] is False
+    assert cfg["require_stream"] is False
+    assert cfg["sources"] == ["gateway", "worker"]
+    assert cfg["max_line_chars"] == 900
+    assert cfg["ring_lines"] == 44
+    assert cfg["tail_default"] == 55
+    assert cfg["tail_overrides"] == {"gateway": 250, "worker": 70}
+
+
+@pytest.mark.asyncio
+async def test_container_snapshot_uses_configured_tail_counts(monkeypatch, tmp_path: Path) -> None:
+    key_path = tmp_path / "diag.pem"
+    key_path.write_text("key", encoding="utf-8")
+    calls: list[str] = []
+
+    async def _fake_run(cmd: list[str], *, timeout_s: float) -> tuple[int, str, str]:
+        calls.append(" ".join(cmd))
+        return 0, "2026-03-09T12:00:00Z hello\n", ""
+
+    monkeypatch.setattr(
+        live_diagnostics,
+        "resolve_container_log_stream_ssh",
+        lambda: {
+            "host": "ec2.example",
+            "user": "ubuntu",
+            "key": str(key_path),
+            "key_source": "test",
+            "port": 22,
+        },
+    )
+    monkeypatch.setattr(live_diagnostics, "_run_capture_command", _fake_run)
+
+    diagnostics = live_diagnostics.LiveContainerDiagnostics(
+        trace_fn=lambda *_args, **_kwargs: None,
+        config_override={
+            "sources": ["openclaw-gateway", "worker"],
+            "stream_enabled": False,
+            "tail_default": 55,
+            "tail_overrides": {"openclaw-gateway": 200},
+        },
+    )
+    tails, errors = await diagnostics._capture_snapshot_bundle()
+
+    assert not errors
+    assert tails["openclaw-gateway"] == ["2026-03-09T12:00:00Z hello"]
+    assert tails["worker"] == ["2026-03-09T12:00:00Z hello"]
+    assert any("--tail 200 --timestamps openclaw-gateway" in cmd for cmd in calls)
+    assert any("--tail 55 --timestamps worker" in cmd for cmd in calls)
+
+
+@pytest.mark.asyncio
+async def test_container_diagnostics_require_stream_fails_fast(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+
+    def _trace(event: str, **fields) -> None:
+        events.append((event, fields))
+
+    monkeypatch.setattr(live_diagnostics, "resolve_container_log_stream_ssh", lambda: None)
+    diagnostics = live_diagnostics.LiveContainerDiagnostics(
+        trace_fn=_trace,
+        config_override={
+            "sources": ["openclaw-gateway"],
+            "stream_enabled": True,
+            "require_stream": True,
+        },
+    )
+
+    with pytest.raises(AssertionError, match="CONTAINER_LOG_STREAM_UNAVAILABLE"):
+        await diagnostics.start()
+    assert any(event == "container.log.stream.error" for event, _fields in events)
+
+
+@pytest.mark.asyncio
+async def test_container_diagnostics_emit_bundle_on_success_and_failure(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+
+    def _trace(event: str, **fields) -> None:
+        events.append((event, fields))
+
+    async def _fake_capture(self) -> tuple[dict[str, list[str]], list[str]]:
+        return {"openclaw-gateway": ["line"]}, []
+
+    monkeypatch.setattr(
+        live_diagnostics.LiveContainerDiagnostics,
+        "_capture_snapshot_bundle",
+        _fake_capture,
+    )
+    diagnostics = live_diagnostics.LiveContainerDiagnostics(
+        trace_fn=_trace,
+        config_override={"sources": ["openclaw-gateway"], "stream_enabled": False},
+    )
+
+    await diagnostics.emit_bundle(status="ok", reason="clean_exit")
+    await diagnostics.emit_bundle(status="fail", reason="flow_failed")
+
+    assert [event for event, _fields in events] == ["container.log.bundle", "container.log.bundle"]
+    assert events[0][1]["status"] == "ok"
+    assert events[0][1]["reason"] == "clean_exit"
+    assert events[1][1]["status"] == "fail"
+    assert events[1][1]["reason"] == "flow_failed"
 
 
 def test_runtime_trace_progress_uses_mtime_and_line_count() -> None:

@@ -159,7 +159,19 @@ def milestone_review() -> InlineKeyboardMarkup:
             InlineKeyboardButton("✅ Run It", callback_data=CB_MILESTONE_APPROVE),
             InlineKeyboardButton("⏭ Skip",   callback_data=CB_MILESTONE_SKIP),
         ],
-        [InlineKeyboardButton("🛑 Stop Session", callback_data=CB_MILESTONE_STOP)],
+        [InlineKeyboardButton("🛑 Stop and Exit", callback_data=CB_MILESTONE_STOP)],
+    ])
+
+
+def tracker_session_controls(*, status: str) -> InlineKeyboardMarkup:
+    """Controls shown on the live tracker message."""
+    normalized = str(status or "").strip().lower()
+    if normalized in {"completed", "failed", "stopped"}:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU)],
+        ])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛑 Stop and Exit", callback_data=CB_MILESTONE_STOP)],
     ])
 
 

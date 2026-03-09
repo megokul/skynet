@@ -16,23 +16,23 @@ Modes:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-try:
-    from dotenv import load_dotenv
-except Exception:  # pragma: no cover - optional dependency at runtime
-    load_dotenv = None  # type: ignore[assignment]
+REPO_ROOT = Path(__file__).resolve().parents[2]
+GATEWAY_ROOT = REPO_ROOT / "openclaw-gateway"
+for candidate in (str(REPO_ROOT), str(GATEWAY_ROOT)):
+    if candidate not in sys.path:
+        sys.path.insert(0, candidate)
 
-# Make sure we can import from the gateway package.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from live_settings import build_gateway_runtime_env, trace_gateway_runtime
+import config as cfg
+from live_diagnostics import LiveTrace
 
 
 PROMPT = (
@@ -50,35 +50,6 @@ def _bool_env(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-class LiveTrace:
-    def __init__(self, label: str) -> None:
-        env_path = os.environ.get("SKYNET_LIVE_TRACE_FILE", "").strip()
-        if env_path:
-            path = Path(env_path)
-        else:
-            repo_root = Path(__file__).resolve().parents[2]
-            log_dir = repo_root / "logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            path = log_dir / f"{label}-{int(time.time())}.log"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.path = path
-        self._started = time.monotonic()
-        self.log("trace.start", trace_file=str(self.path))
-        print(f"[LIVE TRACE] {self.path}", flush=True)
-
-    def log(self, event: str, **fields: Any) -> None:
-        payload: dict[str, Any] = {
-            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "elapsed_s": round(time.monotonic() - self._started, 1),
-            "event": event,
-        }
-        payload.update(fields)
-        line = json.dumps(payload, ensure_ascii=True, default=str)
-        print(line, flush=True)
-        with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
 
 
 def _fail(trace: LiveTrace, message: str, *, detail: Any | None = None) -> None:
@@ -177,99 +148,13 @@ def _infer_infra_category(output: str) -> str:
     return ""
 
 
-def _load_live_env(trace: LiveTrace) -> None:
-    if load_dotenv is None:
-        trace.log("env.dotenv", status="unavailable", reason="python-dotenv not installed")
-        return
-
-    repo_root = Path(__file__).resolve().parents[2]
-    candidates = []
-    explicit = os.environ.get("SKYNET_ENV_FILE", "").strip()
-    if explicit:
-        candidates.append(Path(explicit))
-    candidates.extend(
-        [
-            repo_root / ".env",
-            repo_root / "openclaw-gateway" / ".env",
-        ]
-    )
-
-    loaded: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        try:
-            key = str(candidate.resolve()).lower()
-        except Exception:
-            key = str(candidate).lower()
-        if key in seen or not candidate.exists():
-            continue
-        seen.add(key)
-        load_dotenv(candidate, override=False)
-        loaded.append(str(candidate))
-
-    trace.log("env.dotenv", loaded_files=loaded)
-
-
-def _parse_settings_line(line: str) -> tuple[str, str] | None:
-    stripped = line.strip()
-    if not stripped or stripped.startswith("#"):
-        return None
-    match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$", stripped)
-    if not match:
-        return None
-    key, value = match.group(1), match.group(2).strip()
-    if value.startswith('"') and value.endswith('"') and len(value) >= 2:
-        value = value[1:-1]
-    if value.startswith("'") and value.endswith("'") and len(value) >= 2:
-        value = value[1:-1].replace("''", "'")
-    return key, value
-
-
-def _load_settings_env(trace: LiveTrace) -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    explicit = os.environ.get("SKYNET_SETTINGS_FILE", "").strip()
-    candidates: list[Path] = []
-    if explicit:
-        candidates.append(Path(explicit))
-    candidates.extend(
-        [
-            repo_root / "openclaw-gateway" / "settings" / "settings.local.yaml",
-            repo_root / "openclaw-gateway" / "settings" / "settings.yaml",
-        ]
-    )
-
-    selected: Path | None = None
-    for candidate in candidates:
-        if candidate.exists():
-            selected = candidate
-            break
-
-    if selected is None:
-        trace.log("env.settings", loaded=False, reason="settings file not found")
-        return
-
-    loaded = 0
-    for raw in selected.read_text(encoding="utf-8", errors="ignore").splitlines():
-        parsed = _parse_settings_line(raw)
-        if not parsed:
-            continue
-        key, value = parsed
-        if os.environ.get(key):
-            continue
-        os.environ[key] = value
-        loaded += 1
-
-    trace.log("env.settings", loaded=True, file=str(selected), hydrated=loaded)
-
-
 def _run_conversation_flow(trace: LiveTrace) -> None:
-    repo_root = Path(__file__).resolve().parents[2]
     target = (
         "openclaw-gateway/tests/test_e2e_conversation_live.py::"
         "test_live_conversation_real_planner_codegen_no_github_push"
     )
     cmd = [sys.executable, "-m", "pytest", target, "-q", "-s"]
-    env = os.environ.copy()
+    env = build_gateway_runtime_env(dict(os.environ))
     env["SKYNET_E2E_LIVE"] = os.environ.get("SKYNET_E2E_LIVE", "1")
     env["SKYNET_LIVE_TRACE_FILE"] = str(trace.path)
     env["SKYNET_E2E_FAIL_ON_SKIP"] = os.environ.get("SKYNET_E2E_FAIL_ON_SKIP", "1")
@@ -277,12 +162,12 @@ def _run_conversation_flow(trace: LiveTrace) -> None:
     trace.log("e2e.step.start", step="conversation_flow", status="start")
     trace.log(
         "conversation.invoke",
-        repo_root=str(repo_root),
+        repo_root=str(REPO_ROOT),
         cmd=" ".join(cmd),
     )
     completed = subprocess.run(
         cmd,
-        cwd=str(repo_root),
+        cwd=str(REPO_ROOT),
         env=env,
         text=True,
         capture_output=True,
@@ -343,13 +228,12 @@ def _run_conversation_flow(trace: LiveTrace) -> None:
 
 
 def _run_telegram_real_flow(trace: LiveTrace) -> None:
-    repo_root = Path(__file__).resolve().parents[2]
     target = (
         "openclaw-gateway/tests/test_e2e_telegram_real_live.py::"
         "test_real_telegram_chat_flow_no_github_repo_creation"
     )
     cmd = [sys.executable, "-m", "pytest", target, "-q", "-s"]
-    env = os.environ.copy()
+    env = build_gateway_runtime_env(dict(os.environ))
     env["SKYNET_E2E_LIVE"] = os.environ.get("SKYNET_E2E_LIVE", "1")
     env["SKYNET_LIVE_TRACE_FILE"] = str(trace.path)
     env["SKYNET_E2E_FAIL_ON_SKIP"] = os.environ.get("SKYNET_E2E_FAIL_ON_SKIP", "1")
@@ -357,12 +241,12 @@ def _run_telegram_real_flow(trace: LiveTrace) -> None:
     trace.log("e2e.step.start", step="telegram_real_flow", status="start")
     trace.log(
         "telegram_real.invoke",
-        repo_root=str(repo_root),
+        repo_root=str(REPO_ROOT),
         cmd=" ".join(cmd),
     )
     completed = subprocess.run(
         cmd,
-        cwd=str(repo_root),
+        cwd=str(REPO_ROOT),
         env=env,
         text=True,
         capture_output=True,
@@ -502,9 +386,9 @@ async def _run_direct_flow(trace: LiveTrace) -> None:
         trace.log("e2e.step.fail", step="direct_flow", status="fail", error_message="Could not create working directory.")
         _fail(trace, f"Could not create directory: {working_dir}", detail=result)
 
-    model = os.environ.get("SKYNET_CLAUDE_OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:7b")
-    backend = os.environ.get("SKYNET_LIVE_E2E_BACKEND", "ollama")
-    agent = os.environ.get("SKYNET_LIVE_E2E_AGENT", "claude")
+    model = cfg.CLAUDE_OLLAMA_DEFAULT_MODEL
+    backend = cfg.get_live_e2e_backend()
+    agent = cfg.get_live_e2e_agent()
     auto_pull = _bool_env("SKYNET_CLAUDE_OLLAMA_AUTO_PULL", True)
     trace.log(
         "coding.invoke",
@@ -578,11 +462,16 @@ async def _run_direct_flow(trace: LiveTrace) -> None:
 
 
 async def run() -> None:
+    # Auto-detect .env.local-e2e on Windows when SKYNET_ENV_FILE is not set
+    if sys.platform == "win32" and not os.environ.get("SKYNET_ENV_FILE"):
+        _candidate = REPO_ROOT / ".env.local-e2e"
+        if _candidate.exists():
+            os.environ["SKYNET_ENV_FILE"] = str(_candidate)
+
     trace = LiveTrace("e2e-live")
     trace.log("run.start", python=sys.version.split()[0], cwd=os.getcwd())
-    _load_live_env(trace)
-    _load_settings_env(trace)
-    flow = os.environ.get("SKYNET_LIVE_E2E_FLOW", "conversation").strip().lower()
+    trace_gateway_runtime(trace.log)
+    flow = cfg.get_live_e2e_flow()
     _check_env(trace, flow)
     trace.log("run.mode", flow=flow)
     if flow in {"conversation", "chat"}:
