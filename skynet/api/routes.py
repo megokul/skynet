@@ -13,6 +13,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
+from skynet.settings.loader import get_str as _s, get_int as _i, get_bool as _b
+
 from skynet import __version__
 from skynet.api import schemas
 from skynet.control_plane import ControlPlaneRegistry, GatewayClient
@@ -84,7 +86,7 @@ def _is_auth_required() -> bool:
     - Return value typed as `bool` when available; otherwise side effects only.
     """
 
-    return os.getenv("SKYNET_PROTECT_DIAGNOSTICS", "true").lower() == "true"
+    return _b("SKYNET_PROTECT_DIAGNOSTICS", True)
 
 
 def _resolve_api_key() -> str:
@@ -110,7 +112,7 @@ def _resolve_api_key() -> str:
     - Return value typed as `str` when available; otherwise side effects only.
     """
 
-    return os.getenv("SKYNET_API_KEY", "").strip()
+    return _s("SKYNET_API_KEY").strip()
 
 
 def _extract_token(authorization: str | None, x_api_key: str | None) -> str | None:
@@ -169,7 +171,7 @@ def _enforce_rate_limit(request: Request) -> None:
     - Return value typed as `None` when available; otherwise side effects only.
     """
 
-    limit = int(os.getenv("SKYNET_DIAGNOSTIC_RATE_LIMIT_PER_MIN", "120"))
+    limit = _i("SKYNET_DIAGNOSTIC_RATE_LIMIT_PER_MIN", 120)
     if limit <= 0:
         return
 

@@ -28,6 +28,8 @@ from pathlib import Path
 from urllib import parse, request
 from typing import Any
 
+from settings.loader import get_str as _cfg_s, get_bool as _cfg_b
+
 logger = logging.getLogger("chathan.executor")
 
 # Upper bound on how long any single subprocess may run (seconds).
@@ -38,29 +40,18 @@ _ACTIVE_RUNTIME_SESSIONS_LOCK = asyncio.Lock()
 
 def _env_first(*names: str, default: str = "") -> str:
     for name in names:
-        value = os.environ.get(name)
-        if value is None:
-            continue
-        text = str(value).strip()
+        text = _cfg_s(name).strip()
         if text:
             return text
     return default
 
 
 def _env_bool(*names: str, default: bool = False) -> bool:
-    truthy = {"1", "true", "yes", "on"}
-    falsy = {"0", "false", "no", "off"}
     for name in names:
-        value = os.environ.get(name)
-        if value is None:
-            continue
-        text = str(value).strip().lower()
+        text = _cfg_s(name).strip()
         if not text:
             continue
-        if text in truthy:
-            return True
-        if text in falsy:
-            return False
+        return _cfg_b(name, default)
     return default
 
 
@@ -116,6 +107,93 @@ def _artifact_snapshot(working_dir: str, *, max_files: int = 25) -> list[dict[st
     return rows[:max_files]
 
 
+_SNAPSHOT_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache"}
+
+
+def _local_working_tree_snapshot(working_dir: str) -> dict[str, float]:
+    """Return {relative_path: mtime} for all files under *working_dir*."""
+    target = str(working_dir or "").strip()
+    if not target or not os.path.isdir(target):
+        return {}
+    snap: dict[str, float] = {}
+    base = Path(target)
+    try:
+        for root, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs if d not in _SNAPSHOT_SKIP_DIRS]
+            for fname in files:
+                fp = Path(root) / fname
+                try:
+                    snap[str(fp.relative_to(base)).replace("\\", "/")] = fp.stat().st_mtime
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return snap
+
+
+def _diff_local_snapshots(
+    before: dict[str, float], after: dict[str, float]
+) -> list[str]:
+    """Return paths that are new or modified between two snapshots."""
+    changed: list[str] = []
+    for path, mtime in after.items():
+        prev = before.get(path)
+        if prev is None or mtime > prev:
+            changed.append(path)
+    return sorted(changed)
+
+
+_CODE_BLOCK_LANG_EXT = {
+    "python": ".py", "py": ".py", "javascript": ".js", "js": ".js",
+    "typescript": ".ts", "ts": ".ts", "json": ".json", "yaml": ".yaml",
+    "yml": ".yaml", "bash": ".sh", "sh": ".sh", "html": ".html",
+}
+_CODE_BLOCK_KNOWN_FILENAMES = {"dockerfile", "makefile", "requirements.txt", "package.json"}
+
+
+def _persist_local_code_blocks(stdout: str, working_dir: str) -> list[str]:
+    """Parse fenced code blocks from stdout and write files to *working_dir*.
+
+    Handles models that output code in markdown blocks instead of using tool calls.
+    Returns list of relative paths written.
+    """
+    if not stdout or not working_dir or not os.path.isdir(working_dir):
+        return []
+    pattern = re.compile(r"```([^\n`]+)\r?\n(.*?)```", re.DOTALL)
+    written: list[str] = []
+    base = Path(working_dir)
+    for match in pattern.finditer(stdout):
+        tag = match.group(1).strip()
+        content = match.group(2)
+        # Determine if tag is a filename or a language hint.
+        has_ext = "." in tag and "/" not in tag.split(".")[-1]
+        has_path_sep = "/" in tag or "\\" in tag
+        is_known = tag.lower() in _CODE_BLOCK_KNOWN_FILENAMES
+        if has_ext or has_path_sep or is_known:
+            filename = tag
+        else:
+            # Language-only tag — generate a default filename.
+            lang = tag.lower().split()[0] if tag else ""
+            ext = _CODE_BLOCK_LANG_EXT.get(lang)
+            if not ext:
+                continue
+            # Use a numbered default name.
+            idx = len(written)
+            filename = f"generated_{idx}{ext}" if idx > 0 else f"main{ext}"
+        # Sanitize: no absolute paths, no ..
+        filename = filename.replace("\\", "/").lstrip("/")
+        if ".." in filename:
+            continue
+        dest = base / filename
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content, encoding="utf-8")
+            written.append(filename)
+        except OSError:
+            pass
+    return written
+
+
 def _session_probe_payload(session: dict[str, Any], *, working_dir: str = "") -> dict[str, Any]:
     proc = session.get("proc")
     pid = ""
@@ -157,41 +235,19 @@ def _session_probe_payload(session: dict[str, Any], *, working_dir: str = "") ->
 
 # CLI resolution for local coding agents.
 _CODING_AGENT_BINARIES: dict[str, str] = {
-    "codex": os.environ.get("SKYNET_CODEX_BIN") or os.environ.get("OPENCLAW_CODEX_BIN") or "codex",
-    "claude": os.environ.get("SKYNET_CLAUDE_BIN") or os.environ.get("OPENCLAW_CLAUDE_BIN") or "claude",
-    "cline": os.environ.get("SKYNET_CLINE_BIN") or os.environ.get("OPENCLAW_CLINE_BIN") or "cline",
+    "codex": _cfg_s("SKYNET_CODEX_BIN") or _cfg_s("OPENCLAW_CODEX_BIN", "codex"),
+    "claude": _cfg_s("SKYNET_CLAUDE_BIN") or _cfg_s("OPENCLAW_CLAUDE_BIN", "claude"),
+    "cline": _cfg_s("SKYNET_CLINE_BIN") or _cfg_s("OPENCLAW_CLINE_BIN", "cline"),
+    "qwen": _cfg_s("SKYNET_QWEN_BIN") or _cfg_s("OPENCLAW_QWEN_BIN", "qwen"),
 }
 _CODING_AGENT_PREFIX_ARGS: dict[str, list[str]] = {
     "codex": ["exec", "--skip-git-repo-check"],
     "claude": ["-p"],
     "cline": ["-p"],
+    "qwen": ["--yolo", "-p"],
 }
 _CODING_AGENT_TIMEOUT_SECONDS = 1800
-_CODING_BACKENDS = {"auto", "ollama", "native"}
-_CLAUDE_OLLAMA_BASE_URL = _env_first(
-    "SKYNET_CLAUDE_OLLAMA_BASE_URL",
-    "OPENCLAW_OLLAMA_URL",
-    default="http://localhost:11434",
-)
-_CLAUDE_OLLAMA_AUTH_TOKEN = _env_first(
-    "SKYNET_CLAUDE_OLLAMA_AUTH_TOKEN",
-    default="ollama",
-)
-_CLAUDE_OLLAMA_DEFAULT_MODEL = _env_first(
-    "SKYNET_CLAUDE_OLLAMA_DEFAULT_MODEL",
-    "OPENCLAW_OLLAMA_MODEL",
-    default="qwen2.5-coder:7b",
-)
-_CLAUDE_OLLAMA_AUTO_PULL = _env_bool(
-    "SKYNET_CLAUDE_OLLAMA_AUTO_PULL",
-    "OPENCLAW_OLLAMA_AUTO_PULL",
-    default=False,
-)
-try:
-    _CLAUDE_OLLAMA_MIN_CONTEXT = int(os.environ.get("SKYNET_CLAUDE_OLLAMA_MIN_CONTEXT", "64000") or "64000")
-except ValueError:
-    _CLAUDE_OLLAMA_MIN_CONTEXT = 64000
-_BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
+_BRAVE_SEARCH_API_KEY = _cfg_s("BRAVE_SEARCH_API_KEY")
 _WEB_SEARCH_TIMEOUT_SECONDS = 15
 
 
@@ -897,43 +953,6 @@ def _bool_param(value: Any, default: bool) -> bool:
     return default
 
 
-def _resolve_backend(agent: str, backend: str) -> tuple[str | None, str | None]:
-    if backend not in _CODING_BACKENDS:
-        return None, "backend must be one of: auto, ollama, native."
-    if agent == "claude":
-        if backend == "auto":
-            return "ollama", None
-        return backend, None
-    if backend == "ollama":
-        return None, "backend=ollama is only supported for agent='claude'."
-    if backend == "auto":
-        return "native", None
-    return backend, None
-
-
-def _check_ollama_model(base_url: str, model: str) -> dict[str, Any]:
-    endpoint = f"{base_url.rstrip('/')}/api/tags"
-    try:
-        with request.urlopen(endpoint, timeout=15) as resp:
-            payload = resp.read().decode("utf-8", errors="replace")
-    except Exception as exc:
-        return {"reachable": False, "present": False, "summary": str(exc)}
-
-    try:
-        data = json.loads(payload)
-    except Exception as exc:
-        return {"reachable": False, "present": False, "summary": f"Invalid Ollama response: {exc}"}
-
-    names = {
-        str(item.get("name") or "").strip()
-        for item in (data.get("models") or [])
-        if isinstance(item, dict)
-    }
-    if model in names:
-        return {"reachable": True, "present": True, "summary": "model present"}
-    return {"reachable": True, "present": False, "summary": "model missing"}
-
-
 async def _run_tracked_coding_subprocess(
     *,
     args: list[str],
@@ -996,20 +1015,14 @@ async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
     """
     Run a local coding agent CLI in non-interactive mode.
 
-    Supports explicit backend routing:
-      - backend=ollama for claude (Anthropic-compatible API via Ollama)
-      - backend=native for direct CLI behavior
-      - backend=auto (defaults to ollama for claude; native otherwise)
+    Supports: codex, claude, cline, qwen
     """
     agent = _require_param(params, "agent").strip().lower()
     prompt = _require_param(params, "prompt")
     cwd = params.get("working_dir")
     timeout = params.get("timeout_seconds", _CODING_AGENT_TIMEOUT_SECONDS)
     session_key = str(params.get("session_key") or uuid.uuid4().hex).strip()
-    backend_raw = str(params.get("backend") or "auto").strip().lower()
     model = str(params.get("model") or "").strip()
-    base_url = str(params.get("base_url") or _CLAUDE_OLLAMA_BASE_URL or "http://localhost:11434").strip().rstrip("/")
-    auto_pull_model = _bool_param(params.get("auto_pull_model"), _CLAUDE_OLLAMA_AUTO_PULL)
 
     if agent not in _CODING_AGENT_BINARIES:
         allowed = ", ".join(sorted(_CODING_AGENT_BINARIES.keys()))
@@ -1018,10 +1031,6 @@ async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
         return {"returncode": 1, "stdout": "", "stderr": "working_dir must be a string path."}
     if not isinstance(timeout, int) or timeout < 30 or timeout > 3600:
         return {"returncode": 1, "stdout": "", "stderr": "timeout_seconds must be an integer between 30 and 3600."}
-
-    resolved_backend, backend_error = _resolve_backend(agent, backend_raw)
-    if backend_error:
-        return {"returncode": 1, "stdout": "", "stderr": backend_error}
 
     resolved, configured = _resolve_coding_binary(agent)
     if not resolved:
@@ -1034,90 +1043,15 @@ async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
             ),
         }
 
-    if agent == "claude" and resolved_backend == "ollama":
-        selected_model = model or _CLAUDE_OLLAMA_DEFAULT_MODEL
-        check = _check_ollama_model(base_url, selected_model)
-        if not check["reachable"]:
-            return {
-                "returncode": 1,
-                "stdout": "",
-                "stderr": f"OLLAMA_SETUP_ERROR: {check['summary']}",
-            }
-
-        if not check["present"]:
-            if not auto_pull_model:
-                return {
-                    "returncode": 1,
-                    "stdout": "",
-                    "stderr": (
-                        f"OLLAMA_MODEL_MISSING: '{selected_model}' not found. "
-                        "Set auto_pull_model=true or pre-pull the model."
-                    ),
-                }
-
-            pull_timeout = max(120, min(timeout, 1800))
-            pull = await _run(["ollama", "pull", selected_model], timeout=pull_timeout)
-            if pull["returncode"] != 0:
-                detail = pull["stderr"] or pull["stdout"] or "unknown pull error"
-                return {
-                    "returncode": 1,
-                    "stdout": "",
-                    "stderr": f"OLLAMA_MODEL_SETUP_ERROR: pull failed for '{selected_model}'. {detail}",
-                }
-
-            check = _check_ollama_model(base_url, selected_model)
-            if not check["reachable"] or not check["present"]:
-                return {
-                    "returncode": 1,
-                    "stdout": "",
-                    "stderr": f"OLLAMA_MODEL_SETUP_ERROR: '{selected_model}' unavailable after pull.",
-                }
-
-        env = dict(os.environ)
-        env.update(
-            {
-                "ANTHROPIC_AUTH_TOKEN": _CLAUDE_OLLAMA_AUTH_TOKEN or "ollama",
-                "ANTHROPIC_API_KEY": "",
-                "ANTHROPIC_BASE_URL": base_url,
-            }
-        )
-        result = await _run_tracked_coding_subprocess(
-            args=[resolved, "--model", selected_model, "-p", prompt],
-            cwd=cwd,
-            timeout=timeout,
-            session_key=session_key,
-            agent=agent,
-            env=env,
-        )
-
-        show = await _run(["ollama", "show", selected_model], timeout=45)
-        if show["returncode"] == 0:
-            text = f"{show['stdout']}\n{show['stderr']}"
-            match = re.search(r"context length[^0-9]*([0-9][0-9,]*)", text, flags=re.IGNORECASE) or re.search(
-                r"num_ctx[^0-9]*([0-9][0-9,]*)",
-                text,
-                flags=re.IGNORECASE,
-            )
-            if match:
-                try:
-                    detected_ctx = int(match.group(1).replace(",", ""))
-                except ValueError:
-                    detected_ctx = None
-                if detected_ctx is not None and detected_ctx < _CLAUDE_OLLAMA_MIN_CONTEXT:
-                    warning = (
-                        f"Warning: detected model context {detected_ctx} tokens, "
-                        f"below target {_CLAUDE_OLLAMA_MIN_CONTEXT}."
-                    )
-                    result["stdout"] = f"{warning}\n{result['stdout']}".strip()
-        result["session_key"] = session_key
-        return result
+    # Snapshot working directory before execution to detect written files.
+    before_snapshot = _local_working_tree_snapshot(cwd) if cwd else {}
 
     if agent == "claude":
         args = [resolved]
         if model:
             args.extend(["--model", model])
         args.extend(["-p", prompt])
-        return await _run_tracked_coding_subprocess(
+        result = await _run_tracked_coding_subprocess(
             args=args,
             cwd=cwd,
             timeout=timeout,
@@ -1125,14 +1059,31 @@ async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
             agent=agent,
         )
 
-    args = [resolved, *_CODING_AGENT_PREFIX_ARGS[agent], prompt]
-    return await _run_tracked_coding_subprocess(
-        args=args,
-        cwd=cwd,
-        timeout=timeout,
-        session_key=session_key,
-        agent=agent,
-    )
+    else:
+        args = [resolved, *_CODING_AGENT_PREFIX_ARGS[agent], prompt]
+        result = await _run_tracked_coding_subprocess(
+            args=args,
+            cwd=cwd,
+            timeout=timeout,
+            session_key=session_key,
+            agent=agent,
+        )
+
+    # Detect files written to disk by diffing working tree snapshots.
+    if cwd:
+        after_snapshot = _local_working_tree_snapshot(cwd)
+        written = _diff_local_snapshots(before_snapshot, after_snapshot)
+        # Fallback: if no files detected but stdout has code blocks, parse and write them.
+        if not written and int(result.get("returncode", 1)) == 0:
+            block_written = _persist_local_code_blocks(
+                str(result.get("stdout") or ""), cwd
+            )
+            if block_written:
+                written = block_written
+        if written:
+            result["files_written"] = written
+
+    return result
 
 
 async def trace_runtime_probe(params: dict[str, Any]) -> dict[str, Any]:

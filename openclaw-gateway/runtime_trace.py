@@ -131,7 +131,7 @@ def _normalize_flow(flow: str | None) -> str:
     candidate = str(flow or "").strip().lower()
     if candidate in {"telegram_real", "conversation", "direct"}:
         return candidate
-    env_flow = str(os.environ.get("SKYNET_LIVE_E2E_FLOW", "") or "").strip().lower()
+    env_flow = str(cfg.get_str("SKYNET_LIVE_E2E_FLOW", "") or "").strip().lower()
     if env_flow in {"telegram_real", "conversation", "direct"}:
         return env_flow
     return "direct"

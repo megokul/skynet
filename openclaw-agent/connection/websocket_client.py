@@ -24,6 +24,7 @@ from websockets.asyncio.client import ClientConnection
 
 import agent_config as config
 from router.action_router import route
+from settings.loader import get_str as _cfg_s
 
 logger = logging.getLogger("chathan.connection")
 _SESSION_STARTED_AT = time.monotonic()
@@ -40,9 +41,9 @@ def _utc_now_iso() -> str:
 
 def _detect_coding_agents() -> dict[str, str]:
     probes = {
-        "codex": os.environ.get("SKYNET_CODEX_BIN") or os.environ.get("OPENCLAW_CODEX_BIN") or "codex",
-        "claude": os.environ.get("SKYNET_CLAUDE_BIN") or os.environ.get("OPENCLAW_CLAUDE_BIN") or "claude",
-        "cline": os.environ.get("SKYNET_CLINE_BIN") or os.environ.get("OPENCLAW_CLINE_BIN") or "cline",
+        "codex": _cfg_s("SKYNET_CODEX_BIN") or _cfg_s("OPENCLAW_CODEX_BIN", "codex"),
+        "claude": _cfg_s("SKYNET_CLAUDE_BIN") or _cfg_s("OPENCLAW_CLAUDE_BIN", "claude"),
+        "cline": _cfg_s("SKYNET_CLINE_BIN") or _cfg_s("OPENCLAW_CLINE_BIN", "cline"),
     }
     detected: dict[str, str] = {}
     for name, binary in probes.items():

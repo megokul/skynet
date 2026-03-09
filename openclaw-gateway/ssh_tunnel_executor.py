@@ -1825,7 +1825,8 @@ class SSHTunnelExecutor:
         session_key: str = "",
         before_snapshot: dict[str, tuple[int, int]] | None = None,
     ) -> dict[str, Any]:
-        temp_parent = cwd or "E:\\SKYNET-SANDBOX\\temp"
+        _sandbox_temp = bot_cfg.WORKER_PROJECTS_DIR or bot_cfg.get_str("SKYNET_DEFAULT_WORKING_DIR", "")
+        temp_parent = cwd or _sandbox_temp or os.path.join(os.path.expanduser("~"), "skynet-temp")
         prompt_path = str(PureWindowsPath(temp_parent) / f".skynet_prompt_{uuid.uuid4().hex}.txt")
         pid_path = prompt_path + ".pid"
         trace_ctx = self._runtime_trace_context()
@@ -2273,7 +2274,8 @@ class SSHTunnelExecutor:
 
         # Write the script to a temp file inside the sandbox temp folder.
         if self.remote_os == "windows":
-            tmp_script = "E:\\SKYNET-SANDBOX\\temp\\_skynet_ollama_coder.py"
+            _win_temp = bot_cfg.WORKER_PROJECTS_DIR or bot_cfg.get_str("SKYNET_DEFAULT_WORKING_DIR", "")
+            tmp_script = str(PureWindowsPath(_win_temp) / "_skynet_ollama_coder.py")
         else:
             tmp_script = "/tmp/_skynet_ollama_coder.py"
 
@@ -3166,7 +3168,6 @@ class SSHTunnelExecutor:
             base_url = str(
                 params.get("base_url")
                 or bot_cfg.CLAUDE_OLLAMA_BASE_URL
-                or "http://localhost:11434"
             ).strip().rstrip("/")
             auto_pull_model = self._bool_param(
                 params.get("auto_pull_model"),
@@ -3207,7 +3208,7 @@ class SSHTunnelExecutor:
                     cwd=cwd if isinstance(cwd, str) else None,
                     timeout=timeout,
                     model=model or bot_cfg.CLAUDE_OLLAMA_DEFAULT_MODEL,
-                    base_url=base_url or "http://localhost:11434",
+                    base_url=base_url or bot_cfg.CLAUDE_OLLAMA_BASE_URL,
                     auto_pull_model=auto_pull_model,
                 )
                 if worker_id:

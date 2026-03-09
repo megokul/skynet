@@ -155,17 +155,19 @@ _CONTROL_LOOP_PROFILE_V2 = "loop_v2"
 _ORCHESTRATION_MODE_ACP_FIRST = "acp_first"
 _RUN_CONTRACT_FILE = "skynet_run.json"
 _ALLOWED_INTERPRETERS = {"python", "python3", "node"}
-_DEFAULT_CODING_CHAIN = ("codex", "claude_ollama", "cline")
-_VALID_CODING_STAGES = set(_DEFAULT_CODING_CHAIN)
+_DEFAULT_CODING_CHAIN = ("qwen", "codex")
+_VALID_CODING_STAGES = set(_DEFAULT_CODING_CHAIN) | {"claude_ollama", "cline"}
 _STAGE_AGENT_NAME = {
     "codex": "codex",
     "claude_ollama": "claude",
     "cline": "cline",
+    "qwen": "qwen",
 }
 _STAGE_ENV_HINT = {
     "codex": "OPENCLAW_SSH_CODEX_BIN",
     "claude_ollama": "OPENCLAW_SSH_CLAUDE_BIN",
     "cline": "OPENCLAW_SSH_CLINE_BIN",
+    "qwen": "SKYNET_QWEN_BIN",
 }
 
 
@@ -969,7 +971,7 @@ def _build_coding_stage_chain(
     include_policy_disabled: bool = False,
 ) -> list[str]:
     if _use_control_loop_v1(project):
-        raw_chain = ["codex"]
+        raw_chain = _parse_coding_fallback_chain(cfg.CODING_FALLBACK_CHAIN)
         if include_policy_disabled:
             return raw_chain
         filtered_chain, _ = _filter_stage_chain_by_policy(raw_chain)
@@ -1045,6 +1047,9 @@ def _stage_payload(
         payload["auto_pull_model"] = cfg.CLAUDE_OLLAMA_AUTO_PULL
     elif stage_name == "cline":
         payload["agent"] = "cline"
+        payload["backend"] = "auto"
+    elif stage_name == "qwen":
+        payload["agent"] = "qwen"
         payload["backend"] = "auto"
     else:
         raise ValueError(f"Unsupported coding stage: {stage_name}")
@@ -4467,8 +4472,7 @@ async def trace_handler(
 
 
 def _control_loop_stage_chain(stage_chain: list[str]) -> list[str]:
-    filtered = [stage for stage in stage_chain if stage == "codex"]
-    return filtered or ["codex"]
+    return stage_chain or ["codex"]
 
 
 def _control_loop_work_prompt(

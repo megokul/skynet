@@ -4,43 +4,40 @@ CHATHAN Worker — Configuration
 Central configuration for security policy, connection settings,
 allowed actions, path restrictions, and rate limiting.
 
-SECURITY NOTE: In production, load TOKEN and GATEWAY_URL from
-environment variables or a secrets manager — never hardcode them.
+All non-secret defaults live in settings/defaults.yaml.
+Secrets must be set via environment variables or .env.worker-agent.
+Environment variables always override YAML defaults.
 """
 
 import os
 from enum import Enum
 
+from settings.loader import get_str as _s, get_int as _i, get_bool as _b
+
 
 # ---------------------------------------------------------------------------
 # Connection
 # ---------------------------------------------------------------------------
-GATEWAY_URL: str = os.environ.get(
-    "SKYNET_GATEWAY_URL",
-    os.environ.get("OPENCLAW_GATEWAY_URL", "wss://100.50.2.232:8765/agent/ws"),
-)
+GATEWAY_URL: str = _s("SKYNET_GATEWAY_URL") or _s("OPENCLAW_GATEWAY_URL")
 
 # Pre-shared bearer token for WebSocket authentication.
 # Generate with: python -c "import secrets; print(secrets.token_urlsafe(48))"
-AUTH_TOKEN: str = os.environ.get(
-    "SKYNET_AUTH_TOKEN", os.environ.get("OPENCLAW_AUTH_TOKEN", ""),
-)
+AUTH_TOKEN: str = _s("SKYNET_AUTH_TOKEN") or _s("OPENCLAW_AUTH_TOKEN")
 
 # Seconds between reconnection attempts after a drop.
-RECONNECT_DELAY_SECONDS: int = 5
-MAX_RECONNECT_DELAY_SECONDS: int = 120
+RECONNECT_DELAY_SECONDS: int = _i("RECONNECT_DELAY_SECONDS", 5)
+MAX_RECONNECT_DELAY_SECONDS: int = _i("MAX_RECONNECT_DELAY_SECONDS", 120)
 
 # WebSocket ping interval to keep NAT/firewall mappings alive.
-WS_PING_INTERVAL_SECONDS: int = 30
-WS_PING_TIMEOUT_SECONDS: int = 10
-WORKER_ID: str = os.environ.get("SKYNET_WORKER_ID", "worker-primary").strip() or "worker-primary"
-AGENT_HEARTBEAT_SECONDS: int = int(os.environ.get("SKYNET_AGENT_HEARTBEAT_SECONDS", "15") or "15")
-AGENT_RESULT_CACHE_TTL_SECONDS: int = int(
-    os.environ.get("SKYNET_AGENT_RESULT_CACHE_TTL_SECONDS", "900") or "900"
-)
-AGENT_LOG_MIRROR_DIR: str = os.environ.get(
-    "SKYNET_AGENT_LOG_MIRROR_DIR",
-    os.environ.get("SKYNET_TRACE_MIRROR_LOG_DIR", r"E:\MyProjects\skynet\logs"),
+WS_PING_INTERVAL_SECONDS: int = _i("WS_PING_INTERVAL_SECONDS", 30)
+WS_PING_TIMEOUT_SECONDS: int = _i("WS_PING_TIMEOUT_SECONDS", 10)
+WORKER_ID: str = _s("SKYNET_WORKER_ID", "worker-primary").strip() or "worker-primary"
+AGENT_HEARTBEAT_SECONDS: int = _i("AGENT_HEARTBEAT_SECONDS", 15)
+AGENT_RESULT_CACHE_TTL_SECONDS: int = _i("AGENT_RESULT_CACHE_TTL_SECONDS", 900)
+AGENT_LOG_MIRROR_DIR: str = (
+    _s("SKYNET_AGENT_LOG_MIRROR_DIR")
+    or _s("SKYNET_TRACE_MIRROR_LOG_DIR")
+    or os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 )
 
 
@@ -144,7 +141,7 @@ def _parse_allowed_roots() -> list[str]:
       SKYNET_ALLOWED_ROOTS / OPENCLAW_ALLOWED_ROOTS
       Delimiters: ';' or ',' (portable across Windows/Linux).
     """
-    raw = os.environ.get("SKYNET_ALLOWED_ROOTS") or os.environ.get("OPENCLAW_ALLOWED_ROOTS")
+    raw = _s("SKYNET_ALLOWED_ROOTS") or _s("OPENCLAW_ALLOWED_ROOTS")
     if raw:
         roots = [p.strip() for p in raw.replace(",", ";").split(";") if p.strip()]
         if roots:
@@ -170,7 +167,7 @@ ALLOWED_ROOTS: list[str] = _parse_allowed_roots()
 # ---------------------------------------------------------------------------
 # Rate limiting
 # ---------------------------------------------------------------------------
-RATE_LIMIT_PER_MINUTE: int = 120
+RATE_LIMIT_PER_MINUTE: int = _i("RATE_LIMIT_PER_MINUTE", 120)
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +186,4 @@ AUDIT_LOG_DIR: str = os.path.join(
     "logs",
 )
 AUDIT_LOG_FILE: str = "audit.jsonl"
-LOG_LEVEL: str = os.environ.get(
-    "SKYNET_LOG_LEVEL", os.environ.get("OPENCLAW_LOG_LEVEL", "INFO"),
-)
+LOG_LEVEL: str = _s("SKYNET_LOG_LEVEL") or _s("OPENCLAW_LOG_LEVEL", "INFO")

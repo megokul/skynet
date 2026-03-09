@@ -99,29 +99,29 @@ class ProviderRouter:
 
     # Task-type → preferred provider names.
     TASK_PROVIDER_PREFERENCES: dict[str, list[str]] = {
-        "scaffold": ["ollama"],
-        "crud": ["ollama"],
-        "boilerplate": ["ollama"],
+        "scaffold": ["dashscope", "ollama"],
+        "crud": ["dashscope", "ollama"],
+        "boilerplate": ["dashscope", "ollama"],
         "fast_patch": ["groq", "ollama"],
         "unit_test": ["groq", "ollama"],
-        "coding": ["gemini", "groq", "claude"],
-        "planning": ["ollama", "gemini"],
-        "readme_polish": ["ollama", "gemini"],
+        "coding": ["dashscope", "gemini", "groq", "claude"],
+        "planning": ["dashscope", "gemini", "ollama"],
+        "readme_polish": ["dashscope", "ollama", "gemini"],
         "hard_debug": ["deepseek", "claude"],
-        "complex_refactor": ["ollama", "claude"],
+        "complex_refactor": ["dashscope", "ollama", "claude"],
         "general": [],  # default priority order
         # v3: Agent-role routing
-        "agent_architect": ["ollama", "gemini", "claude"],
-        "agent_backend": ["ollama", "groq"],
-        "agent_frontend": ["ollama", "groq"],
-        "agent_api": ["ollama", "groq"],
+        "agent_architect": ["dashscope", "ollama", "gemini", "claude"],
+        "agent_backend": ["dashscope", "groq", "ollama"],
+        "agent_frontend": ["dashscope", "groq", "ollama"],
+        "agent_api": ["dashscope", "groq", "ollama"],
         "agent_testing": ["groq", "ollama"],
         "agent_debug": ["deepseek", "claude"],
-        "agent_devops": ["ollama", "groq"],
-        "agent_research": ["ollama", "gemini"],
+        "agent_devops": ["dashscope", "groq", "ollama"],
+        "agent_research": ["dashscope", "ollama", "gemini"],
         "agent_optimization": ["deepseek", "claude"],
-        "agent_deployment": ["ollama", "groq"],
-        "agent_monitoring": ["ollama", "groq"],
+        "agent_deployment": ["dashscope", "groq", "ollama"],
+        "agent_monitoring": ["dashscope", "groq", "ollama"],
     }
 
     def _ranked_providers(
@@ -418,10 +418,18 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
             )
         return providers
 
-    # 0. Ollama — primary (zero cost, runs on laptop)
-    ollama_model = config.get("OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:32b-instruct-q4_K_M")
-    providers.append(OllamaProxyProvider(model=ollama_model))
-    logger.info("Registered provider: Ollama (model=%s)", ollama_model)
+    # 0. DashScope (Qwen cloud) — primary chat provider (smart + free tier)
+    if config.get("DASHSCOPE_API_KEY") and OpenAICompatProvider is not None:
+        providers.append(OpenAICompatProvider(
+            api_key=config["DASHSCOPE_API_KEY"],
+            model="qwen3-coder",
+            model_candidates=["qwen-plus", "qwen-turbo"],
+            base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            provider_name="dashscope",
+            cost_rank_override=0,
+            context_limit_override=131_072,
+        ))
+        logger.info("Registered provider: DashScope (Qwen cloud)")
 
     # 1. Gemini — secondary (biggest free cloud tier)
     if config.get("GOOGLE_AI_API_KEY"):
@@ -548,6 +556,11 @@ def build_providers(config: dict[str, str]) -> list[BaseProvider]:
             logger.info("Registered provider: Claude")
         except ImportError:
             logger.warning("anthropic package not installed, skipping Claude provider")
+
+    # N. Ollama — last-resort fallback (free, laptop-local, but weaker)
+    ollama_model = config.get("OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:7b")
+    providers.append(OllamaProxyProvider(model=ollama_model))
+    logger.info("Registered provider: Ollama (model=%s, fallback=last)", ollama_model)
 
     if not providers:
         logger.error(

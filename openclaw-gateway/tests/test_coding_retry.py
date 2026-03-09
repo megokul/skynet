@@ -54,7 +54,7 @@ def test_parse_coding_fallback_chain_filters_invalid_values():
     assert chain == ["codex", "claude_ollama", "cline"]
 
     default_chain = _parse_coding_fallback_chain(",,,bad,,")
-    assert default_chain == ["codex", "claude_ollama", "cline"]
+    assert default_chain == ["qwen", "codex"]
 
 
 def test_build_coding_stage_chain_filters_policy_disabled_claude():
@@ -97,6 +97,7 @@ async def test_preflight_all_chain_agents_unavailable_fails():
 
     with (
         patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", True),
+        patch("bot.handlers.coding.cfg.CODING_FALLBACK_CHAIN", "codex,cline"),
         patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action_side_effect)),
     ):
         ok, message, stage_chain = await _preflight_coding_environment(project=project)

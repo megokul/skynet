@@ -487,7 +487,7 @@ async def _run_direct_flow(trace: LiveTrace) -> None:
         trace.log("e2e.step.fail", step="direct_flow", status="fail", error_message="SSH executor is not configured.")
         _fail(trace, "SSH executor is not configured. Check OPENCLAW_SSH_* env vars.")
 
-    base_dir = os.environ.get("OPENCLAW_PROJECT_BASE_DIR", "E:\\SKYNET-SANDBOX\\Projects")
+    base_dir = os.environ.get("OPENCLAW_PROJECT_BASE_DIR", "")
     working_dir = base_dir.rstrip("\\") + "\\" + SLUG
     trace.log("run.config", base_dir=base_dir, working_dir=working_dir)
 

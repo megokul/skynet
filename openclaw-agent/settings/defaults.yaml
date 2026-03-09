@@ -1,0 +1,115 @@
+# SKYNET Worker Agent Settings Defaults
+# Non-secret runtime defaults for the worker agent.
+# Secrets must stay in environment variables (.env.worker-agent or env vars).
+
+# ---------------------------------------------------------------------------
+# Connection Settings
+# ---------------------------------------------------------------------------
+# Gateway URL and auth token MUST be set via env vars or .env.worker-agent.
+# Empty defaults here force explicit configuration — no hardcoded IPs.
+SKYNET_GATEWAY_URL: ""
+OPENCLAW_GATEWAY_URL: ""
+SKYNET_AUTH_TOKEN: ""
+OPENCLAW_AUTH_TOKEN: ""
+
+# Ollama (used by executor/ollama.py)
+OPENCLAW_OLLAMA_URL: http://localhost:11434
+OLLAMA_DEFAULT_MODEL: qwen2.5-coder:7b
+OLLAMA_TIMEOUT_SECONDS: 300
+RECONNECT_DELAY_SECONDS: 5
+MAX_RECONNECT_DELAY_SECONDS: 120
+WS_PING_INTERVAL_SECONDS: 30
+WS_PING_TIMEOUT_SECONDS: 10
+WORKER_ID: worker-primary
+AGENT_HEARTBEAT_SECONDS: 15
+AGENT_RESULT_CACHE_TTL_SECONDS: 900
+AGENT_LOG_MIRROR_DIR: logs
+
+# ---------------------------------------------------------------------------
+# Allowed Action Tiers
+# ---------------------------------------------------------------------------
+AUTO_ACTIONS:
+  - git_status
+  - web_search
+  - run_tests
+  - lint_project
+  - start_dev_server
+  - build_project
+  - file_read
+  - list_directory
+  - ollama_chat
+  - check_coding_agents
+  - trace_runtime_probe
+  - cancel_runtime_session
+
+CONFIRM_ACTIONS:
+  - git_commit
+  - install_dependencies
+  - file_write
+  - create_directory
+  - git_init
+  - git_add_all
+  - git_push
+  - gh_create_repo
+  - open_in_vscode
+  - run_coding_agent
+  - exec_command
+  - docker_build
+  - docker_compose_up
+  - close_app
+  - zip_project
+
+# ---------------------------------------------------------------------------
+# Closeable Applications (for close_app action)
+# ---------------------------------------------------------------------------
+CLOSEABLE_APPS:
+  chrome: chrome.exe
+  firefox: firefox.exe
+  edge: msedge.exe
+  notepad: notepad.exe
+  code: Code.exe
+  explorer: explorer.exe
+  slack: slack.exe
+  discord: Discord.exe
+  spotify: Spotify.exe
+  teams: Teams.exe
+
+# ---------------------------------------------------------------------------
+# Path Restrictions
+# ---------------------------------------------------------------------------
+SKYNET_ALLOWED_ROOTS: ""
+OPENCLAW_ALLOWED_ROOTS: ""
+
+# ---------------------------------------------------------------------------
+# Rate Limiting
+# ---------------------------------------------------------------------------
+RATE_LIMIT_PER_MINUTE: 120
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+LOG_LEVEL: INFO
+AUDIT_LOG_DIR: logs
+AUDIT_LOG_FILE: audit.jsonl
+
+# ---------------------------------------------------------------------------
+# Coding Agent Binaries
+# ---------------------------------------------------------------------------
+SKYNET_CODEX_BIN: codex
+SKYNET_CLAUDE_BIN: claude
+SKYNET_CLINE_BIN: cline
+SKYNET_QWEN_BIN: qwen
+OPENCLAW_CODEX_BIN: codex
+OPENCLAW_CLAUDE_BIN: claude
+OPENCLAW_CLINE_BIN: cline
+OPENCLAW_QWEN_BIN: qwen
+
+# ---------------------------------------------------------------------------
+# Web Search
+# ---------------------------------------------------------------------------
+BRAVE_SEARCH_API_KEY: ""
+
+# ---------------------------------------------------------------------------
+# Emergency Stop
+# ---------------------------------------------------------------------------
+EMERGENCY_STOP: false

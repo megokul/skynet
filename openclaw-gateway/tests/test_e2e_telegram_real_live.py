@@ -770,11 +770,12 @@ def _container_stream_error_summary(streamer: _ContainerLogStreamer | None) -> s
 
 
 def _resolve_worker_projects_dir() -> Path:
+    _home_projects = str(Path.home() / "Projects")
     candidates = [
         os.environ.get("OPENCLAW_PROJECT_BASE_DIR", "").strip(),
         os.environ.get("WORKER_PROJECTS_DIR", "").strip(),
         os.environ.get("SKYNET_PROJECT_BASE_DIR", "").strip(),
-        "C:/Projects",
+        _home_projects,
     ]
     for raw in candidates:
         if not raw:
@@ -785,7 +786,7 @@ def _resolve_worker_projects_dir() -> Path:
     for raw in candidates:
         if raw:
             return Path(raw)
-    return Path("C:/Projects")
+    return Path(_home_projects)
 
 
 def _is_safe_relative_path(path: str) -> bool:

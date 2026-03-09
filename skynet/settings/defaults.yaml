@@ -1,0 +1,66 @@
+# SKYNET Control Plane Settings Defaults
+# Non-secret runtime defaults for the control plane API.
+# Secrets must stay in environment variables (.env or env vars).
+
+# ---------------------------------------------------------------------------
+# Core Service
+# ---------------------------------------------------------------------------
+OPENCLAW_GATEWAY_URL: http://127.0.0.1:8766
+OPENCLAW_GATEWAY_URLS: ""
+SKYNET_ORCHESTRATOR_URL: http://localhost:8000
+CORS_ORIGINS: "*"
+
+# ---------------------------------------------------------------------------
+# HTTP Server
+# ---------------------------------------------------------------------------
+SKYNET_HTTP_HOST: 0.0.0.0
+SKYNET_HTTP_PORT: 8000
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+SKYNET_DB_PATH: data/skynet.db
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+SKYNET_LOG_LEVEL: INFO
+
+# ---------------------------------------------------------------------------
+# Control Plane Scheduler
+# ---------------------------------------------------------------------------
+SKYNET_CONTROL_SCHEDULER_ENABLED: true
+SKYNET_CONTROL_TASK_LOCK_TIMEOUT: 300
+SKYNET_CONTROL_SCHEDULER_WORKER_ID: skynet-control-scheduler
+SKYNET_CONTROL_SCHEDULER_POLL_SECS: 1.5
+
+# ---------------------------------------------------------------------------
+# Stale Lock Reaper
+# ---------------------------------------------------------------------------
+SKYNET_STALE_LOCK_REAPER_ENABLED: true
+SKYNET_STALE_LOCK_REAPER_POLL_SECS: 15
+
+# ---------------------------------------------------------------------------
+# API Security
+# ---------------------------------------------------------------------------
+SKYNET_PROTECT_DIAGNOSTICS: true
+SKYNET_API_KEY: ""
+SKYNET_DIAGNOSTIC_RATE_LIMIT_PER_MIN: 120
+
+# ---------------------------------------------------------------------------
+# Task Queue
+# ---------------------------------------------------------------------------
+SKYNET_TASK_LOCK_TIMEOUT_SECONDS: 300
+SKYNET_TASK_QUEUE_POLL_SECONDS: 1.0
+
+# ---------------------------------------------------------------------------
+# Gateway Client
+# ---------------------------------------------------------------------------
+SKYNET_GATEWAY_CLIENT_TIMEOUT_SECONDS: 30
+SKYNET_GATEWAY_CLIENT_RETRY_COUNT: 3
+
+# ---------------------------------------------------------------------------
+# Worker Registry
+# ---------------------------------------------------------------------------
+SKYNET_WORKER_HEARTBEAT_TIMEOUT_SECONDS: 60
+SKYNET_WORKER_STALE_THRESHOLD_SECONDS: 300

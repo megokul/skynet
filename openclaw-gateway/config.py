@@ -3,178 +3,82 @@ SKYNET Gateway unified configuration.
 
 Policy:
 - Secrets stay in environment variables.
-- Non-secret runtime defaults can live in settings YAML.
+- Non-secret runtime defaults come from settings YAML files.
 - Environment variables always override settings values.
+
+This module now uses the unified settings loader for consistency.
 """
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from typing import Any
 
-_here = Path(__file__).resolve().parent
-
-_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_SETTINGS_LINE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$")
-
-# Keep secret-bearing names env-only.
-_SECRET_EXACT = {
-    "SKYNET_API_KEY",
-    "SKYNET_AUTH_TOKEN",
-    "OPENCLAW_AUTH_TOKEN",
-    "TELEGRAM_BOT_TOKEN",
-    "GOOGLE_AI_API_KEY",
-    "GROQ_API_KEY",
-    "OPENROUTER_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "BRAVE_SEARCH_API_KEY",
-    "GH_TOKEN",
-    "GITHUB_PAT",
-    "SKYNET_E2E_TELEGRAM_API_HASH",
-    "SKYNET_E2E_TELEGRAM_SESSION",
-    "OPENCLAW_SSH_PRIVATE_KEY_B64",
-    "OPENCLAW_SSH_PASSWORD",
-    "LOG_SSH_PASSWORD",
-}
-_SECRET_SUFFIXES = (
-    "_TOKEN",
-    "_PASSWORD",
-    "_API_KEY",
-    "_API_HASH",
-    "_SECRET",
-    "_PRIVATE_KEY",
-    "_PAT",
+# Import unified settings loader
+from settings.loader import (
+    get_settings as _get_loader,
+    get_str as _loader_get_str,
+    get_int as _loader_get_int,
+    get_bool as _loader_get_bool,
+    get_list as _loader_get_list,
 )
 
+# Initialize global settings loader
+_settings_loader = _get_loader()
 
-def _is_secret_name(name: str) -> bool:
-    key = name.strip().upper()
-    if not key:
-        return False
-    if key in _SECRET_EXACT:
-        return True
-    return any(key.endswith(suffix) for suffix in _SECRET_SUFFIXES)
-
-
-def _strip_inline_comment(raw: str) -> str:
-    in_single = False
-    in_double = False
-    out: list[str] = []
-    for ch in raw:
-        if ch == "'" and not in_double:
-            in_single = not in_single
-            out.append(ch)
-            continue
-        if ch == '"' and not in_single:
-            in_double = not in_double
-            out.append(ch)
-            continue
-        if ch == "#" and not in_single and not in_double:
-            break
-        out.append(ch)
-    return "".join(out).strip()
-
-
-def _parse_yaml_scalar(raw: str) -> Any:
-    value = _strip_inline_comment(raw)
-    if value == "":
-        return ""
-    low = value.lower()
-    if low in {"true", "yes", "on"}:
-        return True
-    if low in {"false", "no", "off"}:
-        return False
-    if re.fullmatch(r"[+-]?\d+", value):
-        try:
-            return int(value)
-        except ValueError:
-            return value
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1]
-    return value
-
-
-def _load_settings_map() -> tuple[str, dict[str, Any]]:
-    env_path = (os.environ.get("SKYNET_SETTINGS_FILE") or "").strip()
-    default_path = _here / "settings" / "settings.yaml"
-    path = Path(env_path) if env_path else default_path
-    settings: dict[str, Any] = {}
-
-    if not path.exists():
-        return str(path), settings
-
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        match = _SETTINGS_LINE_RE.match(line)
-        if not match:
-            continue
-        key, raw_value = match.group(1), match.group(2)
-        if not _ENV_NAME_RE.match(key):
-            continue
-        settings[key] = _parse_yaml_scalar(raw_value)
-
-    return str(path), settings
-
-
-def _setting_raw(name: str) -> str:
-    value = _SETTINGS.get(name)
-    if value is None:
-        return ""
-    if isinstance(value, bool):
-        return "1" if value else "0"
-    return str(value).strip()
-
-
-def _get_raw(name: str, default: str = "") -> str:
-    env_value = (os.environ.get(name) or "").strip()
-    if env_value:
-        return env_value
-    if not _is_secret_name(name):
-        settings_value = _setting_raw(name)
-        if settings_value:
-            return settings_value
-    return default
-
-
-def _s(name: str, default: str = "") -> str:
-    return _get_raw(name, default)
-
-
-def _i(name: str, default: int = 0) -> int:
-    raw = _get_raw(name, "")
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return default
-
-
-def _b(name: str, default: bool = False) -> bool:
-    raw = _get_raw(name, "")
-    if not raw:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
+# ---------------------------------------------------------------------------
+# Backward compatibility wrappers - these delegate to the unified loader
+# ---------------------------------------------------------------------------
 
 def get_str(name: str, default: str = "") -> str:
-    return _s(name, default)
+    """Get string setting (backward compatible with old _s function)."""
+    return _loader_get_str(name, default)
 
 
 def get_int(name: str, default: int = 0) -> int:
-    return _i(name, default)
+    """Get integer setting (backward compatible with old _i function)."""
+    return _loader_get_int(name, default)
 
 
 def get_bool(name: str, default: bool = False) -> bool:
-    return _b(name, default)
+    """Get boolean setting (backward compatible with old _b function)."""
+    return _loader_get_bool(name, default)
 
 
-SETTINGS_FILE, _SETTINGS = _load_settings_map()
+# Aliases for backward compatibility with existing code
+_s = get_str
+_i = get_int
+_b = get_bool
+
+# Re-export for external use
+__all__ = [
+    "get_str",
+    "get_int",
+    "get_bool",
+    "get_list",
+    "get_settings",
+    "get_coding_fallback_chain",
+    "get_openclaw_stage_chain",
+    "get_code_index_globs",
+    "get_provider_priority",
+    "get_ssh_config",
+    "dump_config",
+]
+
+
+def get_settings() -> Any:
+    """Get the settings loader instance."""
+    return _settings_loader
+
+
+def get_list(name: str, separator: str = ",", default: list[str] | None = None) -> list[str]:
+    """Get list setting."""
+    return _loader_get_list(name, separator, default)
+
+
+# Backward compatibility: SETTINGS_FILE path
+SETTINGS_FILE = str(_settings_loader.settings_file)
+
 SSH_EXECUTION_MODES = {"ssh", "ssh_tunnel", "tunnel", "ssh-only"}
 
 # Telegram
@@ -198,11 +102,11 @@ HTTP_HOST: str = _s("SKYNET_HTTP_HOST") or _s("OPENCLAW_HTTP_HOST", "127.0.0.1")
 HTTP_PORT: int = _i("SKYNET_HTTP_PORT", _i("OPENCLAW_HTTP_PORT", 8766))
 
 # Database
-DB_PATH: str = _s("SKYNET_DB_PATH", str(_here / "data" / "skynet.db"))
+DB_PATH: str = _s("SKYNET_DB_PATH", "data/skynet.db")
 
 # Logging
 LOG_LEVEL: str = _s("SKYNET_LOG_LEVEL") or _s("OPENCLAW_LOG_LEVEL", "INFO")
-LOG_DIR: str = _s("SKYNET_LOG_DIR", str(_here / "logs"))
+LOG_DIR: str = _s("SKYNET_LOG_DIR", "logs")
 
 LOG_ENABLE_SSH_MIRROR: bool = _b(
     "SKYNET_LOG_ENABLE_SSH_MIRROR",
@@ -226,11 +130,11 @@ LOG_ENABLE_LOCAL_FILES: bool = _b(
 )
 LOG_MAX_BYTES: int = _i("SKYNET_LOG_MAX_BYTES", 10_485_760)
 LOG_BACKUP_COUNT: int = _i("SKYNET_LOG_BACKUP_COUNT", 5)
-TRACE_MIRROR_LOG_DIR: str = _s("SKYNET_TRACE_MIRROR_LOG_DIR", r"E:\MyProjects\skynet\logs")
+TRACE_MIRROR_LOG_DIR: str = _s("SKYNET_TRACE_MIRROR_LOG_DIR", "logs")
 RUNTIME_TRACE_ENABLED: bool = _b("SKYNET_RUNTIME_TRACE_ENABLED", True)
 RUNTIME_TRACE_LIVE_FILE: str = _s(
     "SKYNET_RUNTIME_TRACE_LIVE_FILE",
-    r"E:\MyProjects\skynet\logs\skynet.trace.log",
+    "logs/skynet.trace.log",
 )
 RUNTIME_TRACE_LEVEL: str = _s("SKYNET_RUNTIME_TRACE_LEVEL", "info").strip().lower()
 RUNTIME_TRACE_DETAIL_PROFILE: str = _s(
@@ -283,13 +187,14 @@ GOOGLE_AI_API_KEY: str = _s("GOOGLE_AI_API_KEY")
 GEMINI_MODEL: str = _s("GEMINI_MODEL", "gemini-2.0-flash")
 GEMINI_ONLY_MODE: bool = _b("GEMINI_ONLY_MODE", False)
 GROQ_API_KEY: str = _s("GROQ_API_KEY")
+DASHSCOPE_API_KEY: str = _s("DASHSCOPE_API_KEY")
 OPENROUTER_API_KEY: str = _s("OPENROUTER_API_KEY")
 OPENROUTER_MODEL: str = _s("OPENROUTER_MODEL", "qwen/qwen3-next-80b-a3b-instruct:free")
 OPENROUTER_FALLBACK_MODELS: str = _s("OPENROUTER_FALLBACK_MODELS", "")
 DEEPSEEK_API_KEY: str = _s("DEEPSEEK_API_KEY")
 OPENAI_API_KEY: str = _s("OPENAI_API_KEY")
 ANTHROPIC_API_KEY: str = _s("ANTHROPIC_API_KEY")
-OLLAMA_DEFAULT_MODEL: str = _s("OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:32b-instruct-q4_K_M")
+OLLAMA_DEFAULT_MODEL: str = _s("OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:7b")
 AI_PROVIDER_PRIORITY: str = _s(
     "AI_PROVIDER_PRIORITY",
     "ollama,gemini,claude,openai,deepseek,openrouter,groq",
@@ -305,7 +210,7 @@ GITHUB_USERNAME: str = _s("GH_USERNAME") or _s("GITHUB_USERNAME")
 # Worker paths
 WORKER_PROJECTS_DIR: str = _s(
     "OPENCLAW_PROJECT_BASE_DIR",
-    _s("WORKER_PROJECTS_DIR", _s("SKYNET_PROJECT_BASE_DIR", "C:/Projects")),
+    _s("WORKER_PROJECTS_DIR", _s("SKYNET_PROJECT_BASE_DIR", "")),
 )
 
 # Quality gates
@@ -322,7 +227,7 @@ STRICT_EMPTY_OUTPUT_EMERGENCY_SCAFFOLD: bool = _b(
 CODING_DEFAULT_PROFILE: str = _s("SKYNET_CODING_DEFAULT_PROFILE", "codex_primary").lower()
 CODING_FORCE_PRIMARY_FOR_ALL: bool = _b("SKYNET_CODING_FORCE_PRIMARY_FOR_ALL", True)
 CODING_FALLBACK_CHAIN: str = _s(
-    "SKYNET_CODING_FALLBACK_CHAIN", "codex"
+    "SKYNET_CODING_FALLBACK_CHAIN", "qwen,codex"
 ).lower()
 CODEX_WRITE_MODE: str = _s("SKYNET_CODEX_WRITE_MODE", "danger_full_access").strip().lower()
 CLAUDE_OLLAMA_STAGE_ENABLED: bool = _b("SKYNET_CLAUDE_OLLAMA_STAGE_ENABLED", False)
@@ -382,11 +287,11 @@ CONTROL_LOOP_COMPLETION_CONTRACT_REQUIRED: bool = _b(
 )
 CONTROL_LOOP_PLANNER_AGENT: str = _s(
     "SKYNET_CONTROL_LOOP_PLANNER_AGENT",
-    "codex",
+    "qwen",
 ).lower()
 CONTROL_LOOP_CRITIC_AGENT: str = _s(
     "SKYNET_CONTROL_LOOP_CRITIC_AGENT",
-    "codex",
+    "qwen",
 ).lower()
 CONTROL_LOOP_ROUTER_FALLBACK_ENABLED: bool = _b(
     "SKYNET_CONTROL_LOOP_ROUTER_FALLBACK_ENABLED",
@@ -511,11 +416,172 @@ def is_ssh_execution_mode() -> bool:
 
 
 def effective_orchestration_mode() -> str:
-    mode = str(ORCHESTRATION_MODE or "legacy").strip().lower() or "legacy"
-    if (
-        mode == "acp_first"
-        and is_ssh_execution_mode()
-        and not bool(ORCHESTRATION_ALLOW_ACP_WITH_SSH)
-    ):
+    # Read from module globals so monkeypatching cfg attributes in tests works correctly.
+    _globals = globals()
+    mode = str(_globals.get("ORCHESTRATION_MODE") or "legacy").strip().lower() or "legacy"
+    allow_acp_with_ssh = bool(_globals.get("ORCHESTRATION_ALLOW_ACP_WITH_SSH", False))
+    if mode == "acp_first" and is_ssh_execution_mode() and not allow_acp_with_ssh:
         return "legacy"
     return mode
+
+
+# ---------------------------------------------------------------------------
+# Convenience helpers — use these instead of getattr(cfg, ...) in handlers
+# ---------------------------------------------------------------------------
+
+def is_acp_first() -> bool:
+    """Return True when ACP-first orchestration is the effective mode."""
+    return effective_orchestration_mode() == "acp_first"
+
+
+def is_websocket_primary() -> bool:
+    """Return True when WebSocket-primary transport is enabled."""
+    return bool(WEBSOCKET_PRIMARY_ENABLED)
+
+
+def is_websocket_fallback_to_ssh() -> bool:
+    """Return True when WebSocket may fall back to SSH."""
+    return bool(WEBSOCKET_FALLBACK_TO_SSH)
+
+
+def is_ssh_fallback_enabled() -> bool:
+    """Return True when SSH fallback is explicitly enabled."""
+    return _b("OPENCLAW_SSH_FALLBACK_ENABLED", False)
+
+
+def is_control_loop_active() -> bool:
+    """Return True when the control loop is enabled and forced for all projects."""
+    return bool(CONTROL_LOOP_ENABLED) and bool(CONTROL_LOOP_FORCE_FOR_ALL)
+
+
+def is_strict_gates_enabled() -> bool:
+    """Return True when strict quality gates are enabled."""
+    return bool(STRICT_QUALITY_GATES_ENABLED)
+
+
+def is_runtime_trace_active() -> bool:
+    """Return True when runtime trace is enabled."""
+    return bool(RUNTIME_TRACE_ENABLED)
+
+
+def is_telegram_tracker_active() -> bool:
+    """Return True when the Telegram coding tracker is enabled."""
+    return bool(TELEGRAM_TRACKER_ENABLED)
+
+
+def get_coding_fallback_chain() -> list[str]:
+    """Return the ordered coding fallback chain as a list."""
+    raw = CODING_FALLBACK_CHAIN or "codex"
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
+def get_openclaw_stage_chain() -> list[str]:
+    """Return the OpenClaw stage chain as a list."""
+    raw = OPENCLAW_STAGE_CHAIN or "codex"
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def get_code_index_globs() -> list[str]:
+    """Return the control-loop code index globs as a list."""
+    raw = CONTROL_LOOP_CODE_INDEX_GLOBS or "*.py,*.js,*.ts,*.tsx"
+    return [g.strip() for g in raw.split(",") if g.strip()]
+
+
+def get_provider_priority() -> list[str]:
+    """Return the AI provider priority list."""
+    raw = AI_PROVIDER_PRIORITY or ""
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def get_ssh_config() -> dict:
+    """Return a dict of all SSH transport settings (no secrets)."""
+    return {
+        "execution_mode": _s("OPENCLAW_EXECUTION_MODE", ""),
+        "host": _s("OPENCLAW_SSH_HOST", ""),
+        "port": _i("OPENCLAW_SSH_PORT", 22),
+        "user": _s("OPENCLAW_SSH_USER", ""),
+        "key_path": _s("OPENCLAW_SSH_KEY_PATH", ""),
+        "connect_timeout": _i("OPENCLAW_SSH_CONNECT_TIMEOUT", 4),
+        "command_timeout": _i("OPENCLAW_SSH_COMMAND_TIMEOUT", 180),
+        "remote_os": _s("OPENCLAW_SSH_REMOTE_OS", "windows"),
+        "max_parallel": SSH_MAX_PARALLEL,
+        "circuit_breaker_seconds": SSH_CIRCUIT_BREAKER_SECONDS,
+        "capacity_backoff_seconds": SSH_CAPACITY_BACKOFF_SECONDS,
+        "health_probe_timeout": SSH_HEALTH_PROBE_TIMEOUT,
+        "fallback_enabled": is_ssh_fallback_enabled(),
+        "strict_host_key": _b("OPENCLAW_SSH_STRICT_HOST_KEY", False),
+    }
+
+
+def dump_config() -> dict:
+    """Return a redacted snapshot of the current effective configuration.
+
+    Useful for /status diagnostics and startup logging.
+    Secrets are masked; all other values are shown as-is.
+    """
+    return {
+        "settings_file": SETTINGS_FILE,
+        "transport": {
+            "execution_mode": _s("OPENCLAW_EXECUTION_MODE", ""),
+            "websocket_primary": WEBSOCKET_PRIMARY_ENABLED,
+            "websocket_fallback_to_ssh": WEBSOCKET_FALLBACK_TO_SSH,
+            "ssh_fallback_enabled": is_ssh_fallback_enabled(),
+            "ssh_host": _s("OPENCLAW_SSH_HOST", ""),
+            "ssh_port": _i("OPENCLAW_SSH_PORT", 22),
+        },
+        "orchestration": {
+            "mode": ORCHESTRATION_MODE,
+            "effective_mode": effective_orchestration_mode(),
+            "allow_acp_with_ssh": ORCHESTRATION_ALLOW_ACP_WITH_SSH,
+        },
+        "coding": {
+            "default_profile": CODING_DEFAULT_PROFILE,
+            "force_primary_for_all": CODING_FORCE_PRIMARY_FOR_ALL,
+            "fallback_chain": get_coding_fallback_chain(),
+            "transport": CODING_TRANSPORT,
+            "codex_write_mode": CODEX_WRITE_MODE,
+        },
+        "control_loop": {
+            "enabled": CONTROL_LOOP_ENABLED,
+            "force_for_all": CONTROL_LOOP_FORCE_FOR_ALL,
+            "default_profile": CONTROL_LOOP_DEFAULT_PROFILE,
+            "planner_agent": CONTROL_LOOP_PLANNER_AGENT,
+            "critic_agent": CONTROL_LOOP_CRITIC_AGENT,
+        },
+        "quality_gates": {
+            "strict_enabled": STRICT_QUALITY_GATES_ENABLED,
+            "default_profile": STRICT_QUALITY_GATES_DEFAULT_PROFILE,
+            "fix_retries": STRICT_QUALITY_GATES_FIX_RETRIES,
+        },
+        "ai_providers": {
+            "priority": get_provider_priority(),
+            "gemini_model": GEMINI_MODEL,
+            "openrouter_model": OPENROUTER_MODEL,
+            "ollama_default_model": OLLAMA_DEFAULT_MODEL,
+            "gemini_key_set": bool(_s("GOOGLE_AI_API_KEY")),
+            "groq_key_set": bool(_s("GROQ_API_KEY")),
+            "openrouter_key_set": bool(_s("OPENROUTER_API_KEY")),
+            "anthropic_key_set": bool(_s("ANTHROPIC_API_KEY")),
+            "openai_key_set": bool(_s("OPENAI_API_KEY")),
+        },
+        "runtime_trace": {
+            "enabled": RUNTIME_TRACE_ENABLED,
+            "live_file": RUNTIME_TRACE_LIVE_FILE,
+            "level": RUNTIME_TRACE_LEVEL,
+            "detail_profile": RUNTIME_TRACE_DETAIL_PROFILE,
+            "payload_mode": RUNTIME_TRACE_PAYLOAD_MODE,
+            "db_enabled": RUNTIME_TRACE_DB_ENABLED,
+        },
+        "telegram": {
+            "bot_token_set": bool(_s("TELEGRAM_BOT_TOKEN")),
+            "allowed_user_id": ALLOWED_USER_ID,
+            "tracker_enabled": TELEGRAM_TRACKER_ENABLED,
+        },
+        "auth": {
+            "auth_token_set": bool(AUTH_TOKEN),
+        },
+        "db": {
+            "path": DB_PATH,
+        },
+        "worker_projects_dir": WORKER_PROJECTS_DIR,
+    }

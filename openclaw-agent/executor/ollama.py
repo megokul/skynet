@@ -15,13 +15,15 @@ import json
 import logging
 from typing import Any
 
+from settings.loader import get_str as _s, get_int as _i
+
 logger = logging.getLogger("chathan.executor.ollama")
 
-# Ollama's local HTTP endpoint.
-_OLLAMA_BASE_URL = "http://localhost:11434"
+# Ollama's local HTTP endpoint — configurable via settings/env.
+_OLLAMA_BASE_URL = _s("OPENCLAW_OLLAMA_URL", "http://localhost:11434")
 
 # Default timeout for inference (local models can be slow on consumer GPUs).
-_OLLAMA_TIMEOUT = 300
+_OLLAMA_TIMEOUT = _i("OLLAMA_TIMEOUT_SECONDS", 300)
 
 
 async def ollama_chat(params: dict[str, Any]) -> dict[str, Any]:
@@ -50,7 +52,7 @@ async def ollama_chat(params: dict[str, Any]) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError) as exc:
         return {"returncode": 1, "stdout": "", "stderr": f"Invalid messages JSON: {exc}"}
 
-    model = params.get("model", "qwen2.5-coder:7b")
+    model = params.get("model") or _s("OLLAMA_DEFAULT_MODEL", "qwen2.5-coder:7b")
     system = params.get("system", "")
     max_tokens = int(params.get("max_tokens", 4096))
     temperature = float(params.get("temperature", 0.0))

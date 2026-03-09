@@ -24,6 +24,7 @@ from skynet.control_plane import (
 from skynet.ledger.schema import init_db
 from skynet.ledger.task_queue import TaskQueueManager
 from skynet.ledger.worker_registry import WorkerRegistry
+from skynet.settings.loader import get_str as _s, get_int as _i, get_bool as _b
 
 # Configure logging
 logging.basicConfig(
@@ -43,10 +44,10 @@ def _get_gateway_urls_from_env() -> list[str]:
     - OPENCLAW_GATEWAY_URLS (comma-separated URLs)
     - OPENCLAW_GATEWAY_URL (single URL fallback)
     """
-    configured_urls = os.getenv("OPENCLAW_GATEWAY_URLS", "").strip()
+    configured_urls = _s("OPENCLAW_GATEWAY_URLS").strip()
     gateway_urls = [url.strip() for url in configured_urls.split(",") if url.strip()]
     if not gateway_urls:
-        gateway_urls = [os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:8766")]
+        gateway_urls = [_s("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:8766")]
     return gateway_urls
 
 
@@ -64,7 +65,7 @@ async def lifespan(app: FastAPI):
     logger.info("Control-plane registry initialized")
 
     try:
-        db_path = os.getenv("SKYNET_DB_PATH", "data/skynet.db")
+        db_path = _s("SKYNET_DB_PATH", "data/skynet.db")
         app_state.ledger_db = await init_db(db_path)
         app_state.worker_registry = WorkerRegistry(app_state.ledger_db)
         app_state.task_queue = TaskQueueManager(app_state.ledger_db)
@@ -97,31 +98,27 @@ async def lifespan(app: FastAPI):
         )
 
     # Start control-plane scheduler authority (disabled only if explicitly configured).
-    scheduler_enabled = os.getenv("SKYNET_CONTROL_SCHEDULER_ENABLED", "1").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
+    scheduler_enabled = _b("SKYNET_CONTROL_SCHEDULER_ENABLED", True)
     if scheduler_enabled and app_state.task_queue is not None:
-        task_lock_timeout = int(os.getenv("SKYNET_CONTROL_TASK_LOCK_TIMEOUT", "300"))
+        task_lock_timeout = _i("SKYNET_CONTROL_TASK_LOCK_TIMEOUT", 300)
         app_state.control_scheduler = ControlPlaneScheduler(
             task_queue=app_state.task_queue,
             registry=app_state.control_registry,
             gateway_client=app_state.gateway_client,
-            worker_id=os.getenv("SKYNET_CONTROL_SCHEDULER_WORKER_ID", "skynet-control-scheduler"),
-            poll_interval_seconds=float(os.getenv("SKYNET_CONTROL_SCHEDULER_POLL_SECS", "1.5")),
+            worker_id=_s("SKYNET_CONTROL_SCHEDULER_WORKER_ID", "skynet-control-scheduler"),
+            poll_interval_seconds=float(_s("SKYNET_CONTROL_SCHEDULER_POLL_SECS", "1.5")),
             lock_timeout_seconds=task_lock_timeout,
         )
         await app_state.control_scheduler.start()
 
-        reaper_enabled = os.getenv("SKYNET_STALE_LOCK_REAPER_ENABLED", "1").strip().lower() in {
-            "1", "true", "yes", "on",
-        }
+        reaper_enabled = _b("SKYNET_STALE_LOCK_REAPER_ENABLED", True)
         if reaper_enabled:
             app_state.stale_lock_reaper = StaleLockReaper(
                 task_queue=app_state.task_queue,
                 registry=app_state.control_registry,
                 gateway_client=app_state.gateway_client,
                 ttl_seconds=task_lock_timeout,
-                poll_interval_seconds=float(os.getenv("SKYNET_STALE_LOCK_REAPER_POLL_SECS", "15")),
+                poll_interval_seconds=float(_s("SKYNET_STALE_LOCK_REAPER_POLL_SECS", "15")),
             )
             await app_state.stale_lock_reaper.start()
         else:
@@ -187,7 +184,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
+    allow_origins=_s("CORS_ORIGINS", "*").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
