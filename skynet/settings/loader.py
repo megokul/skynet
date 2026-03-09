@@ -363,7 +363,10 @@ class SettingsLoader:
             return _parse_scalar(env_value)
 
         if name in self._settings:
-            return self._settings[name]
+            value = self._settings[name]
+            # For secrets, skip empty yaml placeholders so dotenv value wins
+            if not (not value and _is_secret_name(name) and name in self._dotenv_vars):
+                return value
 
         if _is_secret_name(name) and name in self._dotenv_vars:
             return self._dotenv_vars[name]

@@ -101,6 +101,7 @@
     volumes:
       - openclaw-data:/app/data
       - ./openclaw-gateway/external-skills:/app/external-skills:ro
+      - ./skynet:/app/skynet:ro
       - ${OPENCLAW_SSH_KEY_FILE:-/dev/null}:${OPENCLAW_SSH_KEY_PATH:-/app/keys/laptop_ed25519}:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
