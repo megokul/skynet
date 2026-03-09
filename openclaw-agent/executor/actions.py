@@ -257,7 +257,7 @@ _CODING_AGENT_BINARIES: dict[str, str] = {
     "qwen": _cfg_s("SKYNET_QWEN_BIN") or _cfg_s("OPENCLAW_QWEN_BIN", "qwen"),
 }
 _CODING_AGENT_PREFIX_ARGS: dict[str, list[str]] = {
-    "codex": ["exec", "--skip-git-repo-check"],
+    "codex": ["exec", "--full-auto", "--skip-git-repo-check"],
     "claude": ["-p"],
     "cline": ["-p"],
     "qwen": ["--yolo", "-p"],
