@@ -301,6 +301,22 @@ jobs:
           print("status diagnostics contract ok")
           PY
 
+      - name: Validate worker project path settings
+        shell: bash
+        run: |
+          docker exec openclaw-gateway python - <<'PY'
+          import config
+
+          worker_projects_dir = str(getattr(config, "WORKER_PROJECTS_DIR", "") or "").strip()
+          default_working_dir = str(getattr(config, "DEFAULT_WORKING_DIR", "") or "").strip()
+          if not worker_projects_dir:
+              raise SystemExit("WORKER_PROJECTS_DIR is empty inside openclaw-gateway")
+          if not default_working_dir:
+              raise SystemExit("DEFAULT_WORKING_DIR is empty inside openclaw-gateway")
+          print(f"worker_projects_dir={worker_projects_dir}")
+          print(f"default_working_dir={default_working_dir}")
+          PY
+
       - name: Verify OpenClaw provider wiring
         shell: bash
         run: |
