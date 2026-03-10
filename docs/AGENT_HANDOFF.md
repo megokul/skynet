@@ -1,10 +1,73 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-10 10:49
+Last updated (UTC): 2026-03-10 13:05
 
 ## Current Goal
 
-WebSocket-primary worker execution with local Ollama coding backend, while preserving strict quality gates and deterministic run behavior.
+WebSocket-primary worker execution with Qwen-first planner/coding behavior, while preserving strict quality gates, deterministic live-E2E failure handling, and a single settings-driven runtime contract.
+
+### 2026-03-10 Qwen-First Runtime Contract + Deployed Revision Guard
+
+- Root-caused the remaining live `telegram_real` failure after Qwen smoke preflight started passing:
+  - worker preflight probe succeeded with the new Qwen planner contract
+  - the real requirements turn still failed with `Internal agent error`
+  - worker audit showed the live request payload was missing `task_mode`
+  - that proved the deployed `openclaw-gateway` container was still serving an older planner-handler build, even though local runtime/tests were already patched
+- Canonical Qwen runtime contract is now split and settings-backed instead of using the legacy generic CLI path:
+  - new shared helper `skynet/qwen_cli.py`
+  - new shared planner prompt/context source `skynet/project_specialist.py`
+  - `openclaw-agent/executor/actions.py` now treats `qwen` as a first-class runtime with required `task_mode`
+  - supported task modes:
+    - `planner_chat`
+    - `plan_generation`
+    - `coding_implementation`
+    - `coding_validation`
+- Worker-side Qwen fixes:
+  - planner path no longer relies on deprecated `qwen -p` prompt behavior
+  - Qwen now uses positional prompts plus JSON output parsing
+  - session ids are normalized to valid UUIDs before invoking the CLI
+  - output is classified into typed contracts such as:
+    - `ok`
+    - `planner_meta_output`
+    - `coding_meta_output`
+    - `planner_tool_use`
+    - JSON parse failures
+  - `qwen_context_text` is allowed through validator sanitization so planner context can be injected safely
+  - planner context can be written through a temporary `QWEN.md` file when the active profile enables it
+- Gateway-side Qwen fixes:
+  - `openclaw-gateway/bot/handlers/project.py` now uses the shared planner prompt builder
+  - Qwen planner calls explicitly send:
+    - `task_mode=planner_chat`
+    - `qwen_context_text=<shared planner contract>`
+  - coding-stage payloads already send `task_mode=coding_implementation`
+  - milestone extraction sends `task_mode=plan_generation` when planner agent is `qwen`
+  - planner validators were intentionally kept strict; generic “ready to assist / what would you like to work on?” output is still rejected as contract-invalid
+- SSH executor parity:
+  - `openclaw-gateway/ssh_tunnel_executor.py` now propagates `qwen_context_text`
+  - SSH-native Qwen runs can temporarily materialize and restore `QWEN.md` in the remote working directory, so Qwen behavior is consistent across websocket and SSH transports
+- Live-E2E preflight/build freshness guard:
+  - `openclaw-gateway/api.py` `/status` now exposes `build_revision`
+  - `openclaw-gateway/config.py` adds:
+    - `SKYNET_BUILD_REVISION`
+    - `SKYNET_LIVE_E2E_EXPECT_REMOTE_BUILD_REVISION`
+  - shared preflight in `openclaw-gateway/tests/live_diagnostics.py` now raises `PREFLIGHT_BUILD_REVISION_MISMATCH` when the deployed gateway is not serving the expected revision
+  - deploy workflow now injects `SKYNET_BUILD_REVISION=$GITHUB_SHA` into `.env.ci` and verifies `/status.build_revision` matches the container config after deploy
+- Regression and real-adapter coverage:
+  - shared Qwen prompt/contract tests in:
+    - `openclaw-gateway/tests/test_project_specialist_prompt.py`
+    - `openclaw-gateway/tests/test_project_planner_fallback.py`
+    - `openclaw-gateway/tests/test_ssh_executor_resilience.py`
+    - `openclaw-agent/tests/test_executor.py`
+    - `openclaw-agent/tests/test_validator.py`
+    - `openclaw-gateway/tests/test_api_status_diagnostics.py`
+    - `openclaw-gateway/tests/test_live_e2e_trace_logging.py`
+  - real local Qwen integration probe now passes with:
+    - multiline planner prompt
+    - shared Qwen context contract
+    - no generic onboarding/meta response
+- Operational state after this change:
+  - local code now sends the correct Qwen contract everywhere relevant
+  - any future stale deployment is expected to fail during preflight with a concrete build-revision mismatch instead of surfacing later as “missing task_mode” or generic planner failure
 
 ### 2026-03-10 Shared Settings Loader Container-Layout Fix
 
