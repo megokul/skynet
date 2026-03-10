@@ -82,6 +82,11 @@ jobs:
           clean: false
           path: repo
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Repair workspace permissions
         shell: bash
         run: |
