@@ -1138,6 +1138,25 @@ def _stage_payload(
     return payload
 
 
+def _planner_agent_payload(
+    *,
+    agent: str,
+    prompt: str,
+    working_dir: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "agent": str(agent or "codex").strip().lower() or "codex",
+        "backend": "auto",
+        "prompt": prompt,
+        "working_dir": working_dir,
+        "timeout_seconds": timeout_seconds,
+    }
+    if payload["agent"] == "qwen":
+        payload["task_mode"] = "plan_generation"
+    return payload
+
+
 def _is_strict_project(project: dict[str, Any] | None) -> bool:
     if not cfg.STRICT_QUALITY_GATES_ENABLED:
         return False
@@ -4725,19 +4744,20 @@ async def _run_control_loop_v1(
             },
         )
         try:
+            planner_agent = str(getattr(cfg, "CONTROL_LOOP_PLANNER_AGENT", "codex") or "codex")
+            director_timeout = max(
+                30,
+                int(getattr(cfg, "CONTROL_LOOP_DIRECTOR_TIMEOUT_SECONDS", 120) or 120),
+            )
             result = await send_action(
                 "run_coding_agent",
-                {
-                    "agent": str(getattr(cfg, "CONTROL_LOOP_PLANNER_AGENT", "codex") or "codex"),
-                    "backend": "auto",
-                    "prompt": director_prompt,
-                    "working_dir": working_dir,
-                    "timeout_seconds": max(
-                        30,
-                        int(getattr(cfg, "CONTROL_LOOP_DIRECTOR_TIMEOUT_SECONDS", 120) or 120),
-                    ),
-                },
-                timeout=max(30, int(getattr(cfg, "CONTROL_LOOP_DIRECTOR_TIMEOUT_SECONDS", 120) or 120)),
+                _planner_agent_payload(
+                    agent=planner_agent,
+                    prompt=director_prompt,
+                    working_dir=working_dir,
+                    timeout_seconds=director_timeout,
+                ),
+                timeout=director_timeout,
                 confirmed=True,
             )
             if result.get("status") != "error" and _action_exit_code(result) == 0:
@@ -4795,19 +4815,20 @@ async def _run_control_loop_v1(
         )
         parsed_arch_state: dict[str, Any] | None = None
         try:
+            planner_agent = str(getattr(cfg, "CONTROL_LOOP_PLANNER_AGENT", "codex") or "codex")
+            architect_timeout = max(
+                30,
+                int(getattr(cfg, "CONTROL_LOOP_ARCHITECT_TIMEOUT_SECONDS", 180) or 180),
+            )
             result = await send_action(
                 "run_coding_agent",
-                {
-                    "agent": str(getattr(cfg, "CONTROL_LOOP_PLANNER_AGENT", "codex") or "codex"),
-                    "backend": "auto",
-                    "prompt": architect_prompt,
-                    "working_dir": working_dir,
-                    "timeout_seconds": max(
-                        30,
-                        int(getattr(cfg, "CONTROL_LOOP_ARCHITECT_TIMEOUT_SECONDS", 180) or 180),
-                    ),
-                },
-                timeout=max(30, int(getattr(cfg, "CONTROL_LOOP_ARCHITECT_TIMEOUT_SECONDS", 180) or 180)),
+                _planner_agent_payload(
+                    agent=planner_agent,
+                    prompt=architect_prompt,
+                    working_dir=working_dir,
+                    timeout_seconds=architect_timeout,
+                ),
+                timeout=architect_timeout,
                 confirmed=True,
             )
             if result.get("status") != "error" and _action_exit_code(result) == 0:
@@ -8080,14 +8101,12 @@ async def _extract_milestones_codex_then_router(
             )
             result = await send_action(
                 "run_coding_agent",
-                {
-                    "agent": planner_agent,
-                    "backend": "auto",
-                    **({"task_mode": "plan_generation"} if planner_agent == "qwen" else {}),
-                    "prompt": prompt,
-                    "working_dir": working_dir,
-                    "timeout_seconds": timeout,
-                },
+                _planner_agent_payload(
+                    agent=planner_agent,
+                    prompt=prompt,
+                    working_dir=working_dir,
+                    timeout_seconds=timeout,
+                ),
                 timeout=timeout,
                 confirmed=True,
             )

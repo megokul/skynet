@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from bot.handlers.coding import _extract_milestones_codex_then_router
+from bot.handlers.coding import _extract_milestones_codex_then_router, _planner_agent_payload
 from bot.handlers.project import (
     _build_deterministic_plan,
     _is_requirement_grounded_plan,
@@ -55,6 +55,26 @@ def test_prompt_echo_plan_is_rejected():
         "**Milestones:**\n1. step one\n2. step two"
     )
     assert _is_requirement_grounded_plan(bad_plan, _history()) is False
+
+
+def test_planner_agent_payload_adds_qwen_plan_generation_task_mode():
+    qwen_payload = _planner_agent_payload(
+        agent="qwen",
+        prompt="Generate milestones",
+        working_dir="E:/SKYNET-SANDBOX/Projects/demo",
+        timeout_seconds=90,
+    )
+    codex_payload = _planner_agent_payload(
+        agent="codex",
+        prompt="Generate milestones",
+        working_dir="E:/SKYNET-SANDBOX/Projects/demo",
+        timeout_seconds=90,
+    )
+
+    assert qwen_payload["agent"] == "qwen"
+    assert qwen_payload["task_mode"] == "plan_generation"
+    assert codex_payload["agent"] == "codex"
+    assert "task_mode" not in codex_payload
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-10 13:05
+Last updated (UTC): 2026-03-10 13:24
 
 ## Current Goal
 
@@ -41,6 +41,7 @@ WebSocket-primary worker execution with Qwen-first planner/coding behavior, whil
     - `qwen_context_text=<shared planner contract>`
   - coding-stage payloads already send `task_mode=coding_implementation`
   - milestone extraction sends `task_mode=plan_generation` when planner agent is `qwen`
+  - control-loop director and architect planner calls now use the same centralized Qwen planner payload helper, so they also send `task_mode=plan_generation`
   - planner validators were intentionally kept strict; generic “ready to assist / what would you like to work on?” output is still rejected as contract-invalid
 - SSH executor parity:
   - `openclaw-gateway/ssh_tunnel_executor.py` now propagates `qwen_context_text`
