@@ -16,6 +16,7 @@ Modes:
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 import re
 import subprocess
@@ -30,8 +31,7 @@ for candidate in (str(REPO_ROOT), str(GATEWAY_ROOT)):
     if candidate not in sys.path:
         sys.path.insert(0, candidate)
 
-from live_settings import build_gateway_runtime_env, trace_gateway_runtime
-import config as cfg
+from live_settings import auto_detect_env_file, build_gateway_runtime_env, trace_gateway_runtime
 from live_diagnostics import LiveTrace
 
 
@@ -43,6 +43,16 @@ PROMPT = (
 )
 
 SLUG = f"e2e-test-{int(time.time())}"
+cfg: Any | None = None
+
+
+def _get_cfg(*, reload_module: bool = False) -> Any:
+    global cfg
+    if cfg is None:
+        cfg = importlib.import_module("config")
+    elif reload_module:
+        cfg = importlib.reload(cfg)
+    return cfg
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -62,7 +72,9 @@ def _fail(trace: LiveTrace, message: str, *, detail: Any | None = None) -> None:
     sys.exit(1)
 
 
-def _check_env(trace: LiveTrace, flow: str = "conversation") -> None:
+def _check_env(trace: LiveTrace, flow: str = "conversation", policy: dict[str, Any] | None = None) -> None:
+    cfg_module = _get_cfg()
+    live_policy = dict(policy or cfg_module.get_live_e2e_policy(flow))
     telegram_real_flows = {"telegram_real", "telegram", "real_telegram"}
     transport = os.environ.get("SKYNET_E2E_TRANSPORT", "websocket").strip().lower()
 
@@ -89,6 +101,7 @@ def _check_env(trace: LiveTrace, flow: str = "conversation") -> None:
         "env.check",
         flow=flow,
         transport=transport,
+        required_transport=str(live_policy.get("required_transport") or ""),
         required=list(required),
         missing=missing,
         ssh_host=ssh_host,
@@ -109,6 +122,20 @@ def _check_env(trace: LiveTrace, flow: str = "conversation") -> None:
             print("       Set SKYNET_AUTH_TOKEN and retry.")
         print(f"[TRACE] {trace.path}")
         sys.exit(0)
+
+    if flow not in {"direct"} and str(live_policy.get("required_transport") or "") == "websocket_primary":
+        exec_mode = (os.environ.get("OPENCLAW_EXECUTION_MODE") or "").strip().lower()
+        if exec_mode in {"ssh", "ssh_tunnel", "tunnel", "ssh-only"}:
+            detail = (
+                "Live E2E policy requires websocket_primary, but OPENCLAW_EXECUTION_MODE "
+                f"is forced to '{exec_mode}'."
+            )
+            trace.log("env.mismatch", reason="forced_ssh_under_websocket_policy", detail=detail)
+            if strict:
+                _fail(trace, "Live E2E environment validation failed.", detail=detail)
+            print(f"[SKIP] {detail}")
+            print(f"[TRACE] {trace.path}")
+            sys.exit(0)
 
     # host.docker.internal is valid for a Dockerized gateway on EC2 host.
     # It is not reachable when running this script directly on the worker laptop host.
@@ -148,6 +175,23 @@ def _infer_infra_category(output: str) -> str:
     return ""
 
 
+def _apply_live_policy_env(env: dict[str, str], flow: str) -> dict[str, str]:
+    policy = _get_cfg().get_live_e2e_policy(flow)
+    env["SKYNET_E2E_FAIL_ON_SKIP"] = os.environ.get("SKYNET_E2E_FAIL_ON_SKIP", "1")
+    env["SKYNET_E2E_ALLOW_SSH_FALLBACK"] = "1" if bool(policy.get("allow_fallback", False)) else "0"
+    env["SKYNET_E2E_REQUIRE_WEBSOCKET_PRIMARY"] = (
+        "1" if str(policy.get("required_transport") or "") == "websocket_primary" else "0"
+    )
+    env["SKYNET_E2E_RUNTIME_TRACE_STALE_SECONDS"] = str(
+        int(policy.get("runtime_trace_stale_seconds", 90) or 90)
+    )
+    env["SKYNET_E2E_MESSAGE_PROGRESS_TIMEOUT_SECONDS"] = str(
+        int(policy.get("message_progress_timeout_seconds", 90) or 90)
+    )
+    env["SKYNET_E2E_DIAGNOSTICS_PROFILE"] = str(policy.get("diagnostics_profile") or "")
+    return env
+
+
 def _run_conversation_flow(trace: LiveTrace) -> None:
     target = (
         "openclaw-gateway/tests/test_e2e_conversation_live.py::"
@@ -157,7 +201,7 @@ def _run_conversation_flow(trace: LiveTrace) -> None:
     env = build_gateway_runtime_env(dict(os.environ))
     env["SKYNET_E2E_LIVE"] = os.environ.get("SKYNET_E2E_LIVE", "1")
     env["SKYNET_LIVE_TRACE_FILE"] = str(trace.path)
-    env["SKYNET_E2E_FAIL_ON_SKIP"] = os.environ.get("SKYNET_E2E_FAIL_ON_SKIP", "1")
+    env = _apply_live_policy_env(env, "conversation")
 
     trace.log("e2e.step.start", step="conversation_flow", status="start")
     trace.log(
@@ -236,7 +280,7 @@ def _run_telegram_real_flow(trace: LiveTrace) -> None:
     env = build_gateway_runtime_env(dict(os.environ))
     env["SKYNET_E2E_LIVE"] = os.environ.get("SKYNET_E2E_LIVE", "1")
     env["SKYNET_LIVE_TRACE_FILE"] = str(trace.path)
-    env["SKYNET_E2E_FAIL_ON_SKIP"] = os.environ.get("SKYNET_E2E_FAIL_ON_SKIP", "1")
+    env = _apply_live_policy_env(env, "telegram_real")
 
     trace.log("e2e.step.start", step="telegram_real_flow", status="start")
     trace.log(
@@ -462,17 +506,16 @@ async def _run_direct_flow(trace: LiveTrace) -> None:
 
 
 async def run() -> None:
-    # Auto-detect .env.local-e2e on Windows when SKYNET_ENV_FILE is not set
-    if sys.platform == "win32" and not os.environ.get("SKYNET_ENV_FILE"):
-        _candidate = REPO_ROOT / ".env.local-e2e"
-        if _candidate.exists():
-            os.environ["SKYNET_ENV_FILE"] = str(_candidate)
+    auto_detect_env_file()
 
     trace = LiveTrace("e2e-live")
     trace.log("run.start", python=sys.version.split()[0], cwd=os.getcwd())
     trace_gateway_runtime(trace.log)
-    flow = cfg.get_live_e2e_flow()
-    _check_env(trace, flow)
+    cfg_module = _get_cfg(reload_module=True)
+    flow = cfg_module.get_live_e2e_flow()
+    policy = cfg_module.get_live_e2e_policy(flow)
+    trace.log("run.policy", **policy)
+    _check_env(trace, flow, policy)
     trace.log("run.mode", flow=flow)
     if flow in {"conversation", "chat"}:
         _run_conversation_flow(trace)

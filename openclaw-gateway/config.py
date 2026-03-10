@@ -63,6 +63,7 @@ __all__ = [
     "get_live_e2e_backend",
     "get_live_e2e_agent",
     "get_live_e2e_container_log_config",
+    "get_live_e2e_policy",
     "get_provider_priority",
     "get_ssh_config",
     "dump_config",
@@ -102,6 +103,8 @@ SSH_EXECUTION_MODES = {"ssh", "ssh_tunnel", "tunnel", "ssh-only"}
 # Telegram
 TELEGRAM_BOT_TOKEN: str = _s("TELEGRAM_BOT_TOKEN")
 ALLOWED_USER_ID: int = _i("TELEGRAM_ALLOWED_USER_ID", 0)  # 0 = allow all
+GATEWAY_ID: str = _s("SKYNET_GATEWAY_ID", "openclaw").strip()
+ORCHESTRATOR_URL: str = _s("SKYNET_ORCHESTRATOR_URL", "http://localhost:8000").strip().rstrip("/")
 
 # Worker WebSocket server
 AUTH_TOKEN: str = _s("SKYNET_AUTH_TOKEN") or _s("OPENCLAW_AUTH_TOKEN")
@@ -421,9 +424,41 @@ TELEGRAM_TRACKER_VERBOSE_PIPELINE: bool = _b(
     "SKYNET_TELEGRAM_TRACKER_VERBOSE_PIPELINE",
     True,
 )
+TELEGRAM_POLLER_LEASE_ENABLED: bool = _b("SKYNET_TELEGRAM_POLLER_LEASE_ENABLED", True)
+TELEGRAM_POLLER_LEASE_TTL_SECONDS: int = _i("SKYNET_TELEGRAM_POLLER_LEASE_TTL_SECONDS", 60)
+TELEGRAM_POLLER_LEASE_RENEW_INTERVAL_SECONDS: int = _i(
+    "SKYNET_TELEGRAM_POLLER_LEASE_RENEW_INTERVAL_SECONDS",
+    20,
+)
 LIVE_E2E_FLOW: str = _s("SKYNET_LIVE_E2E_FLOW", "conversation").strip().lower()
 LIVE_E2E_BACKEND: str = _s("SKYNET_LIVE_E2E_BACKEND", "auto").strip().lower()
 LIVE_E2E_AGENT: str = _s("SKYNET_LIVE_E2E_AGENT", "").strip().lower()
+LIVE_E2E_REQUIRED_TRANSPORT: str = _s(
+    "SKYNET_LIVE_E2E_REQUIRED_TRANSPORT",
+    "websocket_primary",
+).strip().lower()
+LIVE_E2E_ALLOW_FALLBACK: bool = _b("SKYNET_LIVE_E2E_ALLOW_FALLBACK", False)
+LIVE_E2E_MESSAGE_PROGRESS_TIMEOUT_SECONDS: int = _i(
+    "SKYNET_LIVE_E2E_MESSAGE_PROGRESS_TIMEOUT_SECONDS",
+    90,
+)
+LIVE_E2E_RUNTIME_TRACE_STALE_SECONDS: int = _i(
+    "SKYNET_LIVE_E2E_RUNTIME_TRACE_STALE_SECONDS",
+    90,
+)
+LIVE_E2E_STRICT_PREFLIGHT: bool = _b("SKYNET_LIVE_E2E_STRICT_PREFLIGHT", True)
+LIVE_E2E_DIAGNOSTICS_PROFILE: str = _s(
+    "SKYNET_LIVE_E2E_DIAGNOSTICS_PROFILE",
+    "tunnel",
+).strip().lower()
+LIVE_E2E_REMOTE_GATEWAY_CONTAINER: str = _s(
+    "SKYNET_LIVE_E2E_REMOTE_GATEWAY_CONTAINER",
+    "openclaw-gateway",
+).strip()
+LIVE_E2E_REMOTE_STATUS_URL: str = _s(
+    "SKYNET_LIVE_E2E_REMOTE_STATUS_URL",
+    "http://localhost:8766/status",
+).strip()
 
 # SSH tunnel reliability controls
 SSH_MAX_PARALLEL: int = _i("OPENCLAW_SSH_MAX_PARALLEL", 2)
@@ -575,6 +610,25 @@ def get_live_e2e_agent() -> str:
     return chain[0] if chain else "codex"
 
 
+def _normalize_agent_name(agent: str) -> str:
+    value = str(agent or "").strip().lower()
+    if value == "claude_ollama":
+        return "claude"
+    return value
+
+
+def _dedupe_agents(agents: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in agents:
+        agent = _normalize_agent_name(raw)
+        if not agent or agent in seen:
+            continue
+        seen.add(agent)
+        ordered.append(agent)
+    return ordered
+
+
 def _parse_container_log_tail_overrides(raw: str) -> dict[str, int]:
     overrides: dict[str, int] = {}
     for token in str(raw or "").split(","):
@@ -632,6 +686,89 @@ def get_live_e2e_container_log_config() -> dict[str, Any]:
         ),
         "tail_default": tail_default,
         "tail_overrides": _parse_container_log_tail_overrides(tail_overrides_raw),
+        "ssh_profile": get_str(
+            "SKYNET_LIVE_E2E_DIAGNOSTICS_PROFILE",
+            LIVE_E2E_DIAGNOSTICS_PROFILE,
+        ).strip().lower(),
+    }
+
+
+def get_live_e2e_policy(flow: str | None = None) -> dict[str, Any]:
+    """Return normalized live E2E runtime policy from settings."""
+    resolved_flow = str(flow or get_live_e2e_flow() or "conversation").strip().lower()
+    diagnostics = get_live_e2e_container_log_config()
+    allow_fallback = get_bool("SKYNET_LIVE_E2E_ALLOW_FALLBACK", LIVE_E2E_ALLOW_FALLBACK)
+    required_transport = get_str(
+        "SKYNET_LIVE_E2E_REQUIRED_TRANSPORT",
+        LIVE_E2E_REQUIRED_TRANSPORT,
+    ).strip().lower() or "websocket_primary"
+
+    coding_chain = get_coding_fallback_chain()
+    intended_agent = get_live_e2e_agent()
+    coding_agents = [intended_agent] if intended_agent else []
+    if allow_fallback:
+        coding_agents.extend(coding_chain)
+
+    planner_agents: list[str] = []
+    if is_control_loop_active():
+        planner_agents.extend(
+            [
+                getattr(sys.modules[__name__], "CONTROL_LOOP_PLANNER_AGENT", ""),
+                getattr(sys.modules[__name__], "CONTROL_LOOP_CRITIC_AGENT", ""),
+            ]
+        )
+    else:
+        planner_agents.append(getattr(sys.modules[__name__], "PLANNER_PRIMARY_AGENT", ""))
+        if bool(getattr(sys.modules[__name__], "PLANNER_ROUTER_FALLBACK_ENABLED", True)) and allow_fallback:
+            planner_agents.extend(list(getattr(sys.modules[__name__], "PLANNER_WORKER_AGENTS", ())))
+
+    required_coding_agents = _dedupe_agents(coding_agents)
+    required_planner_agents = _dedupe_agents(planner_agents)
+    required_worker_agents = _dedupe_agents(required_planner_agents + required_coding_agents)
+
+    require_telegram_poller = resolved_flow in {"telegram_real", "telegram", "real_telegram"}
+    status_probe_mode = "remote_container_http" if require_telegram_poller else "local_http"
+
+    return {
+        "flow": resolved_flow,
+        "required_transport": required_transport,
+        "allow_fallback": bool(allow_fallback),
+        "message_progress_timeout_seconds": max(
+            30,
+            get_int(
+                "SKYNET_LIVE_E2E_MESSAGE_PROGRESS_TIMEOUT_SECONDS",
+                LIVE_E2E_MESSAGE_PROGRESS_TIMEOUT_SECONDS,
+            ),
+        ),
+        "runtime_trace_stale_seconds": max(
+            30,
+            get_int(
+                "SKYNET_LIVE_E2E_RUNTIME_TRACE_STALE_SECONDS",
+                LIVE_E2E_RUNTIME_TRACE_STALE_SECONDS,
+            ),
+        ),
+        "strict_preflight": get_bool("SKYNET_LIVE_E2E_STRICT_PREFLIGHT", LIVE_E2E_STRICT_PREFLIGHT),
+        "diagnostics_strict": bool(diagnostics.get("require_stream", True)),
+        "diagnostics_profile": get_str(
+            "SKYNET_LIVE_E2E_DIAGNOSTICS_PROFILE",
+            LIVE_E2E_DIAGNOSTICS_PROFILE,
+        ).strip().lower(),
+        "container_log": diagnostics,
+        "required_coding_agents": required_coding_agents,
+        "required_planner_agents": required_planner_agents,
+        "required_worker_agents": required_worker_agents,
+        "require_telegram_poller": require_telegram_poller,
+        "status_probe_mode": status_probe_mode,
+        "remote_gateway_container": get_str(
+            "SKYNET_LIVE_E2E_REMOTE_GATEWAY_CONTAINER",
+            LIVE_E2E_REMOTE_GATEWAY_CONTAINER,
+        ).strip() or "openclaw-gateway",
+        "remote_status_url": get_str(
+            "SKYNET_LIVE_E2E_REMOTE_STATUS_URL",
+            LIVE_E2E_REMOTE_STATUS_URL,
+        ).strip() or "http://localhost:8766/status",
+        "gateway_id": GATEWAY_ID or "openclaw",
+        "orchestrator_url": ORCHESTRATOR_URL,
     }
 
 
@@ -718,6 +855,9 @@ def dump_config() -> dict:
             "bot_token_set": bool(_s("TELEGRAM_BOT_TOKEN")),
             "allowed_user_id": ALLOWED_USER_ID,
             "tracker_enabled": TELEGRAM_TRACKER_ENABLED,
+            "poller_lease_enabled": TELEGRAM_POLLER_LEASE_ENABLED,
+            "poller_lease_ttl_seconds": TELEGRAM_POLLER_LEASE_TTL_SECONDS,
+            "poller_lease_renew_interval_seconds": TELEGRAM_POLLER_LEASE_RENEW_INTERVAL_SECONDS,
         },
         "auth": {
             "auth_token_set": bool(AUTH_TOKEN),
@@ -725,5 +865,7 @@ def dump_config() -> dict:
         "db": {
             "path": DB_PATH,
         },
+        "live_e2e": get_live_e2e_policy(),
+        "gateway_id": GATEWAY_ID,
         "worker_projects_dir": WORKER_PROJECTS_DIR,
     }

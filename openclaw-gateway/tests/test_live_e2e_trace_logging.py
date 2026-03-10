@@ -107,6 +107,24 @@ def test_container_log_ssh_resolution_falls_back_to_tunnel(monkeypatch) -> None:
     assert resolved["port"] == 22
 
 
+def test_container_log_ssh_resolution_transport_profile_prefers_transport(monkeypatch) -> None:
+    monkeypatch.delenv("SKYNET_E2E_CONTAINER_LOG_SSH_HOST", raising=False)
+    monkeypatch.delenv("SKYNET_E2E_CONTAINER_LOG_SSH_USER", raising=False)
+    monkeypatch.delenv("SKYNET_E2E_CONTAINER_LOG_SSH_KEY", raising=False)
+    monkeypatch.setenv("OPENCLAW_TUNNEL_EC2_HOST", "ec2-tunnel")
+    monkeypatch.setenv("OPENCLAW_TUNNEL_EC2_USER", "ubuntu")
+    monkeypatch.setenv("OPENCLAW_TUNNEL_SSH_KEY", "C:/keys/tunnel.pem")
+    monkeypatch.setenv("OPENCLAW_SSH_HOST", "worker-host")
+    monkeypatch.setenv("OPENCLAW_SSH_USER", "iamgo")
+    monkeypatch.setenv("OPENCLAW_SSH_KEY_PATH", "C:/keys/worker.pem")
+
+    resolved = live_diagnostics.resolve_container_log_stream_ssh("transport")
+    assert resolved is not None
+    assert resolved["host"] == "worker-host"
+    assert resolved["user"] == "iamgo"
+    assert resolved["key"] == "C:/keys/worker.pem"
+
+
 def test_container_log_line_redaction_masks_secrets() -> None:
     raw = (
         "authorization: Bearer ABCDEF123 token=my-token password=supersecret "
@@ -141,6 +159,7 @@ def test_live_e2e_container_log_config_defaults(monkeypatch) -> None:
     assert cfg["ring_lines"] == 300
     assert cfg["tail_default"] == 100
     assert cfg["tail_overrides"] == {"openclaw-gateway": 200, "skynet-api": 100}
+    assert cfg["ssh_profile"] == gateway_config.LIVE_E2E_DIAGNOSTICS_PROFILE
 
 
 def test_live_e2e_container_log_config_env_overrides(monkeypatch) -> None:
@@ -165,6 +184,25 @@ def test_live_e2e_container_log_config_env_overrides(monkeypatch) -> None:
     assert cfg["tail_overrides"] == {"gateway": 250, "worker": 70}
 
 
+def test_live_e2e_policy_derives_required_worker_agents(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_config, "CONTROL_LOOP_ENABLED", True)
+    monkeypatch.setattr(gateway_config, "CONTROL_LOOP_FORCE_FOR_ALL", True)
+    monkeypatch.setattr(gateway_config, "CONTROL_LOOP_PLANNER_AGENT", "qwen")
+    monkeypatch.setattr(gateway_config, "CONTROL_LOOP_CRITIC_AGENT", "qwen")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_AGENT", "qwen")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_ALLOW_FALLBACK", "0")
+
+    policy = gateway_config.get_live_e2e_policy("telegram_real")
+
+    assert policy["required_transport"] == "websocket_primary"
+    assert policy["allow_fallback"] is False
+    assert policy["required_coding_agents"] == ["qwen"]
+    assert policy["required_planner_agents"] == ["qwen"]
+    assert policy["required_worker_agents"] == ["qwen"]
+    assert policy["require_telegram_poller"] is True
+    assert policy["status_probe_mode"] == "remote_container_http"
+
+
 @pytest.mark.asyncio
 async def test_container_snapshot_uses_configured_tail_counts(monkeypatch, tmp_path: Path) -> None:
     key_path = tmp_path / "diag.pem"
@@ -178,7 +216,7 @@ async def test_container_snapshot_uses_configured_tail_counts(monkeypatch, tmp_p
     monkeypatch.setattr(
         live_diagnostics,
         "resolve_container_log_stream_ssh",
-        lambda: {
+        lambda *_args, **_kwargs: {
             "host": "ec2.example",
             "user": "ubuntu",
             "key": str(key_path),
@@ -213,7 +251,7 @@ async def test_container_diagnostics_require_stream_fails_fast(monkeypatch) -> N
     def _trace(event: str, **fields) -> None:
         events.append((event, fields))
 
-    monkeypatch.setattr(live_diagnostics, "resolve_container_log_stream_ssh", lambda: None)
+    monkeypatch.setattr(live_diagnostics, "resolve_container_log_stream_ssh", lambda *_args, **_kwargs: None)
     diagnostics = live_diagnostics.LiveContainerDiagnostics(
         trace_fn=_trace,
         config_override={
@@ -256,6 +294,53 @@ async def test_container_diagnostics_emit_bundle_on_success_and_failure(monkeypa
     assert events[0][1]["reason"] == "clean_exit"
     assert events[1][1]["status"] == "fail"
     assert events[1][1]["reason"] == "flow_failed"
+
+
+@pytest.mark.asyncio
+async def test_run_live_e2e_preflight_fails_on_transport_mismatch(monkeypatch, tmp_path: Path) -> None:
+    key_path = tmp_path / "diag.pem"
+    key_path.write_text("key", encoding="utf-8")
+    events: list[tuple[str, dict]] = []
+
+    async def _fake_local_status(*, url: str, timeout_seconds: int = 10) -> dict[str, object]:
+        _ = (url, timeout_seconds)
+        return {
+            "primary_transport_mode": "ssh_fallback",
+            "agent_connected": True,
+            "websocket_health_ok": False,
+            "coding_agents": {"qwen": "/usr/bin/qwen"},
+        }
+
+    monkeypatch.setattr(
+        live_diagnostics,
+        "resolve_container_log_stream_ssh",
+        lambda *_args, **_kwargs: {
+            "host": "ec2.example",
+            "user": "ubuntu",
+            "key": str(key_path),
+            "key_source": "test",
+            "port": 22,
+        },
+    )
+    monkeypatch.setattr(live_diagnostics, "fetch_local_gateway_status", _fake_local_status)
+
+    with pytest.raises(AssertionError, match="PREFLIGHT_TRANSPORT_MISMATCH"):
+        await live_diagnostics.run_live_e2e_preflight(
+            trace_fn=lambda event, **fields: events.append((event, fields)),
+            flow="conversation",
+            policy={
+                "required_transport": "websocket_primary",
+                "allow_fallback": False,
+                "required_worker_agents": ["qwen"],
+                "container_log": {"ssh_profile": "tunnel"},
+                "diagnostics_profile": "tunnel",
+                "status_probe_mode": "local_http",
+                "require_telegram_poller": False,
+            },
+            local_status_url="http://127.0.0.1:8766/status",
+        )
+
+    assert any(event == "preflight.start" for event, _fields in events)
 
 
 def test_runtime_trace_progress_uses_mtime_and_line_count() -> None:

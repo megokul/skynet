@@ -12,18 +12,24 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from skynet.api import schemas
 from skynet.api.routes import (
+    acquire_lease,
     app_state,
+    get_lease_manager,
     list_agents,
     list_events,
     get_control_registry,
     get_gateway_client,
     get_system_state,
     get_next_task_preview,
+    inspect_lease,
     register_gateway,
     register_worker,
+    release_lease,
+    renew_lease,
     route_task,
 )
 from skynet.control_plane import ControlPlaneRegistry
+from skynet.ledger.job_locking import JobLockManager
 from skynet.ledger.schema import init_db
 from skynet.ledger.task_queue import TaskQueueManager
 
@@ -170,6 +176,14 @@ async def test_gateway_client_dependency_uninitialized() -> None:
     app_state.gateway_client = None
     with pytest.raises(HTTPException) as exc_info:
         get_gateway_client()
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_lease_manager_dependency_uninitialized() -> None:
+    app_state.lease_manager = None
+    with pytest.raises(HTTPException) as exc_info:
+        get_lease_manager()
     assert exc_info.value.status_code == 503
 
 
@@ -334,5 +348,51 @@ async def test_read_models_tasks_next_agents_and_events() -> None:
 
     events_resp = await list_events(task_queue=q, limit=20)
     assert any(e.task_id == "task-read-1" and e.event_type == "claimed" for e in events_resp.events)
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_control_plane_lease_api_flow() -> None:
+    db = await init_db(":memory:")
+    lease_manager = JobLockManager(db, lock_timeout_seconds=5)
+    app_state.lease_manager = lease_manager
+
+    acquired = await acquire_lease(
+        lease_name="telegram-poller:test",
+        request=schemas.LeaseAcquireRequest(owner_id="gw-1", ttl_seconds=30),
+        lease_manager=lease_manager,
+    )
+    assert acquired.acquired is True
+    assert acquired.owner_id == "gw-1"
+    assert acquired.held is True
+
+    held = await inspect_lease(
+        lease_name="telegram-poller:test",
+        lease_manager=lease_manager,
+    )
+    assert held.held is True
+    assert held.owner_id == "gw-1"
+
+    renewed = await renew_lease(
+        lease_name="telegram-poller:test",
+        request=schemas.LeaseRenewRequest(owner_id="gw-1", ttl_seconds=30),
+        lease_manager=lease_manager,
+    )
+    assert renewed.renewed is True
+    assert renewed.owner_id == "gw-1"
+
+    released = await release_lease(
+        lease_name="telegram-poller:test",
+        request=schemas.LeaseReleaseRequest(owner_id="gw-1"),
+        lease_manager=lease_manager,
+    )
+    assert released.ok is True
+
+    held_after = await inspect_lease(
+        lease_name="telegram-poller:test",
+        lease_manager=lease_manager,
+    )
+    assert held_after.held is False
 
     await db.close()

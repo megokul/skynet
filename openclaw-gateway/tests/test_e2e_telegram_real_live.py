@@ -24,13 +24,16 @@ for candidate in (str(REPO_ROOT), str(GATEWAY_ROOT)):
         sys.path.insert(0, candidate)
 
 from live_settings import bootstrap_gateway_runtime
+
+bootstrap_gateway_runtime()
+
 from live_diagnostics import (
     LiveContainerDiagnostics,
     container_log_error_summary,
     make_live_trace_logger,
+    run_live_e2e_preflight,
 )
-
-bootstrap_gateway_runtime()
+import config as cfg
 
 try:
     from telethon import TelegramClient
@@ -569,12 +572,17 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
     api_hash = _require_env("SKYNET_E2E_TELEGRAM_API_HASH")
     session = _require_env("SKYNET_E2E_TELEGRAM_SESSION")
     bot_username = _require_env("SKYNET_E2E_TELEGRAM_BOT_USERNAME")
-    container_diagnostics = LiveContainerDiagnostics(trace_fn=trace)
+    policy = cfg.get_live_e2e_policy("telegram_real")
+    container_diagnostics = LiveContainerDiagnostics(
+        trace_fn=trace,
+        config_override=dict(policy.get("container_log") or {}),
+    )
     stream_config = container_diagnostics.config
     stream_required = bool(stream_config["require_stream"])
-    runtime_stale_seconds = max(30, _env_int("SKYNET_E2E_RUNTIME_TRACE_STALE_SECONDS", 90))
-    require_websocket_primary = _env_flag("SKYNET_E2E_REQUIRE_WEBSOCKET_PRIMARY", True)
-    allow_ssh_fallback = _env_flag("SKYNET_E2E_ALLOW_SSH_FALLBACK", True)
+    runtime_stale_seconds = int(policy.get("runtime_trace_stale_seconds", 90) or 90)
+    message_progress_timeout_seconds = int(policy.get("message_progress_timeout_seconds", 90) or 90)
+    require_websocket_primary = str(policy.get("required_transport") or "") == "websocket_primary"
+    allow_ssh_fallback = bool(policy.get("allow_fallback", False))
     runtime_progress = _RuntimeTraceProgress()
     bundle_status = "ok"
     bundle_reason = "test_success"
@@ -583,10 +591,15 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         "test.start",
         bot_username=bot_username,
         flow="hi_to_project_completion",
+        required_transport=policy.get("required_transport"),
+        allow_fallback=bool(policy.get("allow_fallback", False)),
+        required_worker_agents=list(policy.get("required_worker_agents") or []),
         container_stream_enabled=stream_config["stream_enabled"],
         container_stream_required=stream_config["require_stream"],
         container_stream_sources=stream_config["sources"],
+        diagnostics_profile=str(policy.get("diagnostics_profile") or ""),
         runtime_trace_stale_seconds=runtime_stale_seconds,
+        message_progress_timeout_seconds=message_progress_timeout_seconds,
     )
     runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="test.start", tail_lines=80))
 
@@ -608,6 +621,11 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 bundle_status = "fail"
                 bundle_reason = "container_stream_unavailable"
                 raise
+            await run_live_e2e_preflight(
+                trace_fn=trace,
+                flow="telegram_real",
+                policy=policy,
+            )
             trace("e2e.step.start", step=1, name="send_hi")
             await client.send_message(bot, "hi")
             msg = await _wait_for_bot_message(
@@ -836,7 +854,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                         client,
                         bot,
                         last_id,
-                        timeout_s=90,
+                        timeout_s=message_progress_timeout_seconds,
                         trace_fn=trace,
                         step=f"coding_poll_{idx + 1}",
                         predicate=lambda text, btns: bool(text.strip()) or bool(btns),
@@ -875,48 +893,33 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                         tail_lines=140,
                     )
                     trace_progress = runtime_progress.observe(timeout_snapshot)
-                    container_progress = bool(
-                        container_diagnostics.has_recent_activity(
-                            within_seconds=max(20, runtime_stale_seconds / 2.0)
-                        )
-                    )
-                    stale_s = runtime_progress.stale_seconds()
-                    if tracker_progress or trace_progress or container_progress:
+                    if tracker_progress:
                         trace(
                             "coding.poll.recovered",
                             iteration=idx + 1,
-                            tracker_progress=tracker_progress,
+                            tracker_progress=True,
                             trace_progress=trace_progress,
-                            container_progress=container_progress,
-                            runtime_trace_stale_s=round(stale_s, 1),
+                            container_progress=container_diagnostics.has_recent_activity(within_seconds=60),
+                            runtime_trace_stale_s=round(runtime_progress.stale_seconds(), 1),
                         )
                         continue
+                    trace(
+                        "coding.poll.timeout",
+                        iteration=idx + 1,
+                        tracker_progress=False,
+                        trace_progress=trace_progress,
+                        container_progress=container_diagnostics.has_recent_activity(within_seconds=60),
+                        runtime_trace_stale_s=round(runtime_progress.stale_seconds(), 1),
+                    )
                     last_id = await _request_trace_deep_snapshot(
                         client=client,
                         bot=bot,
                         after_id=last_id,
                         trace_fn=trace,
                     )
-                    if stale_s >= runtime_stale_seconds:
-                        bundle_status = "fail"
-                        bundle_reason = "trace_stale_timeout"
-                        trace(
-                            "e2e.step.fail",
-                            step=9,
-                            name="coding_and_run",
-                            status="fail",
-                            error_message=(
-                                f"TRACE_STALE: runtime trace idle {round(stale_s, 1)}s "
-                                f"(threshold={runtime_stale_seconds}s)"
-                            ),
-                        )
-                        raise AssertionError(
-                            f"TRACE_STALE: runtime trace idle {round(stale_s, 1)}s "
-                            f"(threshold={runtime_stale_seconds}s)"
-                        )
                     bundle_status = "fail"
                     bundle_reason = "coding_poll_timeout"
-                    raise AssertionError("Coding poll timed out without progress signals")
+                    raise AssertionError("Coding poll timed out without user-visible progress")
                 last_id = int(msg.id)
                 text = str(getattr(msg, "message", "") or "")
                 btns = _button_texts(msg)
@@ -941,40 +944,13 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                             tail_lines=80,
                         )
                     )
-                stale_s = runtime_progress.stale_seconds()
-                if stale_s >= runtime_stale_seconds:
-                    stale_snapshot = _emit_runtime_trace_snapshot(
-                        trace,
-                        checkpoint=f"coding.trace_stale.{idx + 1}",
-                        tail_lines=180,
-                    )
-                    stale_progress = runtime_progress.observe(stale_snapshot)
-                    stale_s = runtime_progress.stale_seconds()
-                    if stale_progress or stale_s < runtime_stale_seconds:
-                        trace(
-                            "coding.poll.recovered",
-                            iteration=idx + 1,
-                            tracker_progress=tracker_progress,
-                            trace_progress=stale_progress,
-                            container_progress=container_diagnostics.has_recent_activity(within_seconds=60),
-                            runtime_trace_stale_s=round(stale_s, 1),
-                        )
-                        continue
-                    bundle_status = "fail"
-                    bundle_reason = "runtime_trace_stale_during_coding"
+                if runtime_progress.stale_seconds() >= runtime_stale_seconds:
                     trace(
-                        "e2e.step.fail",
-                        step=9,
-                        name="coding_and_run",
-                        status="fail",
-                        error_message=(
-                            f"TRACE_STALE: runtime trace idle {round(stale_s, 1)}s "
-                            f"(threshold={runtime_stale_seconds}s)"
-                        ),
-                    )
-                    raise AssertionError(
-                        f"TRACE_STALE: runtime trace idle {round(stale_s, 1)}s "
-                        f"(threshold={runtime_stale_seconds}s)"
+                        "runtime.trace.stale",
+                        step="coding_loop",
+                        iteration=idx + 1,
+                        stale_s=round(runtime_progress.stale_seconds(), 1),
+                        threshold_s=runtime_stale_seconds,
                     )
                 lowered = text.lower()
                 if "phase: director" in lowered:

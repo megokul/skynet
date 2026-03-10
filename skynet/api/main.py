@@ -21,6 +21,7 @@ from skynet.control_plane import (
     GatewayClient,
     StaleLockReaper,
 )
+from skynet.ledger.job_locking import JobLockManager
 from skynet.ledger.schema import init_db
 from skynet.ledger.task_queue import TaskQueueManager
 from skynet.ledger.worker_registry import WorkerRegistry
@@ -69,6 +70,7 @@ async def lifespan(app: FastAPI):
         app_state.ledger_db = await init_db(db_path)
         app_state.worker_registry = WorkerRegistry(app_state.ledger_db)
         app_state.task_queue = TaskQueueManager(app_state.ledger_db)
+        app_state.lease_manager = JobLockManager(app_state.ledger_db)
     except Exception as e:
         logger.warning(f"Failed to initialize ledger worker registry: {e}")
 
@@ -150,6 +152,7 @@ async def lifespan(app: FastAPI):
     app_state.control_registry = None
     app_state.gateway_client = None
     app_state.worker_registry = None
+    app_state.lease_manager = None
     if app_state.stale_lock_reaper is not None:
         try:
             await app_state.stale_lock_reaper.stop()

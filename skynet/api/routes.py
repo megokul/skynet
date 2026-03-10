@@ -18,6 +18,7 @@ from skynet.settings.loader import get_str as _s, get_int as _i, get_bool as _b
 from skynet import __version__
 from skynet.api import schemas
 from skynet.control_plane import ControlPlaneRegistry, GatewayClient
+from skynet.ledger.job_locking import JobLockManager
 from skynet.ledger.task_queue import TaskQueueManager
 
 logger = logging.getLogger("skynet.api")
@@ -34,6 +35,7 @@ class AppState:
     ledger_db: Any | None = None
     worker_registry: Any | None = None
     task_queue: TaskQueueManager | None = None
+    lease_manager: JobLockManager | None = None
     control_scheduler: Any | None = None
     stale_lock_reaper: Any | None = None
 
@@ -61,6 +63,26 @@ def get_task_queue() -> TaskQueueManager:
     if app_state.task_queue is None:
         raise HTTPException(status_code=503, detail="Task queue not initialized")
     return app_state.task_queue
+
+
+def get_lease_manager() -> JobLockManager:
+    """Dependency: Get distributed lease manager."""
+    if app_state.lease_manager is None:
+        raise HTTPException(status_code=503, detail="Lease manager not initialized")
+    return app_state.lease_manager
+
+
+async def _lease_state(lease_manager: JobLockManager, lease_name: str) -> schemas.LeaseState:
+    record = await lease_manager.get_lock(lease_name)
+    if not record:
+        return schemas.LeaseState(lease_name=lease_name, held=False)
+    return schemas.LeaseState(
+        lease_name=lease_name,
+        held=True,
+        owner_id=str(record.get("worker_id") or ""),
+        acquired_at=str(record.get("acquired_at") or ""),
+        expires_at=str(record.get("expires_at") or ""),
+    )
 
 
 def _is_auth_required() -> bool:
@@ -499,6 +521,58 @@ async def release_task(
     return schemas.TaskMutationResponse(ok=True)
 
 
+@router.post("/leases/{lease_name}/acquire", response_model=schemas.LeaseAcquireResponse)
+async def acquire_lease(
+    lease_name: str,
+    request: schemas.LeaseAcquireRequest,
+    lease_manager: JobLockManager = Depends(get_lease_manager),
+    _authorized=Depends(require_protected_route_access),
+) -> schemas.LeaseAcquireResponse:
+    acquired = await lease_manager.acquire_lock(
+        job_id=lease_name,
+        worker_id=request.owner_id,
+        timeout_seconds=max(1, int(request.ttl_seconds or 60)),
+    )
+    state = await _lease_state(lease_manager, lease_name)
+    return schemas.LeaseAcquireResponse(**state.model_dump(), acquired=acquired)
+
+
+@router.post("/leases/{lease_name}/renew", response_model=schemas.LeaseRenewResponse)
+async def renew_lease(
+    lease_name: str,
+    request: schemas.LeaseRenewRequest,
+    lease_manager: JobLockManager = Depends(get_lease_manager),
+    _authorized=Depends(require_protected_route_access),
+) -> schemas.LeaseRenewResponse:
+    renewed = await lease_manager.refresh_lock(
+        job_id=lease_name,
+        worker_id=request.owner_id,
+        timeout_seconds=max(1, int(request.ttl_seconds or 60)),
+    )
+    state = await _lease_state(lease_manager, lease_name)
+    return schemas.LeaseRenewResponse(**state.model_dump(), renewed=renewed)
+
+
+@router.post("/leases/{lease_name}/release", response_model=schemas.LeaseReleaseResponse)
+async def release_lease(
+    lease_name: str,
+    request: schemas.LeaseReleaseRequest,
+    lease_manager: JobLockManager = Depends(get_lease_manager),
+    _authorized=Depends(require_protected_route_access),
+) -> schemas.LeaseReleaseResponse:
+    ok = await lease_manager.release_lock(job_id=lease_name, worker_id=request.owner_id)
+    return schemas.LeaseReleaseResponse(ok=ok)
+
+
+@router.get("/leases/{lease_name}", response_model=schemas.LeaseState)
+async def inspect_lease(
+    lease_name: str,
+    lease_manager: JobLockManager = Depends(get_lease_manager),
+    _authorized=Depends(require_protected_route_access),
+) -> schemas.LeaseState:
+    return await _lease_state(lease_manager, lease_name)
+
+
 @router.get("/files/ownership", response_model=schemas.FileOwnershipResponse)
 async def list_file_ownership(
     task_queue: TaskQueueManager = Depends(get_task_queue),
@@ -592,6 +666,7 @@ async def health_check() -> schemas.HealthResponse:
         "control_registry": "ok" if app_state.control_registry else "not_initialized",
         "gateway_client": "ok" if app_state.gateway_client else "not_initialized",
         "task_queue": "ok" if app_state.task_queue else "not_initialized",
+        "lease_manager": "ok" if app_state.lease_manager else "not_initialized",
         "control_scheduler": (
             "ok"
             if app_state.control_scheduler and getattr(app_state.control_scheduler, "running", False)

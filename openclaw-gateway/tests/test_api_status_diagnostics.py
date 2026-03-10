@@ -41,6 +41,21 @@ async def test_status_includes_ssh_diagnostics(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(gateway_api, "is_agent_connected", lambda: False)
     monkeypatch.setattr(
         gateway_api,
+        "get_telegram_poller_status",
+        lambda: {
+            "telegram_poller_state": "blocked",
+            "telegram_poller_lease_name": "telegram-poller:test",
+            "telegram_poller_lease_owner": "gw-remote",
+            "telegram_poller_last_conflict_at": "",
+            "telegram_poller_conflict_count": 0,
+            "telegram_poller_lock_healthy": False,
+            "telegram_poller_last_error": "foreign_lease_active",
+            "telegram_poller_lease_enabled": True,
+            "telegram_poller_gateway_id": "gw-local",
+        },
+    )
+    monkeypatch.setattr(
+        gateway_api,
         "get_agent_status",
         lambda: {
             "worker_id": "",
@@ -78,6 +93,9 @@ async def test_status_includes_ssh_diagnostics(monkeypatch: pytest.MonkeyPatch) 
     assert payload["ssh_failure_streak"] == 3
     assert payload["ssh_circuit_open_until"] == 1234567890
     assert payload["ssh_endpoint"] == "host.docker.internal:2222"
+    assert payload["telegram_poller_state"] == "blocked"
+    assert payload["telegram_poller_lease_owner"] == "gw-remote"
+    assert payload["telegram_poller_lock_healthy"] is False
 
 
 @pytest.mark.asyncio
@@ -86,6 +104,21 @@ async def test_status_prefers_websocket_primary_when_healthy(monkeypatch: pytest
     monkeypatch.setenv("OPENCLAW_EXECUTION_MODE", "agent_preferred")
     monkeypatch.setattr(gateway_api, "get_ssh_executor", lambda: stub)
     monkeypatch.setattr(gateway_api, "is_agent_connected", lambda: True)
+    monkeypatch.setattr(
+        gateway_api,
+        "get_telegram_poller_status",
+        lambda: {
+            "telegram_poller_state": "running",
+            "telegram_poller_lease_name": "telegram-poller:test",
+            "telegram_poller_lease_owner": "openclaw",
+            "telegram_poller_last_conflict_at": "",
+            "telegram_poller_conflict_count": 0,
+            "telegram_poller_lock_healthy": True,
+            "telegram_poller_last_error": "",
+            "telegram_poller_lease_enabled": True,
+            "telegram_poller_gateway_id": "openclaw",
+        },
+    )
     monkeypatch.setattr(
         gateway_api,
         "get_agent_status",
@@ -114,3 +147,5 @@ async def test_status_prefers_websocket_primary_when_healthy(monkeypatch: pytest
     assert payload["fallback_ready"] is True
     assert payload["worker_id"] == "worker-primary"
     assert payload["websocket_health_ok"] is True
+    assert payload["telegram_poller_state"] == "running"
+    assert payload["telegram_poller_lock_healthy"] is True

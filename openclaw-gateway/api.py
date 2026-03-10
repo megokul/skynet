@@ -36,6 +36,7 @@ from gateway import (
     send_resume,
 )
 from ssh_tunnel_executor import get_ssh_executor
+from telegram_poller import get_telegram_poller_status
 
 logger = logging.getLogger("skynet.api")
 
@@ -255,6 +256,7 @@ async def handle_status(request: web.Request) -> web.Response:
     force_ssh = mode in _SSH_ONLY_MODES
     diagnostics = ssh_exec.get_diagnostics()
     agent_status = get_agent_status()
+    poller_status = get_telegram_poller_status()
     execution_mode_effective = "ssh_tunnel" if force_ssh else "agent_preferred"
     websocket_health_ok = bool(agent_status.get("websocket_health_ok", False))
     if force_ssh:
@@ -293,6 +295,7 @@ async def handle_status(request: web.Request) -> web.Response:
         "ssh_endpoint": str(diagnostics.get("ssh_endpoint", f"{ssh_exec.host}:{ssh_exec.port}")),
         "worker_capabilities": list(agent_status.get("worker_capabilities") or []),
         "coding_agents": dict(agent_status.get("coding_agents") or {}),
+        **poller_status,
     })
 
 

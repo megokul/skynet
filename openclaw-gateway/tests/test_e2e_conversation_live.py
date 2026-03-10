@@ -26,10 +26,10 @@ for candidate in (str(REPO_ROOT), str(GATEWAY_ROOT)):
         sys.path.insert(0, candidate)
 
 from live_settings import bootstrap_gateway_runtime
-from live_diagnostics import LiveContainerDiagnostics, make_live_trace_logger
 
 bootstrap_gateway_runtime()
 
+from live_diagnostics import LiveContainerDiagnostics, make_live_trace_logger, run_live_e2e_preflight
 import config as cfg
 from ai.provider_router import ProviderRouter, build_providers, parse_provider_priority
 from db.schema import init_db
@@ -279,8 +279,21 @@ async def test_live_conversation_real_planner_codegen_no_github_push():
         )
 
     ws_server = None
+    http_runner = None
     agent_proc = None
-    container_diagnostics = LiveContainerDiagnostics(trace_fn=trace)
+    policy = cfg.get_live_e2e_policy("conversation")
+    trace(
+        "test.start",
+        flow="conversation",
+        required_transport=policy.get("required_transport"),
+        allow_fallback=bool(policy.get("allow_fallback", False)),
+        required_worker_agents=list(policy.get("required_worker_agents") or []),
+        diagnostics_profile=str(policy.get("diagnostics_profile") or ""),
+    )
+    container_diagnostics = LiveContainerDiagnostics(
+        trace_fn=trace,
+        config_override=dict(policy.get("container_log") or {}),
+    )
     bundle_status = "ok"
     bundle_reason = "test_success"
     db = await init_db(":memory:")
@@ -294,9 +307,12 @@ async def test_live_conversation_real_planner_codegen_no_github_push():
 
         if use_websocket:
             import gateway as _gw
+            from api import start_http_api
 
             ws_server = await _gw.start_ws_server()
             trace("websocket.server_started", port=_gw.cfg.WS_PORT)
+            http_runner = await start_http_api()
+            trace("http.server_started", host=_gw.cfg.HTTP_HOST, port=_gw.cfg.HTTP_PORT)
 
             # Spawn openclaw-agent as subprocess
             agent_root = str(Path(__file__).resolve().parents[2] / "openclaw-agent")
@@ -337,6 +353,12 @@ async def test_live_conversation_real_planner_codegen_no_github_push():
                     stderr_tail or "agent may have crashed",
                 )
             trace("websocket.agent_connected", worker_available=_gw.is_agent_connected())
+            await run_live_e2e_preflight(
+                trace_fn=trace,
+                flow="conversation",
+                policy=policy,
+                local_status_url=f"http://127.0.0.1:{int(_gw.cfg.HTTP_PORT)}/status",
+            )
         else:
             executor = get_ssh_executor()
             if not executor.is_configured():
@@ -592,5 +614,8 @@ async def test_live_conversation_real_planner_codegen_no_github_push():
             ws_server.close()
             await ws_server.wait_closed()
             trace("websocket.server_stopped")
+        if http_runner is not None:
+            await http_runner.cleanup()
+            trace("http.server_stopped")
         await db.close()
         _restore_env(previous_env)

@@ -16,6 +16,14 @@ for candidate in (str(ROOT), str(GATEWAY_ROOT)):
 from skynet.settings.loader import SettingsLoader  # noqa: E402
 
 
+def auto_detect_env_file() -> None:
+    """Set SKYNET_ENV_FILE to .env.local-e2e on Windows when unset."""
+    if sys.platform == "win32" and not os.environ.get("SKYNET_ENV_FILE"):
+        candidate = ROOT / ".env.local-e2e"
+        if candidate.exists():
+            os.environ["SKYNET_ENV_FILE"] = str(candidate)
+
+
 def bootstrap_gateway_runtime(*, override: bool = False) -> tuple[SettingsLoader, int]:
     loader = SettingsLoader(component="gateway", settings_dir=GATEWAY_ROOT / "settings")
     hydrated = loader.load_into_environ(override=override)

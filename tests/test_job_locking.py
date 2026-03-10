@@ -48,6 +48,12 @@ async def test_job_lock_manager_flow() -> None:
 
     extended = await locks.extend_lock("job-1", "worker-a", additional_seconds=2)
     assert extended is True
+    refreshed = await locks.refresh_lock("job-1", "worker-a", timeout_seconds=3)
+    assert refreshed is True
+    record = await locks.get_lock("job-1")
+    assert record is not None
+    assert record["worker_id"] == "worker-a"
+    assert record["expires_at"]
 
     released_wrong = await locks.release_lock("job-1", "worker-b")
     assert released_wrong is False

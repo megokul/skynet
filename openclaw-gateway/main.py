@@ -21,6 +21,7 @@ Optional (recommended):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import sys
@@ -28,6 +29,8 @@ import sys
 import gateway_config as cfg
 from logging_setup import configure_logging
 from db.schema import init_db
+from telegram.error import Conflict
+from telegram_poller import TelegramPollerLeaseController
 
 
 def _setup_logging() -> dict[str, object]:
@@ -153,8 +156,43 @@ async def _main() -> None:
     app = build_app(db, router)
     await app.initialize()
     await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
-    logger.info("Telegram bot polling. SKYNET is online.")
+    loop = asyncio.get_running_loop()
+    poller_lease = TelegramPollerLeaseController(gateway_id=cfg.GATEWAY_ID, bot_token=cfg.TELEGRAM_BOT_TOKEN)
+    poller_started = False
+
+    async def _stop_polling_for_conflict(detail: str) -> None:
+        logger.error("Telegram polling conflict detected: %s", detail)
+        await poller_lease.handle_conflict(detail=detail)
+        with contextlib.suppress(Exception):
+            if app.updater is not None:
+                await app.updater.stop()
+
+    def _polling_error_callback(exc: Exception) -> None:
+        if isinstance(exc, Conflict):
+            loop.create_task(_stop_polling_for_conflict(str(exc)))
+            return
+        logger.exception("Telegram polling error: %s", exc)
+
+    lease_acquired = await poller_lease.acquire()
+    if lease_acquired:
+        try:
+            await app.updater.start_polling(
+                drop_pending_updates=True,
+                error_callback=_polling_error_callback,
+            )
+            poller_lease.mark_running()
+            poller_started = True
+            logger.info("Telegram bot polling. SKYNET is online.")
+        except Conflict as exc:
+            await _stop_polling_for_conflict(str(exc))
+            logger.error("Telegram polling did not start because of a conflict.")
+        except Exception as exc:
+            await poller_lease.release()
+            logger.exception("Failed to start Telegram polling: %s", exc)
+    else:
+        logger.warning(
+            "Telegram polling lease is held by another gateway. Polling will stay disabled on this instance."
+        )
 
     try:
         await asyncio.Future()   # run until Ctrl-C
@@ -165,7 +203,10 @@ async def _main() -> None:
 
         # Bot
         try:
-            await app.updater.stop()
+            await poller_lease.release()
+            if poller_started and app.updater is not None:
+                with contextlib.suppress(Exception):
+                    await app.updater.stop()
             await app.stop()
             await app.shutdown()
         except Exception:

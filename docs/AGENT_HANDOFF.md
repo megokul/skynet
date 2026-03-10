@@ -1,10 +1,25 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-09 15:19
+Last updated (UTC): 2026-03-10 08:00
 
 ## Current Goal
 
 WebSocket-primary worker execution with local Ollama coding backend, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-10 Live E2E Validation + Orphaned Test Cleanup
+
+- Ran live E2E: SKYNET API (`:8000`), OpenClaw Gateway (`:8765`/`:8766`), Worker Agent all healthy; `route-task` through full stack passed.
+- Deleted 11 orphaned test files from `tests/` that imported modules removed in commit `73acd04` (radical simplification):
+  - `test_commander_engine.py`, `test_trace_logger.py` — imported deleted `core.dev_trace`
+  - `test_integration_conversation.py` — imported deleted `orchestrator.project_manager`, `skills.project_skill`
+  - `test_telegram_nl_flow.py` — imported deleted `skills.project_skill`, `bot.nl_intent`
+  - `test_orchestrator_inbox.py`, `test_orchestrator_invariants.py`, `test_orchestrator_write_gating.py` — imported deleted `bot.orchestrator`, `bot.session`
+  - `test_project_create_bootstrap_warning.py` — imported deleted `orchestrator.project_manager`
+  - `test_project_doc_intake_formatting.py` — imported deleted `bot.doc_intake`
+  - `test_user_profile_memory.py` — expected 9 unimplemented CRUD functions
+  - `test_gateway_agent_runs_artifacts.py` — depended on 9 deleted `store.py` functions
+- Fixed settings policy violation in `openclaw-gateway/tests/e2e_live.py`: moved `SKYNET_ENV_FILE` auto-detection into `openclaw-gateway/live_settings.py` (allowed file) as `auto_detect_env_file()`.
+- Root test suite: 22 passed, 0 failed.
 
 ### 2026-03-09 Shared Live E2E Container Diagnostics
 
@@ -707,6 +722,14 @@ WebSocket-primary worker execution with local Ollama coding backend, while prese
 
 ## Test Results
 
+- `python -m pytest tests/ -q` — `22 passed` (0 failed, 0 errors after orphaned test cleanup)
+- `python scripts/ci/check_settings_policy.py` — pass (e2e_live.py violation fixed)
+- `python scripts/ci/check_stale_paths.py` — pass
+- `python scripts/ci/check_control_plane_boundary.py` — pass
+- Live E2E: `scripts/manual/check_e2e_integration.py` — PASSED (register-gateway, route-task)
+
+### Previous Test Results
+
 - `E:\\MyProjects\\skynet\\venv\\Scripts\\python.exe -m py_compile skynet\\settings\\__init__.py skynet\\settings\\loader.py openclaw-gateway\\settings\\loader.py openclaw-agent\\settings\\loader.py openclaw-agent\\config.py openclaw-gateway\\config.py openclaw-gateway\\main.py openclaw-gateway\\live_settings.py openclaw-gateway\\tests\\e2e_live.py openclaw-gateway\\tests\\test_e2e_conversation_live.py openclaw-gateway\\tests\\test_e2e_telegram_real_live.py scripts\\dev\\run_api.py scripts\\manual\\check_api.py scripts\\ci\\render_settings_env.py scripts\\ci\\check_settings_policy.py`
   - pass
 - `E:\\MyProjects\\skynet\\venv\\Scripts\\python.exe scripts\\ci\\check_settings_policy.py`
@@ -826,9 +849,11 @@ WebSocket-primary worker execution with local Ollama coding backend, while prese
 
 ## Trace Evidence
 
-- request_id=settings-single-source-of-truth-20260309
-- task_id=shared-settings-loader-repo-policy
-- audit.jsonl
+- request_id=e2e-live-validation-orphan-cleanup-20260310
+- task_id=orphaned-test-cleanup-settings-policy-fix
+- audit.jsonl — openclaw-agent/logs/audit.jsonl (worker agent connected during E2E)
+- Live E2E route-task: task_id=task-fa68895eddd4 (via /v1/route-task)
+- Previous: request_id=settings-single-source-of-truth-20260309
 
 - request_id=deploy-repair-runtime-trace-schema-order-20260306
 - task_id=runtime-trace-legacy-migration-index-fix

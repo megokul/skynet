@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from collections import deque
@@ -12,13 +14,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import aiohttp
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GATEWAY_ROOT = REPO_ROOT / "openclaw-gateway"
 for candidate in (str(REPO_ROOT), str(GATEWAY_ROOT)):
     if candidate not in sys.path:
         sys.path.insert(0, candidate)
-
-import config as cfg
 
 _CONTAINER_LOG_ENV_PREFIX = "SKYNET_E2E_CONTAINER_LOG_"
 _AUTH_BEARER_PATTERN = re.compile(r"(?i)\bauthorization\s*[:=]\s*bearer\s+\S+")
@@ -27,6 +29,10 @@ _KEY_VALUE_SECRET_PATTERN = re.compile(
     r"(?i)\b(token|password|secret|session|api[_-]?key|private[_-]?key)\b\s*[:=]\s*([^\s,;]+)"
 )
 _TELEGRAM_BOT_TOKEN_PATTERN = re.compile(r"(?i)bot\d+:[A-Za-z0-9_-]{20,}")
+
+
+def _get_config_module() -> Any:
+    return importlib.import_module("config")
 
 
 class LiveTrace:
@@ -85,39 +91,93 @@ def _extract_docker_log_timestamp(line: str) -> tuple[str, str]:
     return "", text
 
 
-def resolve_container_log_stream_ssh() -> dict[str, Any] | None:
-    host = (
-        (os.environ.get(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_HOST") or "").strip()
-        or (os.environ.get("OPENCLAW_TUNNEL_EC2_HOST") or "").strip()
-    )
-    user = (
-        (os.environ.get(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_USER") or "").strip()
-        or (os.environ.get("OPENCLAW_TUNNEL_EC2_USER") or "").strip()
-    )
-    key_candidates = [
-        ("e2e_override", (os.environ.get(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_KEY") or "").strip()),
-        ("tunnel", (os.environ.get("OPENCLAW_TUNNEL_SSH_KEY") or "").strip()),
-        ("ssh_fallback", (os.environ.get("OPENCLAW_SSH_KEY_PATH") or "").strip()),
-    ]
+def _path_is_platform_compatible(candidate: str) -> bool:
+    value = str(candidate or "").strip()
+    if not value:
+        return False
+    if sys.platform == "win32":
+        if value.startswith("/") or value.startswith("\\"):
+            return False
+    else:
+        if len(value) > 2 and value[1] == ":":
+            return False
+    return True
+
+
+def _resolve_ssh_profile(profile: str | None) -> str:
+    resolved = str(profile or "").strip().lower()
+    if resolved in {"tunnel", "transport", "auto"}:
+        return resolved
+    if Path("/.dockerenv").exists():
+        return "transport"
+    return "tunnel"
+
+
+def resolve_container_log_stream_ssh(profile: str | None = None) -> dict[str, Any] | None:
+    resolved_profile = _resolve_ssh_profile(profile)
+    override_host = (os.environ.get(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_HOST") or "").strip()
+    override_user = (os.environ.get(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_USER") or "").strip()
+    override_key = (os.environ.get(f"{_CONTAINER_LOG_ENV_PREFIX}SSH_KEY") or "").strip()
+
+    source_profiles: list[tuple[str, str, str, str]]
+    if resolved_profile == "transport":
+        source_profiles = [
+            (
+                "ssh_fallback",
+                (os.environ.get("OPENCLAW_SSH_HOST") or "").strip(),
+                (os.environ.get("OPENCLAW_SSH_USER") or "").strip(),
+                (os.environ.get("OPENCLAW_SSH_KEY_PATH") or "").strip(),
+            ),
+        ]
+    elif resolved_profile == "tunnel":
+        source_profiles = [
+            (
+                "tunnel",
+                (os.environ.get("OPENCLAW_TUNNEL_EC2_HOST") or "").strip(),
+                (os.environ.get("OPENCLAW_TUNNEL_EC2_USER") or "").strip(),
+                (os.environ.get("OPENCLAW_TUNNEL_SSH_KEY") or "").strip(),
+            ),
+        ]
+    else:
+        source_profiles = [
+            (
+                "tunnel",
+                (os.environ.get("OPENCLAW_TUNNEL_EC2_HOST") or "").strip(),
+                (os.environ.get("OPENCLAW_TUNNEL_EC2_USER") or "").strip(),
+                (os.environ.get("OPENCLAW_TUNNEL_SSH_KEY") or "").strip(),
+            ),
+            (
+                "ssh_fallback",
+                (os.environ.get("OPENCLAW_SSH_HOST") or "").strip(),
+                (os.environ.get("OPENCLAW_SSH_USER") or "").strip(),
+                (os.environ.get("OPENCLAW_SSH_KEY_PATH") or "").strip(),
+            ),
+        ]
+
+    host = override_host
+    user = override_user
+    key_candidates = [("e2e_override", override_key)] if override_key else []
+    for source, source_host, source_user, source_key in source_profiles:
+        if not host and source_host:
+            host = source_host
+        if not user and source_user:
+            user = source_user
+        if source_key:
+            key_candidates.append((source, source_key))
+
     key_options = [(source, value) for source, value in key_candidates if value]
     key = ""
     key_source = ""
     for source, candidate in key_options:
-        # Skip obviously wrong-platform paths
-        if sys.platform == "win32" and candidate.startswith("/"):
-            continue
-        if sys.platform != "win32" and len(candidate) > 2 and candidate[1] == ":":
+        if not _path_is_platform_compatible(candidate):
             continue
         if Path(candidate).exists():
             key = candidate
             key_source = source
             break
     if not key and key_options:
-        # Fall back to first platform-compatible candidate even if it doesn't exist
         for source, candidate in key_options:
-            if sys.platform == "win32" and candidate.startswith("/"):
-                continue
-            if sys.platform != "win32" and len(candidate) > 2 and candidate[1] == ":":
+            if not _path_is_platform_compatible(candidate):
                 continue
             key_source, key = source, candidate
             break
@@ -203,6 +263,7 @@ async def _run_capture_command(cmd: list[str], *, timeout_s: float) -> tuple[int
 
 
 def _normalize_container_log_config(config_override: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = _get_config_module()
     base = dict(cfg.get_live_e2e_container_log_config())
     override = dict(config_override or {})
     if "sources" in override:
@@ -234,6 +295,149 @@ def _normalize_container_log_config(config_override: dict[str, Any] | None = Non
     return base
 
 
+async def fetch_local_gateway_status(*, url: str, timeout_seconds: int = 10) -> dict[str, Any]:
+    timeout = aiohttp.ClientTimeout(total=max(1, int(timeout_seconds)))
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url) as resp:
+            resp.raise_for_status()
+            payload = await resp.json()
+            return dict(payload) if isinstance(payload, dict) else {}
+
+
+async def fetch_remote_gateway_status(
+    *,
+    container_name: str,
+    status_url: str,
+    diagnostics_profile: str,
+    timeout_seconds: int = 20,
+) -> dict[str, Any]:
+    ssh = resolve_container_log_stream_ssh(diagnostics_profile)
+    if not ssh:
+        raise AssertionError("PREFLIGHT_DIAGNOSTICS_CONFIG_ERROR: missing SSH credentials for remote status probe")
+    key_path = Path(str(ssh.get("key") or "").strip())
+    if not key_path.exists():
+        raise AssertionError(
+            "PREFLIGHT_DIAGNOSTICS_CONFIG_ERROR: SSH key path does not exist "
+            f"({key_path})"
+        )
+    script = (
+        "import sys,urllib.request;"
+        f"sys.stdout.write(urllib.request.urlopen({status_url!r}, timeout=10).read().decode('utf-8'))"
+    )
+    remote_cmd = f"docker exec {shlex.quote(container_name)} python -c {shlex.quote(script)}"
+    cmd = _build_ssh_command(ssh, remote_cmd)
+    rc, stdout, stderr = await _run_capture_command(cmd, timeout_s=max(5.0, float(timeout_seconds)))
+    if rc != 0:
+        detail = stderr.strip() or stdout.strip() or f"returncode:{rc}"
+        raise AssertionError(f"PREFLIGHT_STATUS_UNAVAILABLE: {detail[:240]}")
+    payload = json.loads(stdout)
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _preflight_missing_agents(status_payload: dict[str, Any], required_agents: list[str]) -> list[str]:
+    coding_agents = status_payload.get("coding_agents") or {}
+    available = {str(name).strip().lower() for name in dict(coding_agents).keys()}
+    missing: list[str] = []
+    for raw in required_agents:
+        agent = str(raw or "").strip().lower()
+        if agent and agent not in available:
+            missing.append(agent)
+    return missing
+
+
+async def run_live_e2e_preflight(
+    *,
+    trace_fn: Callable[..., None],
+    flow: str,
+    policy: dict[str, Any],
+    local_status_url: str | None = None,
+) -> dict[str, Any]:
+    cfg = _get_config_module()
+    trace_fn(
+        "preflight.start",
+        flow=flow,
+        required_transport=policy.get("required_transport"),
+        allow_fallback=bool(policy.get("allow_fallback", False)),
+        required_worker_agents=list(policy.get("required_worker_agents") or []),
+        diagnostics_profile=str(policy.get("diagnostics_profile") or ""),
+        require_telegram_poller=bool(policy.get("require_telegram_poller", False)),
+    )
+
+    container_log_cfg = dict(policy.get("container_log") or {})
+    diagnostics_profile = str(policy.get("diagnostics_profile") or container_log_cfg.get("ssh_profile") or "")
+    ssh = resolve_container_log_stream_ssh(diagnostics_profile)
+    if not ssh:
+        raise AssertionError(
+            "PREFLIGHT_DIAGNOSTICS_CONFIG_ERROR: missing SSH credentials for diagnostics profile "
+            f"'{diagnostics_profile or 'auto'}'"
+        )
+    key_path = Path(str(ssh.get("key") or "").strip())
+    if not key_path.exists():
+        raise AssertionError(
+            "PREFLIGHT_DIAGNOSTICS_CONFIG_ERROR: SSH key path does not exist "
+            f"({key_path})"
+        )
+
+    if str(policy.get("status_probe_mode") or "") == "remote_container_http":
+        status_payload = await fetch_remote_gateway_status(
+            container_name=str(policy.get("remote_gateway_container") or "openclaw-gateway"),
+            status_url=str(policy.get("remote_status_url") or "http://localhost:8766/status"),
+            diagnostics_profile=diagnostics_profile,
+        )
+    else:
+        status_payload = await fetch_local_gateway_status(
+            url=str(local_status_url or f"http://127.0.0.1:{int(getattr(cfg, 'HTTP_PORT', 8766) or 8766)}/status"),
+        )
+
+    trace_fn(
+        "preflight.status",
+        flow=flow,
+        primary_transport_mode=str(status_payload.get("primary_transport_mode") or ""),
+        agent_connected=bool(status_payload.get("agent_connected", False)),
+        websocket_health_ok=bool(status_payload.get("websocket_health_ok", False)),
+        telegram_poller_state=str(status_payload.get("telegram_poller_state") or ""),
+        telegram_poller_lock_healthy=bool(status_payload.get("telegram_poller_lock_healthy", False)),
+        coding_agents=sorted(dict(status_payload.get("coding_agents") or {}).keys()),
+    )
+
+    required_transport = str(policy.get("required_transport") or "").strip().lower()
+    actual_transport = str(status_payload.get("primary_transport_mode") or "").strip().lower()
+    if required_transport and actual_transport != required_transport:
+        raise AssertionError(
+            f"PREFLIGHT_TRANSPORT_MISMATCH: expected={required_transport} actual={actual_transport or 'missing'}"
+        )
+
+    if not bool(policy.get("allow_fallback", False)) and actual_transport == "ssh_fallback":
+        raise AssertionError("PREFLIGHT_TRANSPORT_FALLBACK: gateway is using ssh_fallback")
+
+    if required_transport == "websocket_primary":
+        if not bool(status_payload.get("agent_connected", False)):
+            raise AssertionError("PREFLIGHT_WORKER_UNAVAILABLE: no websocket worker connected")
+        if not bool(status_payload.get("websocket_health_ok", False)):
+            raise AssertionError("PREFLIGHT_WORKER_STALE: websocket worker heartbeat is stale")
+
+    missing_agents = _preflight_missing_agents(
+        status_payload,
+        list(policy.get("required_worker_agents") or []),
+    )
+    if missing_agents:
+        raise AssertionError(
+            "PREFLIGHT_REQUIRED_AGENTS_MISSING: " + ",".join(sorted(missing_agents))
+        )
+
+    if bool(policy.get("require_telegram_poller", False)):
+        poller_state = str(status_payload.get("telegram_poller_state") or "").strip().lower()
+        if poller_state != "running":
+            raise AssertionError(
+                f"PREFLIGHT_TELEGRAM_POLLER_STATE: expected=running actual={poller_state or 'missing'}"
+            )
+        if not bool(status_payload.get("telegram_poller_lock_healthy", False)):
+            raise AssertionError("PREFLIGHT_TELEGRAM_POLLER_LOCK: poller lease is not healthy")
+
+    trace_fn("preflight.ok", flow=flow)
+    return status_payload
+
+
 class ContainerLogStreamer:
     def __init__(
         self,
@@ -243,12 +447,14 @@ class ContainerLogStreamer:
         containers: list[str],
         max_line_chars: int,
         ring_lines: int,
+        ssh_profile: str,
     ) -> None:
         self._trace = trace_fn
         self._since = since_utc_iso
         self._containers = [c.strip() for c in containers if c.strip()]
         self._max_line_chars = max(200, int(max_line_chars))
         self._ring_lines = max(20, int(ring_lines))
+        self._ssh_profile = str(ssh_profile or "").strip().lower()
         self._ring: dict[str, deque[str]] = {
             name: deque(maxlen=self._ring_lines) for name in self._containers
         }
@@ -267,7 +473,7 @@ class ContainerLogStreamer:
             self._errors.append(entry)
 
     async def start(self) -> None:
-        self._ssh = resolve_container_log_stream_ssh()
+        self._ssh = resolve_container_log_stream_ssh(self._ssh_profile)
         if not self._ssh:
             raise AssertionError(
                 "CONTAINER_LOG_STREAM_UNAVAILABLE: missing SSH credentials "
@@ -476,6 +682,7 @@ class LiveContainerDiagnostics:
             containers=list(self._config["sources"]),
             max_line_chars=int(self._config["max_line_chars"]),
             ring_lines=int(self._config["ring_lines"]),
+            ssh_profile=str(self._config.get("ssh_profile") or ""),
         )
         try:
             await self._streamer.start()
@@ -535,7 +742,7 @@ class LiveContainerDiagnostics:
     async def _capture_snapshot_bundle(self) -> tuple[dict[str, list[str]], list[str]]:
         if not self._config["sources"]:
             return {}, []
-        ssh = resolve_container_log_stream_ssh()
+        ssh = resolve_container_log_stream_ssh(str(self._config.get("ssh_profile") or ""))
         if not ssh:
             return {}, ["missing_ssh_credentials"]
         key_path = Path(str(ssh.get("key") or "").strip())

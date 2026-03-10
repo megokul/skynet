@@ -203,6 +203,54 @@ class TaskMutationResponse(BaseModel):
     ok: bool
 
 
+class LeaseState(BaseModel):
+    """Distributed lease state."""
+
+    lease_name: str
+    held: bool
+    owner_id: str | None = None
+    acquired_at: str | None = None
+    expires_at: str | None = None
+
+
+class LeaseAcquireRequest(BaseModel):
+    """Acquire a named lease for an owner."""
+
+    owner_id: str
+    ttl_seconds: int = 60
+
+
+class LeaseAcquireResponse(LeaseState):
+    """Result of a lease acquire attempt."""
+
+    acquired: bool
+
+
+class LeaseRenewRequest(BaseModel):
+    """Renew a named lease held by an owner."""
+
+    owner_id: str
+    ttl_seconds: int = 60
+
+
+class LeaseRenewResponse(LeaseState):
+    """Result of a lease renew attempt."""
+
+    renewed: bool
+
+
+class LeaseReleaseRequest(BaseModel):
+    """Release a named lease owned by an owner."""
+
+    owner_id: str
+
+
+class LeaseReleaseResponse(BaseModel):
+    """Result of a lease release attempt."""
+
+    ok: bool
+
+
 class ReleaseTaskRequest(BaseModel):
     """Release a claimed/running lock back to released/failed."""
 

@@ -101,6 +101,29 @@ class JobLockManager:
         await self.db.commit()
         return cur.rowcount > 0
 
+    async def refresh_lock(
+        self,
+        job_id: str,
+        worker_id: str,
+        timeout_seconds: int | None = None,
+    ) -> bool:
+        """Reset the lock expiry to now + TTL when still owned by this worker."""
+        now = _utc_now()
+        ttl = timeout_seconds if timeout_seconds is not None else self.lock_timeout_seconds
+        now_iso = _iso(now)
+        expires_at = _iso(now + timedelta(seconds=ttl))
+
+        cur = await self.db.execute(
+            """
+            UPDATE job_locks
+            SET expires_at = ?
+            WHERE job_id = ? AND worker_id = ? AND (expires_at IS NULL OR expires_at > ?)
+            """,
+            (expires_at, job_id, worker_id, now_iso),
+        )
+        await self.db.commit()
+        return cur.rowcount > 0
+
     async def release_lock(self, job_id: str, worker_id: str) -> bool:
         """Release lock if owned by this worker."""
         cur = await self.db.execute(
@@ -190,3 +213,25 @@ class JobLockManager:
         ) as cur:
             row = await cur.fetchone()
             return row[0] if row else None
+
+    async def get_lock(self, job_id: str) -> dict[str, Any] | None:
+        """Return non-expired lock metadata, else None."""
+        now_iso = _iso(_utc_now())
+        async with self.db.execute(
+            """
+            SELECT job_id, worker_id, acquired_at, expires_at
+            FROM job_locks
+            WHERE job_id = ? AND (expires_at IS NULL OR expires_at > ?)
+            LIMIT 1
+            """,
+            (job_id, now_iso),
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "job_id": str(row[0]),
+            "worker_id": str(row[1]),
+            "acquired_at": str(row[2]),
+            "expires_at": str(row[3]) if row[3] is not None else None,
+        }
