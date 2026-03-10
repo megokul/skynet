@@ -1,10 +1,35 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-10 08:00
+Last updated (UTC): 2026-03-10 09:40
 
 ## Current Goal
 
 WebSocket-primary worker execution with local Ollama coding backend, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-10 Deploy Config Tracking For Worker Project Paths
+
+- Root-caused the latest `telegram_real` live E2E coding preflight failure to missing tracked worker path defaults on the deployed gateway:
+  - runtime failure: `Path '/livee2e...' is outside allowed roots`
+  - deployed `openclaw-gateway` container had empty values for:
+    - `SKYNET_PROJECT_BASE_DIR`
+    - `OPENCLAW_PROJECT_BASE_DIR`
+    - `SKYNET_DEFAULT_WORKING_DIR`
+    - `OPENCLAW_DEFAULT_WORKING_DIR`
+- Cause:
+  - local `settings.local.yaml` had the required non-secret Windows worker paths
+  - deploy checkout only included tracked files, so the gateway container rendered empty worker path settings from canonical `settings.yaml`
+- Fix in `openclaw-gateway/settings/settings.yaml`:
+  - set tracked canonical defaults:
+    - `SKYNET_PROJECT_BASE_DIR=E:\SKYNET-SANDBOX\Projects`
+    - `OPENCLAW_PROJECT_BASE_DIR=E:\SKYNET-SANDBOX\Projects`
+    - `SKYNET_DEFAULT_WORKING_DIR=E:\SKYNET-SANDBOX`
+    - `OPENCLAW_DEFAULT_WORKING_DIR=E:\SKYNET-SANDBOX`
+- Added deploy verification in `.github/workflows/deploy-ec2-skynet.yml`:
+  - new `Validate worker project path settings` step runs inside `openclaw-gateway`
+  - hard-fails deploy when `WORKER_PROJECTS_DIR` or `DEFAULT_WORKING_DIR` is empty inside the container
+- Operational note:
+  - this keeps worker filesystem roots in the tracked canonical settings path instead of depending on an untracked local override for deploy correctness
+  - after the docs update, rerun CI/CD and then rerun `telegram_real` live E2E against the refreshed deployment
 
 ### 2026-03-10 Live E2E Validation + Orphaned Test Cleanup
 
