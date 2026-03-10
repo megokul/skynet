@@ -10,6 +10,7 @@ services:
       # ── Required ────────────────────────────────────────────────────────────
       - SKYNET_AUTH_TOKEN          # shared secret — must match CLAW worker
       - TELEGRAM_BOT_TOKEN         # from BotFather
+      - SKYNET_BUILD_REVISION
       # ── Bot access control ──────────────────────────────────────────────────
       - TELEGRAM_ALLOWED_USER_ID   # set to your Telegram user ID (0 = allow all)
       # ── TLS (paths are inside the container) ────────────────────────────────

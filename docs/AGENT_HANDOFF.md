@@ -50,6 +50,9 @@ WebSocket-primary worker execution with Qwen-first planner/coding behavior, whil
   - `openclaw-gateway/config.py` adds:
     - `SKYNET_BUILD_REVISION`
     - `SKYNET_LIVE_E2E_EXPECT_REMOTE_BUILD_REVISION`
+  - compose env passthrough now includes `SKYNET_BUILD_REVISION` for:
+    - root `docker-compose.yml`
+    - `openclaw-gateway/docker-compose.yml`
   - shared preflight in `openclaw-gateway/tests/live_diagnostics.py` now raises `PREFLIGHT_BUILD_REVISION_MISMATCH` when the deployed gateway is not serving the expected revision
   - deploy workflow now injects `SKYNET_BUILD_REVISION=$GITHUB_SHA` into `.env.ci` and verifies `/status.build_revision` matches the container config after deploy
 - Regression and real-adapter coverage:
