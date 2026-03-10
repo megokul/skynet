@@ -68,3 +68,29 @@ async def test_job_lock_manager_flow() -> None:
     assert await locks.is_locked("job-2") is False
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_job_lock_manager_reacquire_by_same_owner_refreshes_lease() -> None:
+    db = await init_db(":memory:")
+    locks = JobLockManager(db, lock_timeout_seconds=5)
+
+    acquired = await locks.acquire_lock("job-lease", "gateway-a", timeout_seconds=30)
+    assert acquired is True
+    first = await locks.get_lock("job-lease")
+    assert first is not None
+
+    await asyncio.sleep(0.01)
+    reacquired = await locks.acquire_lock("job-lease", "gateway-a", timeout_seconds=45)
+    assert reacquired is True
+    second = await locks.get_lock("job-lease")
+    assert second is not None
+    assert second["worker_id"] == "gateway-a"
+    assert second["expires_at"] != first["expires_at"]
+
+    blocked = await locks.acquire_lock("job-lease", "gateway-b", timeout_seconds=45)
+    assert blocked is False
+    owner = await locks.get_lock_owner("job-lease")
+    assert owner == "gateway-a"
+
+    await db.close()

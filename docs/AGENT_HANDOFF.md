@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-10 09:40
+Last updated (UTC): 2026-03-10 10:00
 
 ## Current Goal
 
@@ -30,6 +30,27 @@ WebSocket-primary worker execution with local Ollama coding backend, while prese
 - Operational note:
   - this keeps worker filesystem roots in the tracked canonical settings path instead of depending on an untracked local override for deploy correctness
   - after the docs update, rerun CI/CD and then rerun `telegram_real` live E2E against the refreshed deployment
+
+### 2026-03-10 Telegram Poller Lease Reacquire Fix
+
+- Root-caused the deployed gateway poller startup failure after restart:
+  - gateway `/status` showed:
+    - `telegram_poller_state=blocked`
+    - `telegram_poller_last_error=foreign_lease_active`
+    - `telegram_poller_lease_owner=openclaw`
+  - this happened even though the same gateway ID was restarting
+- Cause in shared control-plane lease logic:
+  - `JobLockManager.acquire_lock()` used `INSERT OR IGNORE` only
+  - a restart by the same owner could not reacquire or refresh its own still-valid lease until TTL expiry
+  - result: gateway long-polling stayed disabled on restart even when no foreign poller should win
+- Fix in `skynet/ledger/job_locking.py`:
+  - same-owner `acquire_lock()` is now idempotent
+  - when the existing unexpired lease is already owned by the caller, acquire refreshes `acquired_at` and `expires_at` and returns success
+  - foreign-owner acquire attempts still return `False`
+- Added regression coverage:
+  - `tests/test_job_locking.py::test_job_lock_manager_reacquire_by_same_owner_refreshes_lease`
+  - `tests/test_api_control_plane.py::test_control_plane_lease_acquire_is_idempotent_for_same_owner`
+  - existing `openclaw-gateway/tests/test_telegram_poller_lease.py` still passes against the lease-controller contract
 
 ### 2026-03-10 Live E2E Validation + Orphaned Test Cleanup
 

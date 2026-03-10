@@ -98,6 +98,21 @@ class JobLockManager:
             """,
             (job_id, worker_id, now_iso, expires_at),
         )
+        if cur.rowcount > 0:
+            await self.db.commit()
+            return True
+
+        # Idempotent reacquire for the same owner after process restart:
+        # keep the lease held and refresh its expiry instead of forcing the
+        # caller to wait for TTL expiry.
+        cur = await self.db.execute(
+            """
+            UPDATE job_locks
+            SET acquired_at = ?, expires_at = ?
+            WHERE job_id = ? AND worker_id = ? AND (expires_at IS NULL OR expires_at > ?)
+            """,
+            (now_iso, expires_at, job_id, worker_id, now_iso),
+        )
         await self.db.commit()
         return cur.rowcount > 0
 

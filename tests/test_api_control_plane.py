@@ -396,3 +396,38 @@ async def test_control_plane_lease_api_flow() -> None:
     assert held_after.held is False
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_control_plane_lease_acquire_is_idempotent_for_same_owner() -> None:
+    db = await init_db(":memory:")
+    lease_manager = JobLockManager(db, lock_timeout_seconds=5)
+    app_state.lease_manager = lease_manager
+
+    first = await acquire_lease(
+        lease_name="telegram-poller:test",
+        request=schemas.LeaseAcquireRequest(owner_id="openclaw", ttl_seconds=30),
+        lease_manager=lease_manager,
+    )
+    assert first.acquired is True
+    assert first.owner_id == "openclaw"
+
+    second = await acquire_lease(
+        lease_name="telegram-poller:test",
+        request=schemas.LeaseAcquireRequest(owner_id="openclaw", ttl_seconds=45),
+        lease_manager=lease_manager,
+    )
+    assert second.acquired is True
+    assert second.held is True
+    assert second.owner_id == "openclaw"
+
+    foreign = await acquire_lease(
+        lease_name="telegram-poller:test",
+        request=schemas.LeaseAcquireRequest(owner_id="other-gateway", ttl_seconds=45),
+        lease_manager=lease_manager,
+    )
+    assert foreign.acquired is False
+    assert foreign.held is True
+    assert foreign.owner_id == "openclaw"
+
+    await db.close()
