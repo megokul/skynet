@@ -1,10 +1,90 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-10 13:24
+Last updated (UTC): 2026-03-10 15:26
 
 ## Current Goal
 
 WebSocket-primary worker execution with Qwen-first planner/coding behavior, while preserving strict quality gates, deterministic live-E2E failure handling, and a single settings-driven runtime contract.
+
+### 2026-03-10 Qwen Planner State Machine + Provider-Flex Capability Probes
+
+- Root cause refined further:
+  - the remaining planner failure was not Telegram transport or websocket routing
+  - the gateway was still asking Qwen to infer requirements completeness from raw prompt/history
+  - under `qwen-oauth` + `coder-model`, headless planner calls frequently reset the conversation even when the user had already supplied enough requirements
+- Runtime architecture change:
+  - the gateway now owns planner state deterministically in `openclaw-gateway/bot/handlers/project.py`
+  - normalized planner state includes:
+    - `project_name`
+    - `project_type`
+    - `facts`
+    - `answered_slots`
+    - `missing_slots`
+    - `requirement_summary`
+    - `plan_ready`
+    - `next_question_targets`
+  - required slots for Python App planning are now enforced in shared code
+  - obvious negatives are inferred by gateway logic instead of asking Qwen to rediscover them:
+    - local/terminal script => `runtime_mode=on_demand`
+    - local script + standard-library-only => `integrations=none`
+    - local script with no persistence terms => `storage=none`
+- Qwen planner contract is now explicit and structured:
+  - worker payload for Qwen planner runs now carries:
+    - `reply_contract`
+    - `planner_state_json`
+    - `requirement_summary_md`
+  - supported planner contracts:
+    - `ask_next_question`
+    - `emit_ready_sentence`
+    - `emit_plan`
+  - gateway behavior is now:
+    - `plan_ready=false` => `planner_chat + ask_next_question`
+    - `plan_ready=true` during requirements => `planner_chat + emit_ready_sentence`
+    - `/plan` => `plan_generation + emit_plan`
+  - the previous “Qwen decides it has enough information” heuristic is no longer authoritative
+- Worker-side Qwen execution hardening:
+  - `skynet/qwen_cli.py` now builds a structured runtime prompt from planner state instead of raw history only
+  - contract classification is now state-aware:
+    - ready-sentence mismatch
+    - question targets already-answered slot
+    - missing planner question
+    - plan not grounded in requirement summary
+  - provider env is now built from canonical settings:
+    - `SKYNET_QWEN_PROVIDER_PROFILE`
+    - `SKYNET_QWEN_OPENAI_BASE_URL`
+    - `SKYNET_QWEN_OPENAI_API_KEY_ENV`
+    - capability-required flags for planner/coding
+  - `qwen` remains the agent everywhere, but auth/provider/model are now settings-driven instead of implicitly tied to `qwen-oauth`
+- Planner working-dir ownership cleanup:
+  - for Qwen planner modes with `request_scoped` strategy, the gateway no longer creates/deletes remote planner sandbox directories
+  - worker-owned temp dirs are now the only planner scratch space for those calls
+  - this removes the previous blocked `delete_directory` noise from live traces
+- Live preflight now runs two real Qwen capability probes instead of one loose smoke check:
+  - planner ready probe:
+    - complete requirements in one message must yield the exact completion sentence
+  - plan generation probe:
+    - structured requirement summary must produce a valid grounded plan
+  - both probes run through the real worker/gateway action path
+  - `/status` now exposes:
+    - `qwen_auth_type`
+    - `qwen_provider_profile`
+    - `qwen_planner_model`
+    - `qwen_coding_model`
+    - last planner-ready probe result
+    - last plan-generation probe result
+- Validation completed for this runtime change:
+  - targeted regression suite: `74 passed, 2 skipped`
+  - real local Qwen CLI integration tests: `2 passed`
+  - these real tests prove the updated adapter can satisfy:
+    - exact ready-sentence contract
+    - grounded plan-generation contract
+- Current operational blockers after the code change:
+  - local `conversation` live E2E still cannot run because there is no local gateway listening on `127.0.0.1:8766`
+  - `.env.local-e2e` also lacks `SKYNET_AUTH_TOKEN`; manual retry used the token from `.env.worker-agent`
+  - worker bootstrap env itself is valid and currently targets tunnel websocket `ws://127.0.0.1:18765/agent/ws`
+  - commit containing this runtime work:
+    - `da91bbe` `Stabilize qwen planner runtime`
+  - deployment workflow for that commit was still pending/failing at the time of this handoff and must complete before `telegram_real` can verify the new runtime remotely
 
 ### 2026-03-10 Qwen-First Runtime Contract + Deployed Revision Guard
 
