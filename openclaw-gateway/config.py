@@ -63,7 +63,9 @@ __all__ = [
     "get_live_e2e_backend",
     "get_live_e2e_agent",
     "get_live_e2e_container_log_config",
+    "get_live_e2e_cleanup_config",
     "get_live_e2e_policy",
+    "get_live_e2e_runtime_env",
     "get_provider_priority",
     "get_ssh_config",
     "dump_config",
@@ -386,6 +388,7 @@ PLANNER_CODEX_TIMEOUT_SECONDS: int = _i("SKYNET_PLANNER_CODEX_TIMEOUT_SECONDS", 
 MILESTONE_CODEX_TIMEOUT_SECONDS: int = _i("SKYNET_MILESTONE_CODEX_TIMEOUT_SECONDS", 120)
 CODING_TRANSPORT: str = _s("SKYNET_CODING_TRANSPORT", "websocket_primary").lower()
 E2E_FAIL_ON_SKIP: bool = _b("SKYNET_E2E_FAIL_ON_SKIP", True)
+E2E_LIVE: bool = _b("SKYNET_E2E_LIVE", False)
 E2E_CONTAINER_LOG_STREAM_ENABLED: bool = _b("SKYNET_E2E_CONTAINER_LOG_STREAM_ENABLED", True)
 E2E_CONTAINER_LOG_REQUIRE_STREAM: bool = _b("SKYNET_E2E_CONTAINER_LOG_REQUIRE_STREAM", True)
 E2E_CONTAINER_LOG_SOURCES: tuple[str, ...] = tuple(
@@ -459,6 +462,14 @@ LIVE_E2E_REMOTE_STATUS_URL: str = _s(
     "SKYNET_LIVE_E2E_REMOTE_STATUS_URL",
     "http://localhost:8766/status",
 ).strip()
+LIVE_E2E_CLEANUP_AFTER_RUN: bool = _b("SKYNET_LIVE_E2E_CLEANUP_AFTER_RUN", True)
+LIVE_E2E_CLEANUP_TARGETS: tuple[str, ...] = tuple(
+    get_list(
+        "SKYNET_LIVE_E2E_CLEANUP_TARGETS",
+        default=["worker_launcher", "worker_agent"],
+    )
+)
+LIVE_E2E_CLEANUP_GRACE_SECONDS: int = _i("SKYNET_LIVE_E2E_CLEANUP_GRACE_SECONDS", 5)
 
 # SSH tunnel reliability controls
 SSH_MAX_PARALLEL: int = _i("OPENCLAW_SSH_MAX_PARALLEL", 2)
@@ -649,6 +660,19 @@ def _parse_container_log_tail_overrides(raw: str) -> dict[str, int]:
     return overrides
 
 
+def _normalize_cleanup_targets(targets: list[str]) -> list[str]:
+    allowed = {"worker_launcher", "worker_agent", "live_runner"}
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in targets:
+        value = str(raw or "").strip().lower()
+        if not value or value not in allowed or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
 def get_live_e2e_container_log_config() -> dict[str, Any]:
     """Return normalized live E2E container-log settings."""
     sources = get_list(
@@ -693,10 +717,34 @@ def get_live_e2e_container_log_config() -> dict[str, Any]:
     }
 
 
+def get_live_e2e_cleanup_config() -> dict[str, Any]:
+    """Return normalized live E2E cleanup settings."""
+    targets = get_list(
+        "SKYNET_LIVE_E2E_CLEANUP_TARGETS",
+        default=list(LIVE_E2E_CLEANUP_TARGETS) or ["worker_launcher", "worker_agent"],
+    )
+    return {
+        "enabled": get_bool(
+            "SKYNET_LIVE_E2E_CLEANUP_AFTER_RUN",
+            LIVE_E2E_CLEANUP_AFTER_RUN,
+        ),
+        "targets": _normalize_cleanup_targets(targets),
+        "grace_seconds": max(
+            1,
+            get_int(
+                "SKYNET_LIVE_E2E_CLEANUP_GRACE_SECONDS",
+                LIVE_E2E_CLEANUP_GRACE_SECONDS,
+            ),
+        ),
+    }
+
+
 def get_live_e2e_policy(flow: str | None = None) -> dict[str, Any]:
     """Return normalized live E2E runtime policy from settings."""
     resolved_flow = str(flow or get_live_e2e_flow() or "conversation").strip().lower()
     diagnostics = get_live_e2e_container_log_config()
+    cleanup = get_live_e2e_cleanup_config()
+    active = get_bool("SKYNET_E2E_LIVE", E2E_LIVE)
     allow_fallback = get_bool("SKYNET_LIVE_E2E_ALLOW_FALLBACK", LIVE_E2E_ALLOW_FALLBACK)
     required_transport = get_str(
         "SKYNET_LIVE_E2E_REQUIRED_TRANSPORT",
@@ -705,9 +753,21 @@ def get_live_e2e_policy(flow: str | None = None) -> dict[str, Any]:
 
     coding_chain = get_coding_fallback_chain()
     intended_agent = get_live_e2e_agent()
-    coding_agents = [intended_agent] if intended_agent else []
-    if allow_fallback:
-        coding_agents.extend(coding_chain)
+    effective_coding_stage_chain = _dedupe_agents(
+        [intended_agent] + (coding_chain if allow_fallback else [])
+        if intended_agent
+        else (coding_chain if allow_fallback else coding_chain[:1])
+    )
+    coding_agents = list(effective_coding_stage_chain)
+    planner_router_fallback_enabled = bool(
+        get_bool("SKYNET_PLANNER_ROUTER_FALLBACK_ENABLED", PLANNER_ROUTER_FALLBACK_ENABLED)
+    ) and bool(allow_fallback)
+    control_loop_router_fallback_enabled = bool(
+        get_bool(
+            "SKYNET_CONTROL_LOOP_ROUTER_FALLBACK_ENABLED",
+            CONTROL_LOOP_ROUTER_FALLBACK_ENABLED,
+        )
+    ) and bool(allow_fallback)
 
     planner_agents: list[str] = []
     if is_control_loop_active():
@@ -719,7 +779,7 @@ def get_live_e2e_policy(flow: str | None = None) -> dict[str, Any]:
         )
     else:
         planner_agents.append(getattr(sys.modules[__name__], "PLANNER_PRIMARY_AGENT", ""))
-        if bool(getattr(sys.modules[__name__], "PLANNER_ROUTER_FALLBACK_ENABLED", True)) and allow_fallback:
+        if planner_router_fallback_enabled:
             planner_agents.extend(list(getattr(sys.modules[__name__], "PLANNER_WORKER_AGENTS", ())))
 
     required_coding_agents = _dedupe_agents(coding_agents)
@@ -730,6 +790,7 @@ def get_live_e2e_policy(flow: str | None = None) -> dict[str, Any]:
     status_probe_mode = "remote_container_http" if require_telegram_poller else "local_http"
 
     return {
+        "active": bool(active),
         "flow": resolved_flow,
         "required_transport": required_transport,
         "allow_fallback": bool(allow_fallback),
@@ -754,6 +815,10 @@ def get_live_e2e_policy(flow: str | None = None) -> dict[str, Any]:
             LIVE_E2E_DIAGNOSTICS_PROFILE,
         ).strip().lower(),
         "container_log": diagnostics,
+        "cleanup": cleanup,
+        "effective_coding_stage_chain": effective_coding_stage_chain,
+        "planner_router_fallback_enabled": planner_router_fallback_enabled,
+        "control_loop_router_fallback_enabled": control_loop_router_fallback_enabled,
         "required_coding_agents": required_coding_agents,
         "required_planner_agents": required_planner_agents,
         "required_worker_agents": required_worker_agents,
@@ -769,6 +834,36 @@ def get_live_e2e_policy(flow: str | None = None) -> dict[str, Any]:
         ).strip() or "http://localhost:8766/status",
         "gateway_id": GATEWAY_ID or "openclaw",
         "orchestrator_url": ORCHESTRATOR_URL,
+    }
+
+
+def get_live_e2e_runtime_env(flow: str | None = None) -> dict[str, str]:
+    """Return derived live-E2E env overrides for subprocess runtime consistency."""
+    policy = get_live_e2e_policy(flow)
+    stage_chain = list(policy.get("effective_coding_stage_chain") or [])
+    stage_chain_raw = ",".join(stage_chain)
+    return {
+        "SKYNET_E2E_LIVE": "1",
+        "SKYNET_E2E_FAIL_ON_SKIP": "1" if bool(E2E_FAIL_ON_SKIP) else "0",
+        "SKYNET_E2E_ALLOW_SSH_FALLBACK": "1" if bool(policy.get("allow_fallback", False)) else "0",
+        "SKYNET_E2E_REQUIRE_WEBSOCKET_PRIMARY": (
+            "1" if str(policy.get("required_transport") or "") == "websocket_primary" else "0"
+        ),
+        "SKYNET_E2E_RUNTIME_TRACE_STALE_SECONDS": str(
+            int(policy.get("runtime_trace_stale_seconds", 90) or 90)
+        ),
+        "SKYNET_E2E_MESSAGE_PROGRESS_TIMEOUT_SECONDS": str(
+            int(policy.get("message_progress_timeout_seconds", 90) or 90)
+        ),
+        "SKYNET_E2E_DIAGNOSTICS_PROFILE": str(policy.get("diagnostics_profile") or ""),
+        "SKYNET_CODING_FALLBACK_CHAIN": stage_chain_raw,
+        "SKYNET_OPENCLAW_STAGE_CHAIN": stage_chain_raw,
+        "SKYNET_PLANNER_ROUTER_FALLBACK_ENABLED": (
+            "1" if bool(policy.get("planner_router_fallback_enabled", False)) else "0"
+        ),
+        "SKYNET_CONTROL_LOOP_ROUTER_FALLBACK_ENABLED": (
+            "1" if bool(policy.get("control_loop_router_fallback_enabled", False)) else "0"
+        ),
     }
 
 

@@ -199,3 +199,58 @@ async def test_extract_milestones_non_codex_policy_uses_local_fallback_without_r
         "Add skynet_run.json",
     ]
     router.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_extract_milestones_live_policy_uses_qwen_without_router(monkeypatch: pytest.MonkeyPatch):
+    project = {
+        "id": "proj-live-qwen",
+        "name": "live-qwen-plan",
+        "description": "Build a Windows Python script with popup hi and beep using stdlib only.",
+    }
+    router = MagicMock()
+    router.chat = AsyncMock()
+
+    async def _send_action(action, params, **kwargs):
+        del kwargs
+        if action == "create_directory":
+            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
+        if action == "run_coding_agent":
+            assert params["agent"] == "qwen"
+            return {
+                "status": "success",
+                "result": {
+                    "returncode": 0,
+                    "stdout": '["Implement main script", "Add tests", "Add skynet_run.json"]',
+                    "stderr": "",
+                },
+            }
+        raise AssertionError(f"Unexpected action: {action}")
+
+    monkeypatch.setenv("SKYNET_E2E_LIVE", "1")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_FLOW", "telegram_real")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_ALLOW_FALLBACK", "0")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_AGENT", "qwen")
+
+    with (
+        patch("bot.handlers.coding.cfg.PLANNER_PRIMARY_AGENT", "codex"),
+        patch("bot.handlers.coding.cfg.CONTROL_LOOP_ENABLED", True),
+        patch("bot.handlers.coding.cfg.CONTROL_LOOP_FORCE_FOR_ALL", True),
+        patch("bot.handlers.coding.cfg.CONTROL_LOOP_PLANNER_AGENT", "qwen"),
+        patch("bot.handlers.coding.cfg.CONTROL_LOOP_CRITIC_AGENT", "qwen"),
+        patch("bot.handlers.coding.cfg.CONTROL_LOOP_ROUTER_FALLBACK_ENABLED", True),
+        patch("bot.handlers.coding._use_acp_orchestration", return_value=False),
+        patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=_send_action)),
+    ):
+        milestones = await _extract_milestones_codex_then_router(
+            router=router,
+            project=project,
+            working_dir="E:/SKYNET-SANDBOX/Projects/live-qwen-plan",
+        )
+
+    assert milestones == [
+        "Implement main script",
+        "Add tests",
+        "Add skynet_run.json",
+    ]
+    router.chat.assert_not_awaited()

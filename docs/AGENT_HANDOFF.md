@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-10 10:00
+Last updated (UTC): 2026-03-10 10:25
 
 ## Current Goal
 
@@ -51,6 +51,63 @@ WebSocket-primary worker execution with local Ollama coding backend, while prese
   - `tests/test_job_locking.py::test_job_lock_manager_reacquire_by_same_owner_refreshes_lease`
   - `tests/test_api_control_plane.py::test_control_plane_lease_acquire_is_idempotent_for_same_owner`
   - existing `openclaw-gateway/tests/test_telegram_poller_lease.py` still passes against the lease-controller contract
+
+### 2026-03-10 Shared Live E2E Cleanup Manager
+
+- Added config-backed live-run cleanup controls in `openclaw-gateway/settings/settings.yaml` and `openclaw-gateway/config.py`:
+  - `SKYNET_LIVE_E2E_CLEANUP_AFTER_RUN`
+  - `SKYNET_LIVE_E2E_CLEANUP_TARGETS`
+  - `SKYNET_LIVE_E2E_CLEANUP_GRACE_SECONDS`
+  - `get_live_e2e_cleanup_config()`
+- Added shared cleanup implementation in `openclaw-gateway/tests/live_diagnostics.py`:
+  - `LiveRunCleanupManager`
+  - repo-rooted process enumeration and target matching
+  - tracked pytest subprocess registration
+  - Windows tree teardown via `taskkill /T /F`
+- Wired `openclaw-gateway/tests/e2e_live.py` to:
+  - run conversation/telegram-real pytest flows through registered subprocesses
+  - execute cleanup in `finally` on run exit
+  - apply cleanup policy from the single-source live E2E settings/config path
+- Default cleanup policy now tears down:
+  - repo-rooted `scripts/run_worker_agent.ps1` launcher trees
+  - repo-rooted `openclaw-agent/main.py` processes
+  - tracked child pytest processes started by the live runner
+- Added regression coverage:
+  - cleanup config defaults and env overrides
+  - repo-rooted process matching
+  - registered subprocess teardown
+
+### 2026-03-10 Runtime-Enforced Live E2E Policy
+
+- Root-caused the remaining qwen failover inconsistency:
+  - live runner policy was clamping qwen-only behavior in subprocess env
+  - gateway runtime handlers still built planner/coding stage chains from raw config defaults
+  - result: local `conversation` could be forced into qwen-only, but deployed `telegram_real` still kept `qwen -> codex` behavior unless the remote gateway happened to carry the same env overrides
+- Fix in gateway runtime/config:
+  - added canonical `SKYNET_E2E_LIVE` handling in `openclaw-gateway/config.py`
+  - `get_live_e2e_policy()` now reports `active`
+  - `get_live_e2e_runtime_env()` now explicitly propagates `SKYNET_E2E_LIVE=1`
+  - `bot/handlers/project.py` now derives planner primary agent and router fallback from the normalized live policy when live E2E is active
+  - `bot/handlers/coding.py` now derives:
+    - coding stage chain
+    - milestone planner primary agent
+    - control-loop router fallback
+    from the same normalized live policy when live E2E is active
+  - strict live policy now raises instead of silently routing around the configured primary planner when fallback is disabled
+- Observability/preflight:
+  - `/status` now exposes:
+    - `live_e2e_active`
+    - `live_e2e_flow`
+    - `live_e2e_effective_coding_stage_chain`
+  - shared live preflight now fails immediately with `PREFLIGHT_LIVE_POLICY_INACTIVE` if the target gateway is not enforcing the live policy
+- Validation:
+  - targeted suite passed: `61 passed`
+  - live `telegram_real` rerun now fails fast and deterministically with:
+    - `PREFLIGHT_LIVE_POLICY_INACTIVE: gateway is not enforcing live E2E policy`
+  - latest trace: `logs/e2e-live-1773138222.log`
+- Operational follow-up:
+  - canonical settings now track `SKYNET_E2E_LIVE=true` for deployed gateway behavior
+  - gateway tests force `SKYNET_E2E_LIVE=0` by default in `openclaw-gateway/tests/conftest.py` so non-live handler tests keep exercising the normal runtime path unless they opt into live-policy coverage
 
 ### 2026-03-10 Live E2E Validation + Orphaned Test Cleanup
 

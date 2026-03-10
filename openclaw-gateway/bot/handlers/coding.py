@@ -195,6 +195,35 @@ def _runtime_flow() -> str:
     return "direct"
 
 
+def _live_e2e_runtime_policy() -> dict[str, Any]:
+    flow = _runtime_flow()
+    if flow not in {"telegram_real", "conversation"}:
+        return {}
+    if not bool(cfg.get_bool("SKYNET_E2E_LIVE", getattr(cfg, "E2E_LIVE", False))):
+        return {}
+    policy = cfg.get_live_e2e_policy(flow)
+    return dict(policy) if isinstance(policy, dict) else {}
+
+
+def _planner_primary_agent() -> str:
+    live_policy = _live_e2e_runtime_policy()
+    live_agents = list(live_policy.get("required_planner_agents") or [])
+    if live_agents:
+        agent = str(live_agents[0] or "router").strip().lower()
+    else:
+        agent = str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router") or "router").strip().lower()
+    if agent == "claude_ollama":
+        return "claude"
+    return agent
+
+
+def _control_loop_router_fallback_enabled() -> bool:
+    live_policy = _live_e2e_runtime_policy()
+    if live_policy:
+        return bool(live_policy.get("control_loop_router_fallback_enabled", False))
+    return bool(getattr(cfg, "CONTROL_LOOP_ROUTER_FALLBACK_ENABLED", False))
+
+
 async def _emit_runtime(
     *,
     context: ContextTypes.DEFAULT_TYPE | None,
@@ -1016,6 +1045,12 @@ def _build_coding_stage_chain(
     include_legacy: bool = False,
     include_policy_disabled: bool = False,
 ) -> list[str]:
+    live_stage_chain = list(_live_e2e_runtime_policy().get("effective_coding_stage_chain") or [])
+    if live_stage_chain:
+        if include_policy_disabled:
+            return live_stage_chain
+        filtered_chain, _ = _filter_stage_chain_by_policy(live_stage_chain)
+        return filtered_chain
     if _use_control_loop_v1(project):
         raw_chain = _parse_coding_fallback_chain(cfg.CODING_FALLBACK_CHAIN)
         if include_policy_disabled:
@@ -7973,11 +8008,14 @@ async def _extract_milestones_codex_then_router(
         project["_loop_risk_assessment"] = []
         project["_loop_node_specs"] = []
 
-    planner_agent = str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router") or "router").strip().lower()
-    if planner_agent == "claude_ollama":
-        planner_agent = "claude"
-    allow_router_fallback = bool(getattr(cfg, "CONTROL_LOOP_ROUTER_FALLBACK_ENABLED", False))
+    planner_agent = _planner_primary_agent()
+    allow_router_fallback = _control_loop_router_fallback_enabled()
     if planner_agent not in _planner_worker_agents():
+        if _live_e2e_runtime_policy():
+            raise RuntimeError(
+                "Milestone planner fallback is disabled and the primary agent "
+                f"'{planner_agent}' is not eligible."
+            )
         if allow_router_fallback:
             return await _extract_milestones_router(router, project)
         fallback = _deterministic_fallback()

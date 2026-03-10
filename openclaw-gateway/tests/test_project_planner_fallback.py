@@ -172,3 +172,36 @@ async def test_planner_ssh_mode_forces_send_action_path():
     assert reply == "Codex planner over SSH"
     runner.start_session.assert_not_called()
     runner.run_prompt.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_planner_live_policy_blocks_router_fallback(monkeypatch: pytest.MonkeyPatch):
+    router = MagicMock()
+    router.chat = AsyncMock(return_value=MagicMock(text="Router fallback reply"))
+
+    monkeypatch.setenv("SKYNET_E2E_LIVE", "1")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_FLOW", "telegram_real")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_ALLOW_FALLBACK", "0")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_AGENT", "qwen")
+
+    with (
+        patch("bot.handlers.project.cfg.PLANNER_PRIMARY_AGENT", "codex"),
+        patch("bot.handlers.project.cfg.PLANNER_ROUTER_FALLBACK_ENABLED", True),
+        patch("bot.handlers.project.cfg.CONTROL_LOOP_ENABLED", True),
+        patch("bot.handlers.project.cfg.CONTROL_LOOP_FORCE_FOR_ALL", True),
+        patch("bot.handlers.project.cfg.CONTROL_LOOP_PLANNER_AGENT", "qwen"),
+        patch("bot.handlers.project.cfg.CONTROL_LOOP_CRITIC_AGENT", "qwen"),
+        patch("bot.handlers.project.cfg.PLANNER_WORKER_AGENTS", ("codex",)),
+        patch("bot.handlers.project.send_action", new=AsyncMock()),
+    ):
+        with pytest.raises(RuntimeError, match="fallback is disabled"):
+            await _planner_via_codex_then_router(
+                router=router,
+                messages=[{"role": "user", "content": "plan this"}],
+                system="planner system",
+                max_tokens=512,
+                task_type="planning",
+                user_id=42,
+            )
+
+    router.chat.assert_not_awaited()

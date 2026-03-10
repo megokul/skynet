@@ -257,6 +257,7 @@ async def handle_status(request: web.Request) -> web.Response:
     diagnostics = ssh_exec.get_diagnostics()
     agent_status = get_agent_status()
     poller_status = get_telegram_poller_status()
+    live_e2e_policy = cfg.get_live_e2e_policy()
     execution_mode_effective = "ssh_tunnel" if force_ssh else "agent_preferred"
     websocket_health_ok = bool(agent_status.get("websocket_health_ok", False))
     if force_ssh:
@@ -295,6 +296,12 @@ async def handle_status(request: web.Request) -> web.Response:
         "ssh_endpoint": str(diagnostics.get("ssh_endpoint", f"{ssh_exec.host}:{ssh_exec.port}")),
         "worker_capabilities": list(agent_status.get("worker_capabilities") or []),
         "coding_agents": dict(agent_status.get("coding_agents") or {}),
+        "live_e2e_active": bool(live_e2e_policy.get("active", False)),
+        "live_e2e_flow": str(live_e2e_policy.get("flow") or ""),
+        "live_e2e_allow_fallback": bool(live_e2e_policy.get("allow_fallback", False)),
+        "live_e2e_effective_coding_stage_chain": list(
+            live_e2e_policy.get("effective_coding_stage_chain") or []
+        ),
         **poller_status,
     })
 

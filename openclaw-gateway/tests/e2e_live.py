@@ -32,7 +32,7 @@ for candidate in (str(REPO_ROOT), str(GATEWAY_ROOT)):
         sys.path.insert(0, candidate)
 
 from live_settings import auto_detect_env_file, build_gateway_runtime_env, trace_gateway_runtime
-from live_diagnostics import LiveTrace
+from live_diagnostics import LiveRunCleanupManager, LiveTrace
 
 
 PROMPT = (
@@ -176,23 +176,37 @@ def _infer_infra_category(output: str) -> str:
 
 
 def _apply_live_policy_env(env: dict[str, str], flow: str) -> dict[str, str]:
-    policy = _get_cfg().get_live_e2e_policy(flow)
-    env["SKYNET_E2E_FAIL_ON_SKIP"] = os.environ.get("SKYNET_E2E_FAIL_ON_SKIP", "1")
-    env["SKYNET_E2E_ALLOW_SSH_FALLBACK"] = "1" if bool(policy.get("allow_fallback", False)) else "0"
-    env["SKYNET_E2E_REQUIRE_WEBSOCKET_PRIMARY"] = (
-        "1" if str(policy.get("required_transport") or "") == "websocket_primary" else "0"
-    )
-    env["SKYNET_E2E_RUNTIME_TRACE_STALE_SECONDS"] = str(
-        int(policy.get("runtime_trace_stale_seconds", 90) or 90)
-    )
-    env["SKYNET_E2E_MESSAGE_PROGRESS_TIMEOUT_SECONDS"] = str(
-        int(policy.get("message_progress_timeout_seconds", 90) or 90)
-    )
-    env["SKYNET_E2E_DIAGNOSTICS_PROFILE"] = str(policy.get("diagnostics_profile") or "")
+    runtime_env = _get_cfg().get_live_e2e_runtime_env(flow)
+    for key, value in runtime_env.items():
+        env[key] = str(value)
     return env
 
 
-def _run_conversation_flow(trace: LiveTrace) -> None:
+def _run_subprocess_with_cleanup(
+    *,
+    cmd: list[str],
+    env: dict[str, str],
+    cleanup: LiveRunCleanupManager,
+    label: str,
+) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(REPO_ROOT),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        errors="replace",
+    )
+    cleanup.register_subprocess(proc, label=label)
+    try:
+        stdout, stderr = proc.communicate()
+    finally:
+        cleanup.unregister_subprocess(proc)
+    return subprocess.CompletedProcess(cmd, int(proc.returncode or 0), stdout, stderr)
+
+
+def _run_conversation_flow(trace: LiveTrace, cleanup: LiveRunCleanupManager) -> None:
     target = (
         "openclaw-gateway/tests/test_e2e_conversation_live.py::"
         "test_live_conversation_real_planner_codegen_no_github_push"
@@ -209,14 +223,11 @@ def _run_conversation_flow(trace: LiveTrace) -> None:
         repo_root=str(REPO_ROOT),
         cmd=" ".join(cmd),
     )
-    completed = subprocess.run(
-        cmd,
-        cwd=str(REPO_ROOT),
+    completed = _run_subprocess_with_cleanup(
+        cmd=cmd,
         env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        errors="replace",
+        cleanup=cleanup,
+        label="conversation_pytest",
     )
     if completed.stdout:
         print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
@@ -271,7 +282,7 @@ def _run_conversation_flow(trace: LiveTrace) -> None:
     print(f"[TRACE] {trace.path}")
 
 
-def _run_telegram_real_flow(trace: LiveTrace) -> None:
+def _run_telegram_real_flow(trace: LiveTrace, cleanup: LiveRunCleanupManager) -> None:
     target = (
         "openclaw-gateway/tests/test_e2e_telegram_real_live.py::"
         "test_real_telegram_chat_flow_no_github_repo_creation"
@@ -288,14 +299,11 @@ def _run_telegram_real_flow(trace: LiveTrace) -> None:
         repo_root=str(REPO_ROOT),
         cmd=" ".join(cmd),
     )
-    completed = subprocess.run(
-        cmd,
-        cwd=str(REPO_ROOT),
+    completed = _run_subprocess_with_cleanup(
+        cmd=cmd,
         env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        errors="replace",
+        cleanup=cleanup,
+        label="telegram_real_pytest",
     )
     if completed.stdout:
         print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
@@ -514,16 +522,23 @@ async def run() -> None:
     cfg_module = _get_cfg(reload_module=True)
     flow = cfg_module.get_live_e2e_flow()
     policy = cfg_module.get_live_e2e_policy(flow)
+    cleanup = LiveRunCleanupManager(
+        trace_fn=trace.log,
+        config_override=dict(policy.get("cleanup") or {}),
+    )
     trace.log("run.policy", **policy)
-    _check_env(trace, flow, policy)
-    trace.log("run.mode", flow=flow)
-    if flow in {"conversation", "chat"}:
-        _run_conversation_flow(trace)
-        return
-    if flow in {"telegram_real", "telegram", "real_telegram"}:
-        _run_telegram_real_flow(trace)
-        return
-    await _run_direct_flow(trace)
+    try:
+        _check_env(trace, flow, policy)
+        trace.log("run.mode", flow=flow)
+        if flow in {"conversation", "chat"}:
+            _run_conversation_flow(trace, cleanup)
+            return
+        if flow in {"telegram_real", "telegram", "real_telegram"}:
+            _run_telegram_real_flow(trace, cleanup)
+            return
+        await _run_direct_flow(trace)
+    finally:
+        cleanup.cleanup(reason="run_exit")
 
 
 if __name__ == "__main__":

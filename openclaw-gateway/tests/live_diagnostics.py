@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import time
 from collections import deque
@@ -295,6 +296,276 @@ def _normalize_container_log_config(config_override: dict[str, Any] | None = Non
     return base
 
 
+def _normalize_cleanup_config(config_override: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = _get_config_module()
+    base = dict(cfg.get_live_e2e_cleanup_config())
+    override = dict(config_override or {})
+    if "targets" in override:
+        override["targets"] = [
+            str(item).strip().lower()
+            for item in list(override.get("targets") or [])
+            if str(item).strip()
+        ]
+    base.update(override)
+    base["enabled"] = bool(base.get("enabled", True))
+    base["targets"] = [
+        str(item).strip().lower()
+        for item in list(base.get("targets") or [])
+        if str(item).strip()
+    ]
+    base["grace_seconds"] = max(1, int(base.get("grace_seconds") or 5))
+    return base
+
+
+def _normalize_process_command_line(command_line: str) -> str:
+    return str(command_line or "").replace("\\", "/").lower()
+
+
+def _list_local_processes() -> list[dict[str, Any]]:
+    if sys.platform == "win32":
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+            "Get-CimInstance Win32_Process | "
+            "Select-Object ProcessId,ParentProcessId,Name,CommandLine | "
+            "ConvertTo-Json -Compress",
+        ]
+        completed = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "powershell process query failed")
+        raw = completed.stdout.strip()
+        if not raw:
+            return []
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            payload = [payload]
+        records: list[dict[str, Any]] = []
+        for item in list(payload or []):
+            if not isinstance(item, dict):
+                continue
+            try:
+                pid = int(item.get("ProcessId") or 0)
+            except (TypeError, ValueError):
+                pid = 0
+            try:
+                ppid = int(item.get("ParentProcessId") or 0)
+            except (TypeError, ValueError):
+                ppid = 0
+            if pid <= 0:
+                continue
+            records.append(
+                {
+                    "pid": pid,
+                    "ppid": ppid,
+                    "name": str(item.get("Name") or ""),
+                    "command_line": str(item.get("CommandLine") or ""),
+                }
+            )
+        return records
+
+    completed = subprocess.run(
+        ["ps", "-eo", "pid=,ppid=,comm=,args="],
+        capture_output=True,
+        text=True,
+        check=False,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "ps process query failed")
+    records: list[dict[str, Any]] = []
+    for raw_line in completed.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except ValueError:
+            continue
+        records.append(
+            {
+                "pid": pid,
+                "ppid": ppid,
+                "name": parts[2],
+                "command_line": parts[3],
+            }
+        )
+    return records
+
+
+def _match_cleanup_target(
+    *,
+    process: dict[str, Any],
+    target: str,
+    repo_root: Path,
+) -> bool:
+    command_line = _normalize_process_command_line(process.get("command_line") or "")
+    if not command_line:
+        return False
+    repo_marker = _normalize_process_command_line(str(repo_root))
+    if repo_marker not in command_line:
+        return False
+    if target == "worker_launcher":
+        return "scripts/run_worker_agent.ps1" in command_line
+    if target == "worker_agent":
+        return "openclaw-agent/main.py" in command_line
+    if target == "live_runner":
+        return "openclaw-gateway/tests/e2e_live.py" in command_line
+    return False
+
+
+def _terminate_process_tree(pid: int, *, grace_seconds: int) -> dict[str, Any]:
+    if pid <= 0:
+        return {"status": "invalid_pid", "detail": "pid<=0"}
+    if sys.platform == "win32":
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(5, int(grace_seconds) + 5),
+        )
+        detail = (completed.stdout or completed.stderr or "").strip()
+        if completed.returncode == 0:
+            return {"status": "terminated", "detail": detail}
+        lowered = detail.lower()
+        if "not found" in lowered or "no running instance" in lowered or "not valid" in lowered:
+            return {"status": "missing", "detail": detail}
+        return {"status": "error", "detail": detail or f"taskkill returncode={completed.returncode}"}
+
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(int(pid), 15)
+    deadline = time.monotonic() + max(1, int(grace_seconds))
+    while time.monotonic() < deadline:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(int(pid), 0)
+            time.sleep(0.1)
+            continue
+        return {"status": "terminated", "detail": "terminated"}
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(int(pid), 9)
+        return {"status": "killed", "detail": "killed"}
+    return {"status": "missing", "detail": "already_exited"}
+
+
+class LiveRunCleanupManager:
+    def __init__(
+        self,
+        *,
+        trace_fn: Callable[..., None],
+        config_override: dict[str, Any] | None = None,
+    ) -> None:
+        self._trace = trace_fn
+        self._config = _normalize_cleanup_config(config_override)
+        self._repo_root = REPO_ROOT
+        self._registered: dict[int, str] = {}
+        self._cleaned = False
+
+    @property
+    def config(self) -> dict[str, Any]:
+        return dict(self._config)
+
+    def register_subprocess(self, process: subprocess.Popen[str], *, label: str) -> None:
+        pid = int(getattr(process, "pid", 0) or 0)
+        if pid <= 0:
+            return
+        self._registered[pid] = str(label or "subprocess")
+        self._trace("test.cleanup.register", status="ok", pid=pid, label=self._registered[pid])
+
+    def unregister_subprocess(self, process: subprocess.Popen[str] | None) -> None:
+        pid = int(getattr(process, "pid", 0) or 0)
+        if pid > 0:
+            self._registered.pop(pid, None)
+
+    def cleanup(self, *, reason: str) -> list[dict[str, Any]]:
+        if self._cleaned:
+            return []
+        self._cleaned = True
+        if not bool(self._config.get("enabled", True)):
+            self._trace("test.cleanup.disabled", status="skip", reason=reason)
+            return []
+
+        results: list[dict[str, Any]] = []
+        tracked = sorted(self._registered.items())
+        self._trace(
+            "test.cleanup.start",
+            status="start",
+            reason=reason,
+            targets=list(self._config.get("targets") or []),
+            tracked_pids=[pid for pid, _label in tracked],
+        )
+
+        handled: set[int] = set()
+        for pid, label in tracked:
+            result = _terminate_process_tree(pid, grace_seconds=int(self._config["grace_seconds"]))
+            handled.add(pid)
+            record = {
+                "pid": pid,
+                "label": label,
+                "target": "registered_subprocess",
+                **result,
+            }
+            results.append(record)
+            self._trace("test.cleanup.item", **record)
+
+        try:
+            processes = _list_local_processes()
+        except Exception as exc:
+            self._trace(
+                "test.cleanup.error",
+                status="fail",
+                reason=reason,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return results
+
+        current_pid = os.getpid()
+        matched: list[tuple[int, str, str]] = []
+        for process in processes:
+            pid = int(process.get("pid") or 0)
+            if pid <= 0 or pid == current_pid or pid in handled:
+                continue
+            for target in list(self._config.get("targets") or []):
+                if _match_cleanup_target(process=process, target=target, repo_root=self._repo_root):
+                    matched.append((pid, target, str(process.get("name") or "")))
+                    break
+
+        matched.sort(key=lambda item: item[0])
+        for pid, target, name in matched:
+            result = _terminate_process_tree(pid, grace_seconds=int(self._config["grace_seconds"]))
+            record = {
+                "pid": pid,
+                "label": name or target,
+                "target": target,
+                **result,
+            }
+            results.append(record)
+            self._trace("test.cleanup.item", **record)
+
+        self._trace(
+            "test.cleanup.end",
+            status="ok",
+            reason=reason,
+            cleaned=len(results),
+        )
+        return results
+
+
 async def fetch_local_gateway_status(*, url: str, timeout_seconds: int = 10) -> dict[str, Any]:
     timeout = aiohttp.ClientTimeout(total=max(1, int(timeout_seconds)))
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -397,8 +668,16 @@ async def run_live_e2e_preflight(
         websocket_health_ok=bool(status_payload.get("websocket_health_ok", False)),
         telegram_poller_state=str(status_payload.get("telegram_poller_state") or ""),
         telegram_poller_lock_healthy=bool(status_payload.get("telegram_poller_lock_healthy", False)),
+        live_e2e_active=bool(status_payload.get("live_e2e_active", False)),
+        live_e2e_flow=str(status_payload.get("live_e2e_flow") or ""),
+        live_e2e_effective_coding_stage_chain=list(
+            status_payload.get("live_e2e_effective_coding_stage_chain") or []
+        ),
         coding_agents=sorted(dict(status_payload.get("coding_agents") or {}).keys()),
     )
+
+    if not bool(status_payload.get("live_e2e_active", False)):
+        raise AssertionError("PREFLIGHT_LIVE_POLICY_INACTIVE: gateway is not enforcing live E2E policy")
 
     required_transport = str(policy.get("required_transport") or "").strip().lower()
     actual_transport = str(status_payload.get("primary_transport_mode") or "").strip().lower()

@@ -88,6 +88,16 @@ def _runtime_flow() -> str:
     return "direct"
 
 
+def _live_e2e_runtime_policy() -> dict[str, object]:
+    flow = _runtime_flow()
+    if flow not in {"telegram_real", "conversation"}:
+        return {}
+    if not bool(cfg.get_bool("SKYNET_E2E_LIVE", getattr(cfg, "E2E_LIVE", False))):
+        return {}
+    policy = cfg.get_live_e2e_policy(flow)
+    return dict(policy) if isinstance(policy, dict) else {}
+
+
 async def _emit_runtime(
     *,
     context: ContextTypes.DEFAULT_TYPE,
@@ -352,10 +362,22 @@ def _planner_action_text(result: dict) -> str:
 
 
 def _planner_primary_agent() -> str:
-    agent = str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router") or "router").strip().lower()
+    live_policy = _live_e2e_runtime_policy()
+    live_agents = list(live_policy.get("required_planner_agents") or [])
+    if live_agents:
+        agent = str(live_agents[0] or "router").strip().lower()
+    else:
+        agent = str(getattr(cfg, "PLANNER_PRIMARY_AGENT", "router") or "router").strip().lower()
     if agent == "claude_ollama":
         return "claude"
     return agent
+
+
+def _planner_router_fallback_enabled() -> bool:
+    live_policy = _live_e2e_runtime_policy()
+    if live_policy:
+        return bool(live_policy.get("planner_router_fallback_enabled", False))
+    return bool(getattr(cfg, "PLANNER_ROUTER_FALLBACK_ENABLED", True))
 
 
 def _planner_worker_agents() -> set[str]:
@@ -385,7 +407,11 @@ async def _planner_via_codex_then_router(
 ) -> str:
     planner_agent = _planner_primary_agent()
     use_planner_agent = planner_agent in _planner_worker_agents()
-    allow_router_fallback = bool(getattr(cfg, "PLANNER_ROUTER_FALLBACK_ENABLED", True))
+    allow_router_fallback = _planner_router_fallback_enabled()
+    if not use_planner_agent and not allow_router_fallback:
+        raise RuntimeError(
+            f"Planner fallback is disabled and the primary agent '{planner_agent}' is not eligible."
+        )
     if use_planner_agent:
         sandbox_dir = _planner_sandbox_dir(user_id)
         planner_prompt = (

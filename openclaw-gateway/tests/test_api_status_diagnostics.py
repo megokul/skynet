@@ -37,6 +37,7 @@ class _StubSSHExecutor:
 async def test_status_includes_ssh_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     stub = _StubSSHExecutor(configured=True, ok=False, detail="SSH circuit open")
     monkeypatch.setenv("OPENCLAW_EXECUTION_MODE", "ssh_tunnel")
+    monkeypatch.setenv("SKYNET_E2E_LIVE", "1")
     monkeypatch.setattr(gateway_api, "get_ssh_executor", lambda: stub)
     monkeypatch.setattr(gateway_api, "is_agent_connected", lambda: False)
     monkeypatch.setattr(
@@ -96,12 +97,15 @@ async def test_status_includes_ssh_diagnostics(monkeypatch: pytest.MonkeyPatch) 
     assert payload["telegram_poller_state"] == "blocked"
     assert payload["telegram_poller_lease_owner"] == "gw-remote"
     assert payload["telegram_poller_lock_healthy"] is False
+    assert payload["live_e2e_active"] is True
+    assert payload["live_e2e_effective_coding_stage_chain"] == ["qwen"]
 
 
 @pytest.mark.asyncio
 async def test_status_prefers_websocket_primary_when_healthy(monkeypatch: pytest.MonkeyPatch) -> None:
     stub = _StubSSHExecutor(configured=True, ok=True, detail="SSH healthy")
     monkeypatch.setenv("OPENCLAW_EXECUTION_MODE", "agent_preferred")
+    monkeypatch.setenv("SKYNET_E2E_LIVE", "1")
     monkeypatch.setattr(gateway_api, "get_ssh_executor", lambda: stub)
     monkeypatch.setattr(gateway_api, "is_agent_connected", lambda: True)
     monkeypatch.setattr(
@@ -149,3 +153,4 @@ async def test_status_prefers_websocket_primary_when_healthy(monkeypatch: pytest
     assert payload["websocket_health_ok"] is True
     assert payload["telegram_poller_state"] == "running"
     assert payload["telegram_poller_lock_healthy"] is True
+    assert payload["live_e2e_active"] is True

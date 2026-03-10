@@ -30,6 +30,7 @@ os.environ.setdefault("SKYNET_AUTH_TOKEN",            "test-auth-token")
 os.environ.setdefault("OPENCLAW_PROJECT_BASE_DIR",    "E:/SKYNET-SANDBOX/Projects")
 os.environ.setdefault("SKYNET_ORCHESTRATION_MODE",    "legacy")
 os.environ.setdefault("SKYNET_OPENCLAW_AGENT_HOSTING", "ec2_control")
+os.environ.setdefault("SKYNET_E2E_LIVE",              "0")
 
 # ── Shared mock-builder helpers (imported by test modules) ──────────────────
 

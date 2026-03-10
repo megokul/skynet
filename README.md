@@ -364,6 +364,7 @@ Get-Content E:\MyProjects\skynet\logs\e2e-live-*.log -Wait
 
 Runtime trace control flags:
 
+- `SKYNET_E2E_LIVE=1`
 - `SKYNET_RUNTIME_TRACE_ENABLED=1`
 - `SKYNET_RUNTIME_TRACE_LEVEL=info`
 - `SKYNET_RUNTIME_TRACE_PAYLOAD_MODE=redacted_hash`
@@ -384,6 +385,18 @@ Shared live E2E container log flags:
 - `SKYNET_E2E_CONTAINER_LOG_TAIL_OVERRIDES=openclaw-gateway=200,skynet-api=100`
 - `SKYNET_E2E_RUNTIME_TRACE_STALE_SECONDS=90`
 
+Shared live E2E cleanup flags:
+
+- `SKYNET_LIVE_E2E_CLEANUP_AFTER_RUN=1`
+- `SKYNET_LIVE_E2E_CLEANUP_TARGETS=worker_launcher,worker_agent`
+- `SKYNET_LIVE_E2E_CLEANUP_GRACE_SECONDS=5`
+
+When cleanup is enabled, the shared runner tears down repo-rooted live E2E processes in `finally` after the run:
+
+- tracked pytest subprocesses started by `openclaw-gateway/tests/e2e_live.py`
+- `scripts/run_worker_agent.ps1` launcher trees
+- repo-rooted `openclaw-agent/main.py` processes
+
 Container stream SSH credential resolution order:
 
 1. `SKYNET_E2E_CONTAINER_LOG_SSH_HOST`, `SKYNET_E2E_CONTAINER_LOG_SSH_USER`, `SKYNET_E2E_CONTAINER_LOG_SSH_KEY`
@@ -391,6 +404,8 @@ Container stream SSH credential resolution order:
 3. If stream is required and still unresolved, E2E fails early with `CONTAINER_LOG_STREAM_UNAVAILABLE`.
 
 During `conversation` and `telegram_real`, live E2E now emits `container.log.stream.*`, `container.log.line`, and a final `container.log.bundle` event into the same trace file for single-timeline debugging.
+
+When `SKYNET_E2E_LIVE=1`, gateway runtime handlers consume the normalized live-E2E policy directly for planner selection, coding stage selection, and router fallback. `/status` reports `live_e2e_active`, `live_e2e_flow`, and `live_e2e_effective_coding_stage_chain`, and shared preflight fails fast if the target gateway is not enforcing that policy.
 
 ### Telegram Coding Tracker
 

@@ -75,6 +75,17 @@ def test_effective_coding_profile_force_all_override():
         assert _build_coding_stage_chain(project) == []
 
 
+def test_build_coding_stage_chain_uses_live_policy_when_active(monkeypatch: pytest.MonkeyPatch):
+    project = {"coding_profile": "codex_primary"}
+    monkeypatch.setenv("SKYNET_E2E_LIVE", "1")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_FLOW", "telegram_real")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_AGENT", "qwen")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_ALLOW_FALLBACK", "0")
+    monkeypatch.setenv("SKYNET_CODING_FALLBACK_CHAIN", "qwen,codex")
+
+    assert _build_coding_stage_chain(project) == ["qwen"]
+
+
 @pytest.mark.asyncio
 async def test_preflight_all_chain_agents_unavailable_fails():
     project = {"id": "proj_pf_all_down", "coding_profile": "codex_primary"}

@@ -98,6 +98,33 @@ def _terminal_coding_failure_text(text: str) -> str:
     return ""
 
 
+def _strict_stage_policy_violation_text(text: str, *, allowed_stages: set[str]) -> str:
+    raw = str(text or "").strip()
+    if not raw or not allowed_stages:
+        return ""
+    lowered = raw.lower()
+    fallback_match = re.search(
+        r"stage\s+([a-z0-9_]+)\s+failed\b.*?\btrying\s+([a-z0-9_]+)\b",
+        lowered,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if fallback_match:
+        next_stage = str(fallback_match.group(2) or "").strip().lower()
+        if next_stage and next_stage not in allowed_stages:
+            return raw
+    for pattern in (
+        r"\brunning stage ([a-z0-9_]+)\b",
+        r"\bstage=([a-z0-9_]+)\b",
+    ):
+        match = re.search(pattern, lowered, flags=re.IGNORECASE)
+        if not match:
+            continue
+        stage = str(match.group(1) or "").strip().lower()
+        if stage and stage not in allowed_stages:
+            return raw
+    return ""
+
+
 class _RuntimeTraceProgress:
     def __init__(self) -> None:
         self.last_mtime_iso = ""
@@ -583,6 +610,11 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
     message_progress_timeout_seconds = int(policy.get("message_progress_timeout_seconds", 90) or 90)
     require_websocket_primary = str(policy.get("required_transport") or "") == "websocket_primary"
     allow_ssh_fallback = bool(policy.get("allow_fallback", False))
+    allowed_live_stages = {
+        str(stage).strip().lower()
+        for stage in list(policy.get("effective_coding_stage_chain") or [])
+        if str(stage).strip()
+    }
     runtime_progress = _RuntimeTraceProgress()
     bundle_status = "ok"
     bundle_reason = "test_success"
@@ -593,6 +625,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
         flow="hi_to_project_completion",
         required_transport=policy.get("required_transport"),
         allow_fallback=bool(policy.get("allow_fallback", False)),
+        effective_coding_stage_chain=sorted(allowed_live_stages),
         required_worker_agents=list(policy.get("required_worker_agents") or []),
         container_stream_enabled=stream_config["stream_enabled"],
         container_stream_required=stream_config["require_stream"],
@@ -887,6 +920,15 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                                 terminal_tracker_failure,
                                 reason="tracker_terminal_failure",
                             )
+                        strict_stage_violation = _strict_stage_policy_violation_text(
+                            tracker_last_text,
+                            allowed_stages=allowed_live_stages,
+                        )
+                        if strict_stage_violation:
+                            _raise_terminal_coding_failure(
+                                strict_stage_violation,
+                                reason="tracker_stage_policy_violation",
+                            )
                     timeout_snapshot = _emit_runtime_trace_snapshot(
                         trace,
                         checkpoint=f"coding_poll_timeout_{idx + 1}",
@@ -964,6 +1006,15 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                     _raise_terminal_coding_failure(
                         terminal_failure_text,
                         reason="message_terminal_failure",
+                    )
+                strict_stage_violation = _strict_stage_policy_violation_text(
+                    text,
+                    allowed_stages=allowed_live_stages,
+                )
+                if strict_stage_violation:
+                    _raise_terminal_coding_failure(
+                        strict_stage_violation,
+                        reason="message_stage_policy_violation",
                     )
 
                 if any(marker in lowered for marker in preflight_fail_markers):
@@ -1045,6 +1096,15 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                         _raise_terminal_coding_failure(
                             terminal_tracker_failure,
                             reason="tracker_terminal_failure",
+                        )
+                    strict_stage_violation = _strict_stage_policy_violation_text(
+                        tracker_last_text,
+                        allowed_stages=allowed_live_stages,
+                    )
+                    if strict_stage_violation:
+                        _raise_terminal_coding_failure(
+                            strict_stage_violation,
+                            reason="tracker_stage_policy_violation",
                         )
 
                 if "github repo created and pushed" in lowered:

@@ -55,3 +55,29 @@ def test_terminal_coding_failure_text_detects_tracker_final_failure() -> None:
 def test_terminal_coding_failure_text_detects_direct_failure_message() -> None:
     text = "Worker not connected - cannot create project folder."
     assert telegram_real_live._terminal_coding_failure_text(text) == text
+
+
+def test_strict_stage_policy_violation_detects_fallback_message() -> None:
+    text = "⚠️ Stage qwen failed (no runnable files generated). Trying codex..."
+    assert (
+        telegram_real_live._strict_stage_policy_violation_text(
+            text,
+            allowed_stages={"qwen"},
+        )
+        == text
+    )
+
+
+def test_strict_stage_policy_violation_detects_tracker_stage_switch() -> None:
+    text = (
+        "Coding Progress [####----------------] 20%\n"
+        "Phase: Milestone Execution - Running stage codex (2/2)\n"
+        "Pipeline: stage=codex | runtime=ssh"
+    )
+    assert (
+        telegram_real_live._strict_stage_policy_violation_text(
+            text,
+            allowed_stages={"qwen"},
+        )
+        == text
+    )

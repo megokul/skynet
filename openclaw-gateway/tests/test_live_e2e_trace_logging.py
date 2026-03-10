@@ -189,18 +189,70 @@ def test_live_e2e_policy_derives_required_worker_agents(monkeypatch) -> None:
     monkeypatch.setattr(gateway_config, "CONTROL_LOOP_FORCE_FOR_ALL", True)
     monkeypatch.setattr(gateway_config, "CONTROL_LOOP_PLANNER_AGENT", "qwen")
     monkeypatch.setattr(gateway_config, "CONTROL_LOOP_CRITIC_AGENT", "qwen")
+    monkeypatch.setenv("SKYNET_E2E_LIVE", "1")
     monkeypatch.setenv("SKYNET_LIVE_E2E_AGENT", "qwen")
     monkeypatch.setenv("SKYNET_LIVE_E2E_ALLOW_FALLBACK", "0")
 
     policy = gateway_config.get_live_e2e_policy("telegram_real")
 
+    assert policy["active"] is True
     assert policy["required_transport"] == "websocket_primary"
     assert policy["allow_fallback"] is False
+    assert policy["effective_coding_stage_chain"] == ["qwen"]
+    assert policy["planner_router_fallback_enabled"] is False
+    assert policy["control_loop_router_fallback_enabled"] is False
     assert policy["required_coding_agents"] == ["qwen"]
     assert policy["required_planner_agents"] == ["qwen"]
     assert policy["required_worker_agents"] == ["qwen"]
     assert policy["require_telegram_poller"] is True
     assert policy["status_probe_mode"] == "remote_container_http"
+
+
+def test_live_e2e_runtime_env_clamps_stage_fallback_when_strict(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_config, "CONTROL_LOOP_ENABLED", True)
+    monkeypatch.setattr(gateway_config, "CONTROL_LOOP_FORCE_FOR_ALL", True)
+    monkeypatch.setattr(gateway_config, "CONTROL_LOOP_PLANNER_AGENT", "qwen")
+    monkeypatch.setattr(gateway_config, "CONTROL_LOOP_CRITIC_AGENT", "qwen")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_AGENT", "qwen")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_ALLOW_FALLBACK", "0")
+    monkeypatch.setenv("SKYNET_CODING_FALLBACK_CHAIN", "qwen,codex")
+    monkeypatch.setenv("SKYNET_PLANNER_ROUTER_FALLBACK_ENABLED", "1")
+
+    env = gateway_config.get_live_e2e_runtime_env("telegram_real")
+
+    assert env["SKYNET_E2E_LIVE"] == "1"
+    assert env["SKYNET_CODING_FALLBACK_CHAIN"] == "qwen"
+    assert env["SKYNET_OPENCLAW_STAGE_CHAIN"] == "qwen"
+    assert env["SKYNET_PLANNER_ROUTER_FALLBACK_ENABLED"] == "0"
+    assert env["SKYNET_CONTROL_LOOP_ROUTER_FALLBACK_ENABLED"] == "0"
+
+
+def test_live_e2e_cleanup_config_defaults(monkeypatch) -> None:
+    for key in (
+        "SKYNET_LIVE_E2E_CLEANUP_AFTER_RUN",
+        "SKYNET_LIVE_E2E_CLEANUP_TARGETS",
+        "SKYNET_LIVE_E2E_CLEANUP_GRACE_SECONDS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    cfg = gateway_config.get_live_e2e_cleanup_config()
+    assert cfg["enabled"] is True
+    assert cfg["targets"] == ["worker_launcher", "worker_agent"]
+    assert cfg["grace_seconds"] == 5
+
+
+def test_live_e2e_cleanup_config_env_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("SKYNET_LIVE_E2E_CLEANUP_AFTER_RUN", "0")
+    monkeypatch.setenv(
+        "SKYNET_LIVE_E2E_CLEANUP_TARGETS",
+        "live_runner,worker_launcher,invalid,worker_agent",
+    )
+    monkeypatch.setenv("SKYNET_LIVE_E2E_CLEANUP_GRACE_SECONDS", "11")
+
+    cfg = gateway_config.get_live_e2e_cleanup_config()
+    assert cfg["enabled"] is False
+    assert cfg["targets"] == ["live_runner", "worker_launcher", "worker_agent"]
+    assert cfg["grace_seconds"] == 11
 
 
 @pytest.mark.asyncio
@@ -242,6 +294,90 @@ async def test_container_snapshot_uses_configured_tail_counts(monkeypatch, tmp_p
     assert tails["worker"] == ["2026-03-09T12:00:00Z hello"]
     assert any("--tail 200 --timestamps openclaw-gateway" in cmd for cmd in calls)
     assert any("--tail 55 --timestamps worker" in cmd for cmd in calls)
+
+
+def test_live_run_cleanup_manager_terminates_matching_repo_processes(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+    terminated: list[tuple[int, int]] = []
+    repo_root = str(live_diagnostics.REPO_ROOT)
+
+    def _trace(event: str, **fields) -> None:
+        events.append((event, fields))
+
+    monkeypatch.setattr(
+        live_diagnostics,
+        "_list_local_processes",
+        lambda: [
+            {
+                "pid": 4100,
+                "ppid": 1,
+                "name": "powershell.exe",
+                "command_line": f'powershell -File "{repo_root}\\scripts\\run_worker_agent.ps1"',
+            },
+            {
+                "pid": 4200,
+                "ppid": 4100,
+                "name": "python.exe",
+                "command_line": f'"{repo_root}\\venv\\Scripts\\python.exe" "{repo_root}\\openclaw-agent\\main.py"',
+            },
+            {
+                "pid": 4300,
+                "ppid": 1,
+                "name": "python.exe",
+                "command_line": '"C:\\elsewhere\\python.exe" "C:\\elsewhere\\openclaw-agent\\main.py"',
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        live_diagnostics,
+        "_terminate_process_tree",
+        lambda pid, *, grace_seconds: terminated.append((pid, grace_seconds)) or {"status": "terminated", "detail": "ok"},
+    )
+
+    cleanup = live_diagnostics.LiveRunCleanupManager(
+        trace_fn=_trace,
+        config_override={
+            "enabled": True,
+            "targets": ["worker_launcher", "worker_agent"],
+            "grace_seconds": 7,
+        },
+    )
+    cleanup.cleanup(reason="unit_test")
+
+    assert terminated == [(4100, 7), (4200, 7)]
+    assert any(event == "test.cleanup.start" for event, _fields in events)
+    assert any(event == "test.cleanup.end" for event, _fields in events)
+
+
+def test_live_run_cleanup_manager_terminates_registered_subprocesses(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+    terminated: list[tuple[int, int]] = []
+
+    class _Proc:
+        pid = 5100
+
+    def _trace(event: str, **fields) -> None:
+        events.append((event, fields))
+
+    monkeypatch.setattr(live_diagnostics, "_list_local_processes", lambda: [])
+    monkeypatch.setattr(
+        live_diagnostics,
+        "_terminate_process_tree",
+        lambda pid, *, grace_seconds: terminated.append((pid, grace_seconds)) or {"status": "terminated", "detail": "ok"},
+    )
+
+    cleanup = live_diagnostics.LiveRunCleanupManager(
+        trace_fn=_trace,
+        config_override={"enabled": True, "targets": ["worker_launcher"], "grace_seconds": 3},
+    )
+    cleanup.register_subprocess(_Proc(), label="telegram_real_pytest")
+    cleanup.cleanup(reason="interrupt")
+
+    assert terminated == [(5100, 3)]
+    assert any(
+        event == "test.cleanup.item" and fields.get("target") == "registered_subprocess"
+        for event, fields in events
+    )
 
 
 @pytest.mark.asyncio
@@ -305,6 +441,9 @@ async def test_run_live_e2e_preflight_fails_on_transport_mismatch(monkeypatch, t
     async def _fake_local_status(*, url: str, timeout_seconds: int = 10) -> dict[str, object]:
         _ = (url, timeout_seconds)
         return {
+            "live_e2e_active": True,
+            "live_e2e_flow": "conversation",
+            "live_e2e_effective_coding_stage_chain": ["qwen"],
             "primary_transport_mode": "ssh_fallback",
             "agent_connected": True,
             "websocket_health_ok": False,
@@ -341,6 +480,53 @@ async def test_run_live_e2e_preflight_fails_on_transport_mismatch(monkeypatch, t
         )
 
     assert any(event == "preflight.start" for event, _fields in events)
+
+
+@pytest.mark.asyncio
+async def test_run_live_e2e_preflight_fails_when_live_policy_inactive(monkeypatch, tmp_path: Path) -> None:
+    key_path = tmp_path / "diag.pem"
+    key_path.write_text("key", encoding="utf-8")
+
+    async def _fake_local_status(*, url: str, timeout_seconds: int = 10) -> dict[str, object]:
+        _ = (url, timeout_seconds)
+        return {
+            "live_e2e_active": False,
+            "live_e2e_flow": "conversation",
+            "live_e2e_effective_coding_stage_chain": ["qwen"],
+            "primary_transport_mode": "websocket_primary",
+            "agent_connected": True,
+            "websocket_health_ok": True,
+            "coding_agents": {"qwen": "/usr/bin/qwen"},
+        }
+
+    monkeypatch.setattr(
+        live_diagnostics,
+        "resolve_container_log_stream_ssh",
+        lambda *_args, **_kwargs: {
+            "host": "ec2.example",
+            "user": "ubuntu",
+            "key": str(key_path),
+            "key_source": "test",
+            "port": 22,
+        },
+    )
+    monkeypatch.setattr(live_diagnostics, "fetch_local_gateway_status", _fake_local_status)
+
+    with pytest.raises(AssertionError, match="PREFLIGHT_LIVE_POLICY_INACTIVE"):
+        await live_diagnostics.run_live_e2e_preflight(
+            trace_fn=lambda *_args, **_kwargs: None,
+            flow="conversation",
+            policy={
+                "required_transport": "websocket_primary",
+                "allow_fallback": False,
+                "required_worker_agents": ["qwen"],
+                "container_log": {"ssh_profile": "tunnel"},
+                "diagnostics_profile": "tunnel",
+                "status_probe_mode": "local_http",
+                "require_telegram_poller": False,
+            },
+            local_status_url="http://127.0.0.1:8766/status",
+        )
 
 
 def test_runtime_trace_progress_uses_mtime_and_line_count() -> None:
