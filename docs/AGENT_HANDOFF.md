@@ -1,10 +1,33 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-10 10:25
+Last updated (UTC): 2026-03-10 10:49
 
 ## Current Goal
 
 WebSocket-primary worker execution with local Ollama coding backend, while preserving strict quality gates and deterministic run behavior.
+
+### 2026-03-10 Shared Settings Loader Container-Layout Fix
+
+- Root-caused the deployed gateway live-E2E policy mismatch after the previous runtime-policy refactor:
+  - inside the deployed `openclaw-gateway` container, `/app/settings/settings.yaml` contained `SKYNET_E2E_LIVE: true`
+  - but `config.SETTINGS_FILE` resolved to `/app/openclaw-gateway/settings/settings.yaml`
+  - that path does not exist in the component-container layout built from `openclaw-gateway/Dockerfile`
+  - result: the shared settings loader fell back to config defaults, so runtime `/status` reported:
+    - `live_e2e_active=false`
+    - `live_e2e_flow=conversation`
+    - while still showing qwen-only derived fields from code defaults/env
+- Fix in `skynet/settings/loader.py`:
+  - added component settings-dir auto-resolution that supports both:
+    - monorepo layout (`<repo>/openclaw-gateway/settings`, `<repo>/openclaw-agent/settings`, `<repo>/skynet/settings`)
+    - component-container layout (`/app/settings`)
+  - shared loader now chooses the first existing component settings directory instead of assuming monorepo paths always exist
+- Added regression coverage in `openclaw-gateway/tests/test_settings_loader.py`:
+  - component-root gateway layout with `tmp/settings/settings.yaml`
+  - verifies `SKYNET_E2E_LIVE` and `SKYNET_LIVE_E2E_FLOW` load correctly without explicit `settings_dir`
+- Added deploy guard in `.github/workflows/deploy-ec2-skynet.yml`:
+  - `/status` diagnostics validation now also requires the live-E2E fields
+  - compares `payload["live_e2e_active"]` with `config.get_live_e2e_policy()["active"]`
+  - this prevents future deployments where the container can see the settings file on disk but the runtime is actually loading defaults from the wrong path
 
 ### 2026-03-10 Deploy Config Tracking For Worker Project Paths
 
