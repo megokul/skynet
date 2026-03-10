@@ -820,6 +820,16 @@ def _preflight_missing_agents(status_payload: dict[str, Any], required_agents: l
     return missing
 
 
+def _build_revision_matches(expected: str, actual: str) -> bool:
+    want = str(expected or "").strip().lower()
+    have = str(actual or "").strip().lower()
+    if not want:
+        return True
+    if not have:
+        return False
+    return have == want or have.startswith(want) or want.startswith(have)
+
+
 async def run_live_e2e_preflight(
     *,
     trace_fn: Callable[..., None],
@@ -887,7 +897,10 @@ async def run_live_e2e_preflight(
 
     expected_build_revision = str(policy.get("expected_remote_build_revision") or "").strip()
     actual_build_revision = str(status_payload.get("build_revision") or "").strip()
-    if expected_build_revision and actual_build_revision != expected_build_revision:
+    if expected_build_revision and not _build_revision_matches(
+        expected_build_revision,
+        actual_build_revision,
+    ):
         raise AssertionError(
             "PREFLIGHT_BUILD_REVISION_MISMATCH: "
             f"expected={expected_build_revision} actual={actual_build_revision or 'missing'}"
