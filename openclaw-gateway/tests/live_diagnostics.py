@@ -19,10 +19,14 @@ from typing import Any, Callable
 import aiohttp
 from bot.project_templates import get_template
 from skynet.project_specialist import (
+    build_planner_state,
+    build_qwen_plan_generation_context,
     build_qwen_planner_context,
     build_qwen_planner_prompt,
+    build_requirement_summary_markdown,
     build_project_specialist_opening,
     build_project_specialist_system_prompt,
+    ready_sentence,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -677,7 +681,7 @@ async def _post_remote_gateway_action(
     return dict(payload) if isinstance(payload, dict) else {}
 
 
-def _qwen_smoke_request() -> dict[str, str]:
+def _qwen_probe_inputs() -> tuple[str, list[dict[str, str]], dict[str, Any]]:
     template = get_template("Python App")
     system = build_project_specialist_system_prompt("preflight-qwen", "Python App", template)
     conversation = [
@@ -694,9 +698,51 @@ def _qwen_smoke_request() -> dict[str, str]:
             ),
         },
     ]
+    planner_state = build_planner_state(
+        project_name="preflight-qwen",
+        project_type_label="Python App",
+        messages=conversation,
+    )
+    return system, conversation, planner_state
+
+
+def _qwen_ready_probe_request() -> dict[str, Any]:
+    system, conversation, planner_state = _qwen_probe_inputs()
+    requirement_summary_md = build_requirement_summary_markdown(planner_state)
     return {
-        "prompt": build_qwen_planner_prompt(conversation),
-        "qwen_context_text": build_qwen_planner_context(system),
+        "probe_kind": "planner_ready",
+        "task_mode": "planner_chat",
+        "reply_contract": "emit_ready_sentence",
+        "prompt": build_qwen_planner_prompt(
+            conversation,
+            planner_state=planner_state,
+            reply_contract="emit_ready_sentence",
+        ),
+        "qwen_context_text": build_qwen_planner_context(system, planner_state),
+        "planner_state_json": planner_state,
+        "requirement_summary_md": requirement_summary_md,
+        "expected_text": ready_sentence(),
+    }
+
+
+def _qwen_plan_generation_probe_request() -> dict[str, Any]:
+    system, conversation, planner_state = _qwen_probe_inputs()
+    requirement_summary_md = build_requirement_summary_markdown(planner_state)
+    plan_messages = list(conversation) + [
+        {"role": "user", "content": "Generate the full project plan now based on everything we discussed."}
+    ]
+    return {
+        "probe_kind": "plan_generation",
+        "task_mode": "plan_generation",
+        "reply_contract": "emit_plan",
+        "prompt": build_qwen_planner_prompt(
+            plan_messages,
+            planner_state=planner_state,
+            reply_contract="emit_plan",
+        ),
+        "qwen_context_text": build_qwen_plan_generation_context(system, planner_state),
+        "planner_state_json": planner_state,
+        "requirement_summary_md": requirement_summary_md,
     }
 
 
@@ -718,13 +764,11 @@ async def run_qwen_preflight_smoke_probe(
     diagnostics_profile = str(policy.get("diagnostics_profile") or "tunnel")
     worker_id = str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary")
     session_key = uuid.uuid4().hex
-    working_dir = f"{cfg.WORKER_PROJECTS_DIR}/_planner_sessions/_preflight/{session_key}"
     action_url = str(local_status_url or f"http://127.0.0.1:{int(getattr(cfg, 'HTTP_PORT', 8766) or 8766)}/status")
     trace_fn(
         "preflight.qwen_smoke.start",
         flow=flow,
         timeout_seconds=timeout_seconds,
-        working_dir=working_dir,
         status_probe_mode=str(policy.get("status_probe_mode") or ""),
     )
 
@@ -746,67 +790,72 @@ async def run_qwen_preflight_smoke_probe(
         )
 
     try:
-        smoke_request = _qwen_smoke_request()
-        await _dispatch(
-            "create_directory",
-            {
-                "directory": working_dir,
-                "project_id": "preflight-qwen",
-                "worker_id": worker_id,
-                "session_key": session_key,
-            },
-        )
-        result = await _dispatch(
-            "run_coding_agent",
-            {
-                "agent": "qwen",
-                "backend": "auto",
-                "task_mode": "planner_chat",
-                "prompt": str(smoke_request.get("prompt") or ""),
-                "qwen_context_text": str(smoke_request.get("qwen_context_text") or ""),
-                "working_dir": working_dir,
-                "timeout_seconds": timeout_seconds,
-                "project_id": "preflight-qwen",
-                "task_id": "preflight-qwen-planner",
-                "worker_id": worker_id,
-                "session_key": session_key,
-            },
-        )
-        if result.get("status") == "error":
-            raise AssertionError(str(result.get("error") or "run_coding_agent failed"))
-        inner = result.get("result", result)
-        returncode = int(inner.get("returncode", inner.get("exit_code", 0)) or 0)
-        assistant_text = str(inner.get("assistant_text") or inner.get("stdout") or "").strip()
-        output_contract = str(inner.get("output_contract") or "").strip()
-        trace_fn(
-            "preflight.qwen_smoke.result",
-            flow=flow,
-            returncode=returncode,
-            output_contract=output_contract,
-            assistant_preview=assistant_text[:200],
-            model=str(inner.get("model") or ""),
-            session_id=str(inner.get("session_id") or ""),
-            context_files=list(inner.get("qwen_context_files") or []),
-        )
-        if returncode != 0 or output_contract != "ok" or not assistant_text:
-            detail = str(
-                inner.get("stderr")
-                or assistant_text
-                or inner.get("raw_result_tail")
-                or "empty qwen smoke response"
+        probe_requests = [_qwen_ready_probe_request(), _qwen_plan_generation_probe_request()]
+        for probe in probe_requests:
+            probe_kind = str(probe.get("probe_kind") or "unknown")
+            trace_fn(
+                "preflight.qwen_probe.start",
+                flow=flow,
+                probe_kind=probe_kind,
+                timeout_seconds=timeout_seconds,
             )
-            raise AssertionError(f"PREFLIGHT_QWEN_CONTRACT_FAILED: {detail[:240]}")
-    finally:
-        with contextlib.suppress(Exception):
-            await _dispatch(
-                "delete_directory",
+            probe_session_key = uuid.uuid4().hex
+            planner_state_json = dict(probe.get("planner_state_json") or {})
+            requirement_summary_md = str(probe.get("requirement_summary_md") or "")
+            expected_text = str(probe.get("expected_text") or "").strip()
+            result = await _dispatch(
+                "run_coding_agent",
                 {
-                    "directory": working_dir,
+                    "agent": "qwen",
+                    "backend": "auto",
+                    "task_mode": str(probe.get("task_mode") or "").strip(),
+                    "reply_contract": str(probe.get("reply_contract") or "").strip(),
+                    "prompt": str(probe.get("prompt") or ""),
+                    "qwen_context_text": str(probe.get("qwen_context_text") or ""),
+                    "planner_state_json": planner_state_json,
+                    "requirement_summary_md": requirement_summary_md,
+                    "timeout_seconds": timeout_seconds,
                     "project_id": "preflight-qwen",
+                    "task_id": f"preflight-qwen-{probe_kind}",
                     "worker_id": worker_id,
-                    "session_key": session_key,
+                    "session_key": probe_session_key,
                 },
             )
+            if result.get("status") == "error":
+                raise AssertionError(
+                    f"PREFLIGHT_QWEN_PROVIDER_CAPABILITY_FAILED: probe={probe_kind} detail={str(result.get('error') or 'run_coding_agent failed')[:220]}"
+                )
+            inner = result.get("result", result)
+            returncode = int(inner.get("returncode", inner.get("exit_code", 0)) or 0)
+            assistant_text = str(inner.get("assistant_text") or inner.get("stdout") or "").strip()
+            output_contract = str(inner.get("output_contract") or "").strip()
+            trace_fn(
+                "preflight.qwen_probe.result",
+                flow=flow,
+                probe_kind=probe_kind,
+                returncode=returncode,
+                output_contract=output_contract,
+                assistant_preview=assistant_text[:200],
+                model=str(inner.get("model") or ""),
+                session_id=str(inner.get("session_id") or ""),
+                context_files=list(inner.get("qwen_context_files") or []),
+            )
+            if expected_text and assistant_text != expected_text:
+                raise AssertionError(
+                    f"PREFLIGHT_QWEN_PROVIDER_CAPABILITY_FAILED: probe={probe_kind} detail=unexpected_text:{assistant_text[:180]}"
+                )
+            if returncode != 0 or output_contract != "ok" or not assistant_text:
+                detail = str(
+                    inner.get("stderr")
+                    or assistant_text
+                    or inner.get("raw_result_tail")
+                    or "empty qwen probe response"
+                )
+                raise AssertionError(
+                    f"PREFLIGHT_QWEN_PROVIDER_CAPABILITY_FAILED: probe={probe_kind} detail={detail[:220]}"
+                )
+    finally:
+        pass
 
 
 def _preflight_missing_agents(status_payload: dict[str, Any], required_agents: list[str]) -> list[str]:

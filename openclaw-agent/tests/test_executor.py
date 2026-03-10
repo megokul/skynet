@@ -30,6 +30,7 @@ import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from skynet.project_specialist import (
+    build_qwen_plan_generation_context,
     build_qwen_planner_context,
     build_qwen_planner_prompt,
     build_project_specialist_opening,
@@ -421,6 +422,255 @@ class TestRunCodingAgent:
         assert "QWEN_CONTRACT_VIOLATION" in result["stderr"]
 
     @pytest.mark.asyncio
+    async def test_qwen_ready_sentence_mismatch_becomes_contract_failure(self, tmp_path):
+        import executor.actions as actions_mod
+
+        fake_stdout = json.dumps(
+            [
+                {"type": "system", "subtype": "init", "session_id": "sess-ready", "model": "coder-model"},
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "session_id": "sess-ready",
+                    "result": "I need one more clarification before I can continue.",
+                },
+            ]
+        )
+
+        with (
+            patch.object(actions_mod, "_resolve_coding_binary", return_value=("qwen", "qwen")),
+            patch.object(
+                actions_mod,
+                "_run_tracked_coding_subprocess",
+                AsyncMock(
+                    return_value={
+                        "returncode": 0,
+                        "stdout": fake_stdout,
+                        "stderr": "",
+                        "session_key": "sess-ready",
+                        "remote_pid": "100",
+                    }
+                ),
+            ),
+        ):
+            result = await run_coding_agent({
+                "agent": "qwen",
+                "task_mode": "planner_chat",
+                "reply_contract": "emit_ready_sentence",
+                "planner_state_json": {"plan_ready": True, "missing_slots": []},
+                "requirement_summary_md": "- Project Kind: local terminal utility script",
+                "prompt": "reply exactly with the ready sentence",
+                "working_dir": str(tmp_path),
+            })
+
+        assert result["returncode"] == 1
+        assert result["output_contract"] == "planner_ready_sentence_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_qwen_question_targeting_rejects_answered_slots(self, tmp_path):
+        import executor.actions as actions_mod
+
+        fake_stdout = json.dumps(
+            [
+                {"type": "system", "subtype": "init", "session_id": "sess-question", "model": "coder-model"},
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "session_id": "sess-question",
+                    "result": "What does this app do and which framework should it use?",
+                },
+            ]
+        )
+
+        with (
+            patch.object(actions_mod, "_resolve_coding_binary", return_value=("qwen", "qwen")),
+            patch.object(
+                actions_mod,
+                "_run_tracked_coding_subprocess",
+                AsyncMock(
+                    return_value={
+                        "returncode": 0,
+                        "stdout": fake_stdout,
+                        "stderr": "",
+                        "session_key": "sess-question",
+                        "remote_pid": "100",
+                    }
+                ),
+            ),
+        ):
+            result = await run_coding_agent({
+                "agent": "qwen",
+                "task_mode": "planner_chat",
+                "reply_contract": "ask_next_question",
+                "planner_state_json": {
+                    "plan_ready": False,
+                    "missing_slots": ["storage", "integrations"],
+                },
+                "requirement_summary_md": "- Project Kind: local terminal utility script",
+                "prompt": "ask about the missing slots only",
+                "working_dir": str(tmp_path),
+            })
+
+        assert result["returncode"] == 1
+        assert result["output_contract"] == "planner_question_targets_answered_slot"
+
+    @pytest.mark.asyncio
+    async def test_qwen_plan_generation_invalid_output_becomes_contract_failure(self, tmp_path):
+        import executor.actions as actions_mod
+
+        fake_stdout = json.dumps(
+            [
+                {"type": "system", "subtype": "init", "session_id": "sess-789", "model": "coder-model"},
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "I don't have any requirements gathered yet for this project. "
+                                    "Let me ask the key questions first."
+                                ),
+                            }
+                        ]
+                    },
+                },
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "session_id": "sess-789",
+                    "result": "I don't have any requirements gathered yet for this project. Let me ask the key questions first.",
+                },
+            ]
+        )
+
+        with (
+            patch.object(actions_mod, "_resolve_coding_binary", return_value=("qwen", "qwen")),
+            patch.object(
+                actions_mod,
+                "_run_tracked_coding_subprocess",
+                AsyncMock(
+                    return_value={
+                        "returncode": 0,
+                        "stdout": fake_stdout,
+                        "stderr": "",
+                        "session_key": "sess-789",
+                        "remote_pid": "100",
+                    }
+                ),
+            ),
+        ):
+            result = await run_coding_agent({
+                "agent": "qwen",
+                "task_mode": "plan_generation",
+                "prompt": "generate the project plan now",
+                "working_dir": str(tmp_path),
+            })
+
+        assert result["returncode"] == 1
+        assert result["output_contract"] == "plan_generation_requirement_reset"
+        assert "QWEN_CONTRACT_VIOLATION" in result["stderr"]
+
+    @pytest.mark.asyncio
+    async def test_qwen_openai_provider_env_is_forwarded(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
+        import executor.actions as actions_mod
+
+        seen_env: dict[str, str] = {}
+
+        async def _fake_run_tracked_coding_subprocess(**kwargs):
+            env = dict(kwargs.get("env") or {})
+            seen_env["OPENAI_API_KEY"] = env.get("OPENAI_API_KEY", "")
+            seen_env["OPENAI_BASE_URL"] = env.get("OPENAI_BASE_URL", "")
+            seen_env["OPENAI_MODEL"] = env.get("OPENAI_MODEL", "")
+            return {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    [
+                        {"type": "system", "subtype": "init", "session_id": str(uuid.uuid4())},
+                        {"type": "result", "subtype": "success", "result": "What storage is needed?"},
+                    ]
+                ),
+                "stderr": "",
+                "session_key": "openai-env",
+                "remote_pid": "100",
+            }
+
+        monkeypatch.setenv("SKYNET_QWEN_AUTH_TYPE", "openai")
+        monkeypatch.setenv("SKYNET_QWEN_PROVIDER_PROFILE", "remote-qwen")
+        monkeypatch.setenv("SKYNET_QWEN_OPENAI_BASE_URL", "https://api.example.test/v1")
+        monkeypatch.setenv("SKYNET_QWEN_OPENAI_API_KEY_ENV", "MY_QWEN_KEY")
+        monkeypatch.setenv("MY_QWEN_KEY", "secret-123")
+
+        with (
+            patch.object(actions_mod, "_resolve_coding_binary", return_value=("qwen", "qwen")),
+            patch.object(actions_mod, "_run_tracked_coding_subprocess", AsyncMock(side_effect=_fake_run_tracked_coding_subprocess)),
+        ):
+            result = await run_coding_agent({
+                "agent": "qwen",
+                "task_mode": "planner_chat",
+                "reply_contract": "ask_next_question",
+                "planner_state_json": {"plan_ready": False, "missing_slots": ["storage"]},
+                "requirement_summary_md": "- Project Kind: local terminal utility script",
+                "prompt": "ask about storage",
+                "working_dir": str(tmp_path),
+            })
+
+        assert result["returncode"] == 0
+        assert seen_env["OPENAI_API_KEY"] == "secret-123"
+        assert seen_env["OPENAI_BASE_URL"] == "https://api.example.test/v1"
+        assert seen_env["OPENAI_MODEL"] == ""
+
+    @pytest.mark.asyncio
+    async def test_qwen_plan_generation_uses_request_scoped_working_dir(self, tmp_path):
+        import executor.actions as actions_mod
+
+        seen: dict[str, str] = {}
+
+        async def _fake_run_tracked_coding_subprocess(**kwargs):
+            seen["cwd"] = str(kwargs["cwd"] or "")
+            return {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    [
+                        {"type": "system", "subtype": "init", "session_id": str(uuid.uuid4())},
+                        {
+                            "type": "result",
+                            "subtype": "success",
+                            "result": (
+                                "**Demo - Project Plan**\n"
+                                "**Overview:** demo\n"
+                                "**Core Features:**\n- one\n"
+                                "**Tech Stack:** python\n"
+                                "**Project Structure:**\n- app/\n"
+                                "**Milestones:**\n1. ship\n"
+                                "**Open Questions:** None"
+                            ),
+                        },
+                    ]
+                ),
+                "stderr": "",
+                "session_key": "req-scoped",
+                "remote_pid": "100",
+            }
+
+        with (
+            patch.object(actions_mod, "_resolve_coding_binary", return_value=("qwen", "qwen")),
+            patch.object(actions_mod, "_run_tracked_coding_subprocess", AsyncMock(side_effect=_fake_run_tracked_coding_subprocess)),
+        ):
+            result = await run_coding_agent({
+                "agent": "qwen",
+                "task_mode": "plan_generation",
+                "session_key": "req-scoped",
+                "prompt": "generate the project plan now",
+                "working_dir": str(tmp_path),
+            })
+
+        assert result["returncode"] == 0
+        assert seen["cwd"] != str(tmp_path)
+        assert result["qwen_requested_working_dir"] == str(tmp_path)
+        assert result["qwen_effective_working_dir"] == seen["cwd"]
+
+    @pytest.mark.asyncio
     async def test_real_qwen_planner_multiline_prompt(self, tmp_path):
         if os.environ.get("SKYNET_RUN_REAL_QWEN_TESTS", "").strip().lower() not in {"1", "true", "yes", "on"}:
             pytest.skip("real qwen tests are opt-in via SKYNET_RUN_REAL_QWEN_TESTS=1")
@@ -469,6 +719,62 @@ class TestRunCodingAgent:
         lowered = result["assistant_text"].lower()
         assert "what would you like" not in lowered, result["assistant_text"]
         assert "ready to assist" not in lowered, result["assistant_text"]
+
+    @pytest.mark.asyncio
+    async def test_real_qwen_plan_generation_prompt(self, tmp_path):
+        if os.environ.get("SKYNET_RUN_REAL_QWEN_TESTS", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            pytest.skip("real qwen tests are opt-in via SKYNET_RUN_REAL_QWEN_TESTS=1")
+        if not shutil.which("qwen"):
+            pytest.skip("qwen binary not installed")
+        if not Path.home().joinpath(".qwen", "settings.json").exists():
+            pytest.skip("qwen auth settings not configured")
+
+        template = {
+            "stack": "Python 3.11+ + FastAPI or Flask + SQLAlchemy + PostgreSQL",
+            "questions": [
+                "What does this app do? (web service, automation, utility, other)",
+                "Which framework? (FastAPI, Flask, plain Python script)",
+                "Does it need a database? If so, what data does it store?",
+                "Will it run as a background service, scheduled job, or on-demand?",
+                "Any external APIs or services to integrate with?",
+            ],
+        }
+        system = build_project_specialist_system_prompt("real-qwen-plan", "Python App", template)
+        messages = [
+            {
+                "role": "assistant",
+                "content": build_project_specialist_opening("real-qwen-plan", "Python App", template),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "I'm building a small Windows Python script that runs from the terminal. "
+                    "When executed, it should show a popup saying \"hi\" and play a short beep sound. "
+                    "Use only Python standard library, include tests, and add a valid skynet_run.json."
+                ),
+            },
+            {
+                "role": "user",
+                "content": "Generate the full project plan now based on everything we discussed.",
+            },
+        ]
+
+        result = await run_coding_agent({
+            "agent": "qwen",
+            "task_mode": "plan_generation",
+            "prompt": build_qwen_planner_prompt(messages),
+            "qwen_context_text": build_qwen_plan_generation_context(system),
+            "working_dir": str(tmp_path),
+            "timeout_seconds": 120,
+        })
+
+        assert result["returncode"] == 0, result
+        assert result["output_contract"] == "ok", result
+        lowered = result["assistant_text"].lower()
+        assert "overview:" in lowered, result["assistant_text"]
+        assert "core features:" in lowered, result["assistant_text"]
+        assert "milestones:" in lowered, result["assistant_text"]
+        assert "what does this app do?" not in lowered, result["assistant_text"]
 
 
 # ── ollama_chat ───────────────────────────────────────────────────────────────

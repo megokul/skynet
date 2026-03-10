@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import uuid
+from typing import Any
 
 import gateway_config as cfg
 from telegram import Update
@@ -51,11 +52,16 @@ from gateway import is_worker_available, send_action
 from orchestration.openclaw_runner import get_openclaw_runner
 from runtime_trace import build_debug_bundle, command_hash, emit_runtime_trace_async
 from skynet.project_specialist import (
+    build_planner_state,
     build_planner_chat_prompt,
+    build_requirement_summary_markdown,
+    build_qwen_plan_generation_context,
     build_qwen_planner_context,
     build_qwen_planner_prompt,
     build_project_specialist_opening,
     build_project_specialist_system_prompt,
+    is_qwen_plan_generation_request,
+    ready_sentence,
 )
 
 logger = logging.getLogger("skynet.bot.project")
@@ -71,6 +77,7 @@ _NAME_KEY     = "project_name"
 _TYPE_KEY     = "project_type"
 _REQS_HISTORY = "project_reqs_history"
 _PLAN_KEY     = "project_plan"
+_PLANNER_STATE_KEY = "project_planner_state"
 
 # Max turns kept in requirements conversation history
 _MAX_REQS_TURNS = 30
@@ -159,6 +166,22 @@ def _specialist_prompt(name: str, project_type_label: str, template: dict) -> st
 def _trim_history(history: list[dict]) -> list[dict]:
     max_msgs = _MAX_REQS_TURNS * 2
     return history[-max_msgs:] if len(history) > max_msgs else history
+
+
+def _planner_state_for_history(name: str, project_type_label: str, history: list[dict]) -> dict[str, Any]:
+    return build_planner_state(
+        project_name=str(name or "").strip(),
+        project_type_label=str(project_type_label or "").strip(),
+        messages=list(history or []),
+    )
+
+
+def _planner_reply_contract(messages: list[dict], planner_state: dict[str, Any]) -> str:
+    if is_qwen_plan_generation_request(list(messages or [])):
+        return "emit_plan"
+    if bool(dict(planner_state or {}).get("plan_ready", False)):
+        return "emit_ready_sentence"
+    return "ask_next_question"
 
 
 def _build_project_description(plan: str, history: list[dict]) -> str:
@@ -348,10 +371,57 @@ def _planner_action_text(result: dict) -> str:
     return text
 
 
-def _planner_task_mode(agent: str) -> str:
-    if str(agent or "").strip().lower() == "qwen":
-        return "planner_chat"
-    return ""
+def _planner_task_mode(
+    agent: str,
+    *,
+    messages: list[dict] | None = None,
+    reply_contract: str = "",
+) -> str:
+    if str(agent or "").strip().lower() != "qwen":
+        return ""
+    if str(reply_contract or "").strip().lower() == "emit_plan":
+        return "plan_generation"
+    if is_qwen_plan_generation_request(list(messages or [])):
+        return "plan_generation"
+    return "planner_chat"
+
+
+def _planner_qwen_context(task_mode: str, system: str, planner_state: dict[str, Any]) -> str:
+    if str(task_mode or "").strip().lower() == "plan_generation":
+        return build_qwen_plan_generation_context(system, planner_state)
+    return build_qwen_planner_context(system, planner_state)
+
+
+def _planner_prompt_and_payload(
+    agent: str,
+    messages: list[dict],
+    system: str,
+    planner_state: dict[str, Any],
+    reply_contract: str,
+) -> tuple[str, str, str, str]:
+    planner_agent = str(agent or "").strip().lower()
+    if planner_agent != "qwen":
+        return build_planner_chat_prompt(system, messages), "", "", ""
+    task_mode = _planner_task_mode(planner_agent, messages=messages, reply_contract=reply_contract)
+    requirement_summary_md = build_requirement_summary_markdown(planner_state)
+    return (
+        build_qwen_planner_prompt(
+            messages,
+            planner_state=planner_state,
+            reply_contract=reply_contract,
+        ),
+        task_mode,
+        _planner_qwen_context(task_mode, system, planner_state),
+        requirement_summary_md,
+    )
+
+
+def _planner_qwen_uses_request_scoped_dir(task_mode: str) -> bool:
+    policy = cfg.get_qwen_execution_policy()
+    profile = dict(policy.get("planner") or {})
+    if str(task_mode or "").strip().lower() == "plan_generation":
+        profile = dict(policy.get("planner") or {})
+    return str(profile.get("working_dir_strategy") or "project").strip().lower() == "request_scoped"
 
 
 def _planner_primary_agent() -> str:
@@ -397,6 +467,7 @@ async def _planner_via_codex_then_router(
     max_tokens: int,
     task_type: str,
     user_id: int,
+    planner_state: dict[str, Any] | None = None,
 ) -> str:
     planner_agent = _planner_primary_agent()
     use_planner_agent = planner_agent in _planner_worker_agents()
@@ -406,12 +477,17 @@ async def _planner_via_codex_then_router(
             f"Planner fallback is disabled and the primary agent '{planner_agent}' is not eligible."
         )
     if use_planner_agent:
-        qwen_context_text = ""
-        if planner_agent == "qwen":
-            planner_prompt = build_qwen_planner_prompt(messages)
-            qwen_context_text = build_qwen_planner_context(system)
-        else:
-            planner_prompt = build_planner_chat_prompt(system, messages)
+        current_planner_state = dict(planner_state or {})
+        if not current_planner_state:
+            current_planner_state = _planner_state_for_history("planner-session", "Python App", messages)
+        reply_contract = _planner_reply_contract(messages, current_planner_state)
+        planner_prompt, planner_task_mode, qwen_context_text, requirement_summary_md = _planner_prompt_and_payload(
+            planner_agent,
+            messages,
+            system,
+            current_planner_state,
+            reply_contract,
+        )
         timeout = max(
             30,
             int(
@@ -424,7 +500,8 @@ async def _planner_via_codex_then_router(
             ),
         )
         planner_session_key = uuid.uuid4().hex
-        sandbox_dir = _planner_sandbox_dir(user_id, planner_session_key)
+        use_request_scoped_dir = planner_agent == "qwen" and _planner_qwen_uses_request_scoped_dir(planner_task_mode)
+        sandbox_dir = "" if use_request_scoped_dir else _planner_sandbox_dir(user_id, planner_session_key)
         try:
             orchestration_mode = str(cfg.effective_orchestration_mode() or "legacy").strip().lower()
             if orchestration_mode == "acp_first" and planner_agent in _planner_acp_agents():
@@ -456,30 +533,30 @@ async def _planner_via_codex_then_router(
             else:
                 if not is_worker_available():
                     raise RuntimeError(f"Worker unavailable for planner {planner_agent} call")
-                await send_action(
-                    "create_directory",
-                    {
-                        "directory": sandbox_dir,
-                        "project_id": f"user-{user_id}",
-                        "worker_id": str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
-                        "session_key": planner_session_key,
-                    },
-                    timeout=20,
-                    confirmed=True,
-                )
+                if sandbox_dir:
+                    await send_action(
+                        "create_directory",
+                        {
+                            "directory": sandbox_dir,
+                            "project_id": f"user-{user_id}",
+                            "worker_id": str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
+                            "session_key": planner_session_key,
+                        },
+                        timeout=20,
+                        confirmed=True,
+                    )
                 result = await send_action(
                     "run_coding_agent",
                     {
                         "agent": planner_agent,
                         "backend": "auto",
-                        **(
-                            {"task_mode": _planner_task_mode(planner_agent)}
-                            if _planner_task_mode(planner_agent)
-                            else {}
-                        ),
+                        **({"task_mode": planner_task_mode} if planner_task_mode else {}),
                         **({"qwen_context_text": qwen_context_text} if qwen_context_text else {}),
+                        **({"reply_contract": reply_contract} if reply_contract else {}),
+                        **({"planner_state_json": current_planner_state} if current_planner_state else {}),
+                        **({"requirement_summary_md": requirement_summary_md} if requirement_summary_md else {}),
                         "prompt": planner_prompt,
-                        "working_dir": sandbox_dir,
+                        **({"working_dir": sandbox_dir} if sandbox_dir else {}),
                         "timeout_seconds": timeout,
                         "project_id": f"user-{user_id}",
                         "task_id": f"planner-{task_type}",
@@ -637,6 +714,11 @@ async def receive_project_type(
     context.user_data[_REQS_HISTORY] = [
         {"role": "assistant", "content": opening},
     ]
+    context.user_data[_PLANNER_STATE_KEY] = _planner_state_for_history(
+        str(name),
+        type_label,
+        context.user_data[_REQS_HISTORY],
+    )
 
     await update.callback_query.message.reply_text(
         opening, parse_mode="HTML", reply_markup=requirements_done(),
@@ -686,6 +768,8 @@ async def handle_requirements_message(
     history.append({"role": "user", "content": user_text})
     history = _trim_history(history)
     system_prompt = build_project_specialist_system_prompt(name, type_label, template)
+    planner_state = _planner_state_for_history(str(name), type_label, history)
+    context.user_data[_PLANNER_STATE_KEY] = planner_state
 
     try:
         reply = await _planner_via_codex_then_router(
@@ -695,6 +779,7 @@ async def handle_requirements_message(
             max_tokens=1024,
             task_type="planning",
             user_id=update.effective_user.id,
+            planner_state=planner_state,
         )
     except Exception:
         logger.exception("Requirements AI call failed")
@@ -716,6 +801,7 @@ async def handle_requirements_message(
 
     history.append({"role": "assistant", "content": reply})
     context.user_data[_REQS_HISTORY] = history
+    context.user_data[_PLANNER_STATE_KEY] = _planner_state_for_history(str(name), type_label, history)
     await _emit_runtime(
         context=context,
         update=update,
@@ -723,7 +809,12 @@ async def handle_requirements_message(
         status="ok",
         phase="requirements",
         action_name="run_coding_agent",
-        details={"history_len": len(history), "reply_len": len(reply)},
+        details={
+            "history_len": len(history),
+            "reply_len": len(reply),
+            "plan_ready": bool(context.user_data[_PLANNER_STATE_KEY].get("plan_ready", False)),
+            "missing_slots": list(context.user_data[_PLANNER_STATE_KEY].get("missing_slots") or []),
+        },
     )
 
     await update.message.reply_text(reply, reply_markup=requirements_done())
@@ -788,6 +879,8 @@ async def _do_generate_plan(
         "role": "user",
         "content": "Generate the full project plan now based on everything we discussed.",
     })
+    planner_state = _planner_state_for_history(str(name), type_label, history)
+    context.user_data[_PLANNER_STATE_KEY] = planner_state
 
     try:
         plan = await _planner_via_codex_then_router(
@@ -797,6 +890,7 @@ async def _do_generate_plan(
             max_tokens=2048,
             task_type="planning",
             user_id=message.chat.id,
+            planner_state=planner_state,
         )
         plan = plan.strip() or "Could not generate plan."
         await emit_runtime_trace_async(

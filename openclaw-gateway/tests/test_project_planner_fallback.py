@@ -49,21 +49,23 @@ async def test_planner_codex_success_skips_router_fallback():
 async def test_planner_qwen_success_skips_router_fallback():
     router = MagicMock()
     router.chat = AsyncMock()
+    actions: list[str] = []
 
     async def _send_action(action, params, **kwargs):
         del kwargs
-        if action == "create_directory":
-            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
+        actions.append(action)
         if action == "run_coding_agent":
             assert params["agent"] == "qwen"
             assert params["task_mode"] == "planner_chat"
             assert "qwen_context_text" in params
+            assert params["reply_contract"] == "ask_next_question"
+            assert "planner_state_json" in params
+            assert "requirement_summary_md" in params
+            assert "working_dir" not in params
             return {
                 "status": "success",
                 "result": {"returncode": 0, "stdout": "Qwen planner reply", "stderr": ""},
             }
-        if action == "delete_directory":
-            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
         raise AssertionError(f"Unexpected action: {action}")
 
     with (
@@ -81,6 +83,52 @@ async def test_planner_qwen_success_skips_router_fallback():
         )
 
     assert reply == "Qwen planner reply"
+    assert actions == ["run_coding_agent"]
+    router.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_planner_qwen_plan_request_uses_plan_generation():
+    router = MagicMock()
+    router.chat = AsyncMock()
+
+    async def _send_action(action, params, **kwargs):
+        del kwargs
+        if action == "create_directory":
+            raise AssertionError("Qwen request-scoped planner should not create a remote planner directory")
+        if action == "run_coding_agent":
+            assert params["agent"] == "qwen"
+            assert params["task_mode"] == "plan_generation"
+            assert params["reply_contract"] == "emit_plan"
+            assert "planner_state_json" in params
+            assert "requirement_summary_md" in params
+            assert "Do not say requirements are missing." in params["qwen_context_text"]
+            assert "working_dir" not in params
+            return {
+                "status": "success",
+                "result": {"returncode": 0, "stdout": "**Demo - Project Plan**\n**Overview:** demo\n**Core Features:**\n- one\n**Tech Stack:** python\n**Project Structure:**\n- app/\n**Milestones:**\n1. ship\n**Open Questions:** None", "stderr": ""},
+            }
+        raise AssertionError(f"Unexpected action: {action}")
+
+    with (
+        patch("bot.handlers.project.cfg.PLANNER_PRIMARY_AGENT", "qwen"),
+        patch("bot.handlers.project.is_worker_available", return_value=True),
+        patch("bot.handlers.project.send_action", new=AsyncMock(side_effect=_send_action)),
+    ):
+        reply = await _planner_via_codex_then_router(
+            router=router,
+            messages=[
+                {"role": "assistant", "content": "What does this app do?"},
+                {"role": "user", "content": "It is a small Windows terminal script."},
+                {"role": "user", "content": "Generate the full project plan now based on everything we discussed."},
+            ],
+            system="planner system",
+            max_tokens=512,
+            task_type="planning",
+            user_id=42,
+        )
+
+    assert "Project Plan" in reply
     router.chat.assert_not_awaited()
 
 

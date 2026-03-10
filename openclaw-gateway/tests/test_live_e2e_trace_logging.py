@@ -762,6 +762,84 @@ async def test_run_live_e2e_preflight_invokes_qwen_smoke_probe(monkeypatch, tmp_
     assert calls[0][0] == "conversation"
 
 
+@pytest.mark.asyncio
+async def test_qwen_preflight_smoke_runs_ready_and_plan_generation_probes(monkeypatch, tmp_path: Path) -> None:
+    key_path = tmp_path / "diag.pem"
+    key_path.write_text("key", encoding="utf-8")
+    actions: list[tuple[str, dict]] = []
+
+    async def _fake_local_action(*, action_url: str, action: str, params: dict, timeout_seconds: int = 20):
+        _ = (action_url, timeout_seconds)
+        actions.append((action, dict(params)))
+        if action != "run_coding_agent":
+            raise AssertionError(f"Unexpected action: {action}")
+        task_id = str(params.get("task_id") or "")
+        if task_id == "preflight-qwen-planner_ready":
+            return {
+                "result": {
+                    "returncode": 0,
+                    "assistant_text": "I have everything I need. Send /plan to generate your project plan.",
+                    "output_contract": "ok",
+                    "session_id": "sess-ready",
+                    "model": "coder-model",
+                    "qwen_context_files": [],
+                }
+            }
+        if task_id == "preflight-qwen-plan_generation":
+            return {
+                "result": {
+                    "returncode": 0,
+                    "assistant_text": (
+                        "**preflight-qwen - Project Plan**\n"
+                        "**Overview:** demo\n"
+                        "**Core Features:**\n- popup\n"
+                        "**Tech Stack:** Python\n"
+                        "**Project Structure:**\n- app/\n"
+                        "**Milestones:**\n1. ship\n"
+                        "**Open Questions:** None"
+                    ),
+                    "output_contract": "ok",
+                    "session_id": "sess-plan",
+                    "model": "coder-model",
+                    "qwen_context_files": [],
+                }
+            }
+        raise AssertionError(f"Unexpected task_id: {task_id}")
+
+    monkeypatch.setattr(
+        live_diagnostics,
+        "resolve_container_log_stream_ssh",
+        lambda *_args, **_kwargs: {
+            "host": "ec2.example",
+            "user": "ubuntu",
+            "key": str(key_path),
+            "key_source": "test",
+            "port": 22,
+        },
+    )
+    monkeypatch.setattr(live_diagnostics, "_post_local_gateway_action", _fake_local_action)
+
+    await live_diagnostics.run_qwen_preflight_smoke_probe(
+        trace_fn=lambda *_args, **_kwargs: None,
+        flow="conversation",
+        policy={
+            "required_worker_agents": ["qwen"],
+            "diagnostics_profile": "tunnel",
+            "status_probe_mode": "local_http",
+            "qwen_smoke": {"enabled": True, "timeout_seconds": 45},
+        },
+        local_status_url="http://127.0.0.1:8766/status",
+    )
+
+    assert [task for task, _params in actions] == ["run_coding_agent", "run_coding_agent"]
+    assert actions[0][1]["reply_contract"] == "emit_ready_sentence"
+    assert actions[1][1]["reply_contract"] == "emit_plan"
+    assert "planner_state_json" in actions[0][1]
+    assert "requirement_summary_md" in actions[1][1]
+    assert "working_dir" not in actions[0][1]
+    assert "working_dir" not in actions[1][1]
+
+
 def test_runtime_trace_progress_uses_mtime_and_line_count() -> None:
     progress = telegram_live._RuntimeTraceProgress()
     first = {

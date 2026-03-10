@@ -40,10 +40,66 @@ from telegram_poller import get_telegram_poller_status
 
 logger = logging.getLogger("skynet.api")
 
+_QWEN_PROBE_STATUS: dict[str, dict[str, str]] = {
+    "planner_ready": {
+        "status": "unknown",
+        "output_contract": "",
+        "updated_at": "",
+        "detail": "",
+    },
+    "plan_generation": {
+        "status": "unknown",
+        "output_contract": "",
+        "updated_at": "",
+        "detail": "",
+    },
+}
+
 
 _SSH_ONLY_MODES = {"ssh", "ssh_tunnel", "tunnel", "ssh-only"}
 _idempotency_inflight: dict[str, asyncio.Future[dict[str, Any]]] = {}
 _idempotency_lock = asyncio.Lock()
+
+
+def _utc_now_iso() -> str:
+    import datetime as _dt
+
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+
+def _record_qwen_probe_result(*, probe_kind: str, status: str, output_contract: str = "", detail: str = "") -> None:
+    key = str(probe_kind or "").strip().lower()
+    if key not in _QWEN_PROBE_STATUS:
+        return
+    _QWEN_PROBE_STATUS[key] = {
+        "status": str(status or "").strip() or "unknown",
+        "output_contract": str(output_contract or "").strip(),
+        "updated_at": _utc_now_iso(),
+        "detail": str(detail or "").strip()[:240],
+    }
+
+
+def _maybe_record_qwen_probe(action: str, params: dict[str, Any], result: dict[str, Any]) -> None:
+    if str(action or "").strip().lower() != "run_coding_agent":
+        return
+    agent = str((params or {}).get("agent") or "").strip().lower()
+    if agent != "qwen":
+        return
+    task_id = str((params or {}).get("task_id") or "").strip().lower()
+    if not task_id.startswith("preflight-qwen-"):
+        return
+    probe_kind = task_id.removeprefix("preflight-qwen-")
+    inner = result.get("result", result) if isinstance(result, dict) else {}
+    output_contract = str(inner.get("output_contract") or "").strip()
+    returncode = int(inner.get("returncode", inner.get("exit_code", 0)) or 0)
+    status = "ok" if returncode == 0 and output_contract == "ok" else "fail"
+    detail = str(inner.get("stderr") or inner.get("assistant_text") or inner.get("stdout") or "").strip()
+    _record_qwen_probe_result(
+        probe_kind=probe_kind,
+        status=status,
+        output_contract=output_contract,
+        detail=detail,
+    )
 
 
 def _force_ssh_mode(ssh_configured: bool) -> bool:
@@ -258,6 +314,8 @@ async def handle_status(request: web.Request) -> web.Response:
     agent_status = get_agent_status()
     poller_status = get_telegram_poller_status()
     live_e2e_policy = cfg.get_live_e2e_policy()
+    qwen_policy = cfg.get_qwen_execution_policy()
+    qwen_provider = dict(qwen_policy.get("provider") or {})
     execution_mode_effective = "ssh_tunnel" if force_ssh else "agent_preferred"
     websocket_health_ok = bool(agent_status.get("websocket_health_ok", False))
     if force_ssh:
@@ -297,6 +355,14 @@ async def handle_status(request: web.Request) -> web.Response:
         "worker_capabilities": list(agent_status.get("worker_capabilities") or []),
         "coding_agents": dict(agent_status.get("coding_agents") or {}),
         "build_revision": str(getattr(cfg, "BUILD_REVISION", "") or ""),
+        "qwen_auth_type": str(qwen_policy.get("auth_type") or ""),
+        "qwen_provider_profile": str(qwen_provider.get("profile_name") or ""),
+        "qwen_planner_model": str(dict(qwen_policy.get("planner") or {}).get("model") or ""),
+        "qwen_coding_model": str(dict(qwen_policy.get("coding") or {}).get("model") or ""),
+        "qwen_planner_capability_required": bool(qwen_provider.get("planner_capability_required", True)),
+        "qwen_coding_capability_required": bool(qwen_provider.get("coding_capability_required", True)),
+        "qwen_planner_ready_probe": dict(_QWEN_PROBE_STATUS.get("planner_ready") or {}),
+        "qwen_plan_generation_probe": dict(_QWEN_PROBE_STATUS.get("plan_generation") or {}),
         "live_e2e_active": bool(live_e2e_policy.get("active", False)),
         "live_e2e_flow": str(live_e2e_policy.get("flow") or ""),
         "live_e2e_allow_fallback": bool(live_e2e_policy.get("allow_fallback", False)),
@@ -385,6 +451,7 @@ async def handle_action(request: web.Request) -> web.Response:
             task_id=str(task_id) if task_id else None,
             idempotency_key=str(idempotency_key) if idempotency_key else None,
         )
+        _maybe_record_qwen_probe(action, params, result if isinstance(result, dict) else {})
         if action_key and db is not None:
             await _store_cached_result(
                 db,
@@ -396,12 +463,18 @@ async def handle_action(request: web.Request) -> web.Response:
             inflight_future.set_result(result)
         return web.json_response(result)
     except asyncio.TimeoutError:
+        _maybe_record_qwen_probe(action, params, {"result": {"returncode": 1, "output_contract": "timeout", "stderr": "timeout"}})
         if is_owner and inflight_future is not None and not inflight_future.done():
             inflight_future.set_exception(asyncio.TimeoutError())
         return web.json_response(
             {"error": "Agent did not respond in time."}, status=504,
         )
     except RuntimeError as exc:
+        _maybe_record_qwen_probe(
+            action,
+            params,
+            {"result": {"returncode": 1, "output_contract": "gateway_runtime_error", "stderr": str(exc)}},
+        )
         if is_owner and inflight_future is not None and not inflight_future.done():
             inflight_future.set_exception(exc)
         return web.json_response(

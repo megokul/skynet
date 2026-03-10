@@ -38,6 +38,7 @@ async def test_status_includes_ssh_diagnostics(monkeypatch: pytest.MonkeyPatch) 
     stub = _StubSSHExecutor(configured=True, ok=False, detail="SSH circuit open")
     monkeypatch.setenv("OPENCLAW_EXECUTION_MODE", "ssh_tunnel")
     monkeypatch.setenv("SKYNET_E2E_LIVE", "1")
+    monkeypatch.setenv("SKYNET_QWEN_PROVIDER_PROFILE", "default")
     monkeypatch.setattr(gateway_api.cfg, "BUILD_REVISION", "rev-123")
     monkeypatch.setattr(gateway_api, "get_ssh_executor", lambda: stub)
     monkeypatch.setattr(gateway_api, "is_agent_connected", lambda: False)
@@ -101,6 +102,8 @@ async def test_status_includes_ssh_diagnostics(monkeypatch: pytest.MonkeyPatch) 
     assert payload["telegram_poller_lock_healthy"] is False
     assert payload["live_e2e_active"] is True
     assert payload["live_e2e_effective_coding_stage_chain"] == ["qwen"]
+    assert payload["qwen_provider_profile"] == "default"
+    assert payload["qwen_planner_ready_probe"]["status"] in {"unknown", "ok", "fail"}
 
 
 @pytest.mark.asyncio
@@ -108,6 +111,9 @@ async def test_status_prefers_websocket_primary_when_healthy(monkeypatch: pytest
     stub = _StubSSHExecutor(configured=True, ok=True, detail="SSH healthy")
     monkeypatch.setenv("OPENCLAW_EXECUTION_MODE", "agent_preferred")
     monkeypatch.setenv("SKYNET_E2E_LIVE", "1")
+    monkeypatch.setenv("SKYNET_QWEN_PROVIDER_PROFILE", "openai-qwen")
+    monkeypatch.setenv("SKYNET_QWEN_AUTH_TYPE", "openai")
+    monkeypatch.setenv("SKYNET_QWEN_OPENAI_BASE_URL", "https://api.example.test/v1")
     monkeypatch.setattr(gateway_api.cfg, "BUILD_REVISION", "rev-456")
     monkeypatch.setattr(gateway_api, "get_ssh_executor", lambda: stub)
     monkeypatch.setattr(gateway_api, "is_agent_connected", lambda: True)
@@ -158,3 +164,6 @@ async def test_status_prefers_websocket_primary_when_healthy(monkeypatch: pytest
     assert payload["telegram_poller_state"] == "running"
     assert payload["telegram_poller_lock_healthy"] is True
     assert payload["live_e2e_active"] is True
+    assert payload["qwen_auth_type"] == "openai"
+    assert payload["qwen_provider_profile"] == "openai-qwen"
+    assert payload["qwen_planner_capability_required"] is True

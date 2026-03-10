@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -16,6 +17,12 @@ QWEN_TASK_MODES = {
 _OUTPUT_FORMATS = {"text", "json", "stream-json"}
 _APPROVAL_MODES = {"plan", "default", "auto-edit", "yolo"}
 _CHANNELS = {"VSCode", "ACP", "SDK", "CI"}
+QWEN_REPLY_CONTRACTS = {
+    "ask_next_question",
+    "emit_ready_sentence",
+    "emit_plan",
+}
+_READY_SENTENCE = "I have everything I need. Send /plan to generate your project plan."
 _PLANNER_META_PATTERNS = (
     "ready to assist with your telegram product workflow planning",
     "what would you like to work on?",
@@ -29,10 +36,27 @@ _PLANNER_META_PATTERNS = (
     "i'm ready to help with your telegram product workflow",
     "i'm ready to help plan your telegram product workflow",
     "i'm ready to continue our telegram requirements conversation",
+    "i'm ready to help you plan your python app project",
+    "let me ask a couple of questions to understand what you're building",
+    "let me ask the key questions",
+    "i don't have any requirements gathered yet",
+    "i need to gather requirements for your",
+    "i need to understand what you want to build",
+    "to get started, i need to understand",
+    "to get started, i need to understand a few things",
+    "to get started:",
     "approve the plan mode exit",
     "please approve the plan mode exit",
     "telegram product workflow planning",
 )
+_PLANNER_QUESTION_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "project_kind": ("what does", "app do", "kind of app", "utility", "automation", "service", "script"),
+    "framework_or_script": ("framework", "fastapi", "flask", "plain python", "python script", "script"),
+    "runtime_mode": ("background", "scheduled", "schedule", "service", "on-demand", "run"),
+    "storage": ("database", "store", "persist", "data", "sqlite", "postgres", "storage"),
+    "integrations": ("api", "integrat", "external", "telegram", "webhook"),
+    "constraints": ("constraint", "platform", "windows", "linux", "mac", "test", "stdlib", "standard library"),
+}
 _CODING_META_PATTERNS = (
     "what would you like to do with this project",
     "the workspace at",
@@ -42,6 +66,25 @@ _CODING_META_PATTERNS = (
     "if you want me to build it out",
     "what would you like to do with this project?",
     "what would you like to do with this project",
+)
+_PLAN_GENERATION_INVALID_PATTERNS = (
+    "i don't have any requirements gathered yet",
+    "i need to gather the requirements first",
+    "i need to gather some requirements before",
+    "let me ask you a few quick questions first",
+    "let me ask a few questions",
+    "let me ask the key questions",
+    "what does this app do?",
+    "which framework would you prefer",
+    "which framework do you prefer",
+)
+_PLAN_REQUIRED_MARKERS = (
+    "overview:",
+    "core features:",
+    "tech stack:",
+    "project structure:",
+    "milestones:",
+    "open questions:",
 )
 
 
@@ -115,6 +158,13 @@ def load_qwen_execution_policy(
         "auth_type": str(get_str("SKYNET_QWEN_AUTH_TYPE", "qwen-oauth") or "qwen-oauth").strip() or "qwen-oauth",
         "channel": channel,
         "context_diagnostics": bool(get_bool("SKYNET_QWEN_CONTEXT_DIAGNOSTICS", True)),
+        "provider": {
+            "profile_name": str(get_str("SKYNET_QWEN_PROVIDER_PROFILE", "default") or "default").strip() or "default",
+            "openai_base_url": str(get_str("SKYNET_QWEN_OPENAI_BASE_URL", "") or "").strip(),
+            "openai_api_key_env": str(get_str("SKYNET_QWEN_OPENAI_API_KEY_ENV", "OPENAI_API_KEY") or "OPENAI_API_KEY").strip() or "OPENAI_API_KEY",
+            "planner_capability_required": bool(get_bool("SKYNET_QWEN_PLANNER_CAPABILITY_REQUIRED", True)),
+            "coding_capability_required": bool(get_bool("SKYNET_QWEN_CODING_CAPABILITY_REQUIRED", True)),
+        },
         "planner": _profile(
             "PLANNER",
             output_default="json",
@@ -167,6 +217,49 @@ def build_qwen_command_args(
         args.extend(["--session-id", _normalize_session_id(session_id)])
     args.append(prompt)
     return args
+
+
+def build_qwen_subprocess_env(policy: dict[str, Any], *, model: str = "") -> dict[str, str]:
+    env = dict(os.environ)
+    auth_type = str(policy.get("auth_type") or "").strip().lower()
+    provider = dict(policy.get("provider") or {})
+    if auth_type == "openai":
+        base_url = str(provider.get("openai_base_url") or "").strip()
+        api_key_env = str(provider.get("openai_api_key_env") or "OPENAI_API_KEY").strip() or "OPENAI_API_KEY"
+        api_key = str(os.environ.get(api_key_env, "") or "").strip()
+        if base_url:
+            env["OPENAI_BASE_URL"] = base_url
+        if api_key:
+            env["OPENAI_API_KEY"] = api_key
+        if model:
+            env["OPENAI_MODEL"] = model
+    return env
+
+
+def build_qwen_runtime_prompt(
+    *,
+    prompt: str,
+    task_mode: str,
+    reply_contract: str = "",
+    planner_state: dict[str, Any] | None = None,
+    requirement_summary_md: str = "",
+) -> str:
+    state = dict(planner_state or {})
+    contract = str(reply_contract or "").strip().lower()
+    summary = str(requirement_summary_md or "").strip()
+    base_prompt = str(prompt or "").strip()
+    lines = [
+        f"task_mode: {str(task_mode or '').strip().lower()}",
+        f"reply_contract: {contract or 'none'}",
+        "Planner state JSON:",
+        json.dumps(state, ensure_ascii=True),
+        "",
+        "Requirement summary:",
+        summary or "- None yet",
+    ]
+    if base_prompt:
+        lines.extend(["", "Gateway prompt:", base_prompt])
+    return "\n".join(lines).strip()
 
 
 def discover_qwen_context_paths(cwd: str, *, include_home: bool = True) -> list[str]:
@@ -257,13 +350,36 @@ def parse_qwen_json_output(stdout: str) -> dict[str, Any]:
     }
 
 
+def _extract_slot_mentions(text: str) -> set[str]:
+    lowered = str(text or "").strip().lower()
+    slots: set[str] = set()
+    for slot, keywords in _PLANNER_QUESTION_KEYWORDS.items():
+        if any(keyword in lowered for keyword in keywords):
+            slots.add(slot)
+    return slots
+
+
+def _summary_terms(summary: str) -> set[str]:
+    terms: set[str] = set()
+    for token in str(summary or "").lower().replace("-", " ").split():
+        cleaned = token.strip(" ,.:;()[]{}\"'")
+        if len(cleaned) >= 4 and not cleaned.isdigit():
+            terms.add(cleaned)
+    return terms
+
+
 def classify_qwen_output_contract(
     *,
     task_mode: str,
     assistant_text: str,
     tool_use_names: list[str] | None = None,
+    reply_contract: str = "",
+    planner_state: dict[str, Any] | None = None,
+    requirement_summary_md: str = "",
 ) -> str:
     mode = str(task_mode or "").strip().lower()
+    contract = str(reply_contract or "").strip().lower()
+    state = dict(planner_state or {})
     text = str(assistant_text or "").strip()
     if not text:
         return "missing_assistant_text"
@@ -271,8 +387,36 @@ def classify_qwen_output_contract(
     if mode == "planner_chat":
         if tool_use_names:
             return "planner_tool_use"
+        if contract == "emit_ready_sentence" and text != _READY_SENTENCE:
+            return "planner_ready_sentence_mismatch"
+        if contract == "ask_next_question":
+            if "?" not in text:
+                return "planner_missing_question"
+            missing_slots = {
+                str(item).strip().lower()
+                for item in list(state.get("missing_slots") or [])
+                if str(item).strip()
+            }
+            mentioned_slots = _extract_slot_mentions(lowered)
+            if missing_slots:
+                if not mentioned_slots:
+                    return "planner_question_not_grounded"
+                if not mentioned_slots.issubset(missing_slots):
+                    return "planner_question_targets_answered_slot"
         if any(pattern in lowered for pattern in _PLANNER_META_PATTERNS):
             return "planner_meta_output"
+    elif mode == "plan_generation":
+        if tool_use_names:
+            return "plan_generation_tool_use"
+        if any(pattern in lowered for pattern in _PLAN_GENERATION_INVALID_PATTERNS):
+            return "plan_generation_requirement_reset"
+        if not all(marker in lowered for marker in _PLAN_REQUIRED_MARKERS):
+            return "plan_generation_missing_structure"
+        summary_terms = _summary_terms(requirement_summary_md)
+        if summary_terms:
+            overlap = sum(1 for term in summary_terms if term in lowered)
+            if overlap < min(2, len(summary_terms)):
+                return "plan_generation_not_grounded"
     elif mode in {"coding_implementation", "coding_validation"}:
         if any(pattern in lowered for pattern in _CODING_META_PATTERNS):
             return "coding_meta_output"

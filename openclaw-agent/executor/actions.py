@@ -24,6 +24,7 @@ import logging
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from html import unescape
@@ -39,6 +40,8 @@ from skynet.settings.loader import get_component_settings  # noqa: E402
 from skynet.qwen_cli import (  # noqa: E402
     QWEN_TASK_MODES,
     build_qwen_command_args,
+    build_qwen_runtime_prompt,
+    build_qwen_subprocess_env,
     classify_qwen_output_contract,
     discover_qwen_context_paths,
     load_qwen_execution_policy,
@@ -1084,6 +1087,9 @@ def _normalize_qwen_result(
     task_mode: str,
     policy: dict[str, Any],
     working_dir: str | None,
+    reply_contract: str = "",
+    planner_state: dict[str, Any] | None = None,
+    requirement_summary_md: str = "",
 ) -> dict[str, Any]:
     profile = qwen_profile_for_task_mode(policy, task_mode)
     output_format = str(profile.get("output_format") or "").strip().lower()
@@ -1122,6 +1128,9 @@ def _normalize_qwen_result(
             task_mode=task_mode,
             assistant_text=assistant_text,
             tool_use_names=tool_use_names,
+            reply_contract=reply_contract,
+            planner_state=planner_state,
+            requirement_summary_md=requirement_summary_md,
         )
     )
     context_files = discover_qwen_context_paths(str(working_dir or "")) if bool(policy.get("context_diagnostics", True)) else []
@@ -1130,6 +1139,7 @@ def _normalize_qwen_result(
     result["session_id"] = str(parsed.get("session_id") or result.get("session_key") or "").strip()
     result["model"] = str(parsed.get("model") or profile.get("model") or "").strip()
     result["auth_type"] = str(policy.get("auth_type") or "").strip()
+    result["qwen_provider_profile"] = str(dict(policy.get("provider") or {}).get("profile_name") or "").strip()
     result["output_contract"] = output_contract
     result["raw_result_tail"] = str(parsed.get("raw_result_tail") or raw_stdout[-2000:])
     result["qwen_task_mode"] = task_mode
@@ -1176,6 +1186,29 @@ def _managed_qwen_context_file(*, working_dir: str | None, context_text: str, en
             pass
 
 
+@contextlib.contextmanager
+def _managed_qwen_working_dir(
+    *,
+    requested_working_dir: str | None,
+    session_key: str,
+    profile: dict[str, Any],
+) -> Any:
+    requested = str(requested_working_dir or "").strip()
+    strategy = str(profile.get("working_dir_strategy") or "project").strip().lower() or "project"
+    if strategy != "request_scoped":
+        if requested:
+            os.makedirs(requested, exist_ok=True)
+        yield requested or None
+        return
+
+    scoped_root = Path(tempfile.gettempdir()) / f"qwen-{profile.get('profile_key', 'planner')}-{session_key or uuid.uuid4().hex}"
+    scoped_root.mkdir(parents=True, exist_ok=True)
+    try:
+        yield str(scoped_root)
+    finally:
+        shutil.rmtree(scoped_root, ignore_errors=True)
+
+
 async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
     """
     Run a local coding agent CLI in non-interactive mode.
@@ -1216,33 +1249,55 @@ async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
         qwen_policy = _get_qwen_execution_policy()
         profile = qwen_profile_for_task_mode(qwen_policy, task_mode)
         qwen_context_text = str(params.get("qwen_context_text") or "").strip()
+        reply_contract = str(params.get("reply_contract") or "").strip().lower()
+        planner_state = params.get("planner_state_json") if isinstance(params.get("planner_state_json"), dict) else {}
+        requirement_summary_md = str(params.get("requirement_summary_md") or "").strip()
         if not model:
             model = str(profile.get("model") or "").strip()
+        runtime_prompt = build_qwen_runtime_prompt(
+            prompt=prompt,
+            task_mode=task_mode,
+            reply_contract=reply_contract,
+            planner_state=planner_state,
+            requirement_summary_md=requirement_summary_md,
+        )
         args = build_qwen_command_args(
             binary=resolved,
-            prompt=prompt,
+            prompt=runtime_prompt,
             session_id=session_key,
             task_mode=task_mode,
             policy=qwen_policy,
         )
-        with _managed_qwen_context_file(
-            working_dir=cwd,
-            context_text=qwen_context_text,
-            enabled=bool(profile.get("use_context_file", False)),
-        ):
-            result = await _run_tracked_coding_subprocess(
-                args=args,
-                cwd=cwd,
-                timeout=timeout,
-                session_key=session_key,
-                agent=agent,
+        qwen_env = build_qwen_subprocess_env(qwen_policy, model=model)
+        with _managed_qwen_working_dir(
+            requested_working_dir=cwd,
+            session_key=session_key,
+            profile=profile,
+        ) as effective_cwd:
+            with _managed_qwen_context_file(
+                working_dir=effective_cwd,
+                context_text=qwen_context_text,
+                enabled=bool(profile.get("use_context_file", False)),
+            ):
+                result = await _run_tracked_coding_subprocess(
+                    args=args,
+                    cwd=effective_cwd,
+                    timeout=timeout,
+                    session_key=session_key,
+                    agent=agent,
+                    env=qwen_env,
+                )
+            result["qwen_requested_working_dir"] = str(cwd or "").strip()
+            result["qwen_effective_working_dir"] = str(effective_cwd or "").strip()
+            result = _normalize_qwen_result(
+                result,
+                task_mode=task_mode,
+                policy=qwen_policy,
+                working_dir=result.get("qwen_effective_working_dir") or cwd,
+                reply_contract=reply_contract,
+                planner_state=planner_state,
+                requirement_summary_md=requirement_summary_md,
             )
-        result = _normalize_qwen_result(
-            result,
-            task_mode=task_mode,
-            policy=qwen_policy,
-            working_dir=cwd,
-        )
     elif agent == "claude":
         args = [resolved]
         if model:
