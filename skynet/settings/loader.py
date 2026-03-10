@@ -114,11 +114,25 @@ class ComponentSettingsSpec:
     env_override_env_vars: tuple[str, ...]
 
 
+def _resolve_component_settings_dir(component_name: str, *, repo_root: Path) -> Path:
+    component = _normalize_component_name(component_name)
+    candidates_map = {
+        "control": [repo_root / "skynet" / "settings", repo_root / "settings"],
+        "gateway": [repo_root / "openclaw-gateway" / "settings", repo_root / "settings"],
+        "agent": [repo_root / "openclaw-agent" / "settings", repo_root / "settings"],
+    }
+    candidates = candidates_map[component]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
 def _component_specs() -> dict[str, ComponentSettingsSpec]:
     return {
         "control": ComponentSettingsSpec(
             name="control",
-            settings_dir=ROOT / "skynet" / "settings",
+            settings_dir=_resolve_component_settings_dir("control", repo_root=ROOT),
             defaults_file="defaults.yaml",
             local_file="settings.local.yaml",
             default_env_file=".env",
@@ -128,7 +142,7 @@ def _component_specs() -> dict[str, ComponentSettingsSpec]:
         ),
         "gateway": ComponentSettingsSpec(
             name="gateway",
-            settings_dir=ROOT / "openclaw-gateway" / "settings",
+            settings_dir=_resolve_component_settings_dir("gateway", repo_root=ROOT),
             defaults_file="settings.yaml",
             local_file="settings.local.yaml",
             default_env_file=".env",
@@ -138,7 +152,7 @@ def _component_specs() -> dict[str, ComponentSettingsSpec]:
         ),
         "agent": ComponentSettingsSpec(
             name="agent",
-            settings_dir=ROOT / "openclaw-agent" / "settings",
+            settings_dir=_resolve_component_settings_dir("agent", repo_root=ROOT),
             defaults_file="defaults.yaml",
             local_file="settings.local.yaml",
             default_env_file=".env.worker-agent",
