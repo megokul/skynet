@@ -718,7 +718,11 @@ def _qwen_ready_probe_request() -> dict[str, Any]:
             planner_state=planner_state,
             reply_contract="emit_ready_sentence",
         ),
-        "qwen_context_text": build_qwen_planner_context(system, planner_state),
+        "qwen_context_text": build_qwen_planner_context(
+            system,
+            planner_state,
+            reply_contract="emit_ready_sentence",
+        ),
         "planner_state_json": planner_state,
         "requirement_summary_md": requirement_summary_md,
         "expected_text": ready_sentence(),

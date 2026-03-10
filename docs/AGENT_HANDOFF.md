@@ -1,10 +1,74 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-10 15:26
+Last updated (UTC): 2026-03-10 15:31
 
 ## Current Goal
 
 WebSocket-primary worker execution with Qwen-first planner/coding behavior, while preserving strict quality gates, deterministic live-E2E failure handling, and a single settings-driven runtime contract.
+
+### 2026-03-10 Qwen Planner Contract Tightening + Validator Pass-Through
+
+- Root-caused the latest preflight/runtime failures into two separate layers:
+  - worker security validator was rejecting `requirement_summary_md` before Qwen ran
+  - after that fix, the real `telegram_real` requirements turn still failed because the deployed gateway was generating an older `emit_ready_sentence` planner prompt/context that nudged Qwen into `exit_plan_mode`
+- Worker validation fix:
+  - `openclaw-agent/security/validator.py` now exempts `requirement_summary_md` from shell-metacharacter sanitization, matching existing free-text prompt/context fields
+  - websocket regression coverage added in:
+    - `openclaw-agent/tests/test_validator.py`
+    - `openclaw-agent/tests/test_ws_roundtrip.py`
+  - targeted validation passed:
+    - `14 passed`
+- Qwen planner contract tightening:
+  - `skynet/project_specialist.py` now makes `emit_ready_sentence` explicit in both planner prompt and planner context:
+    - do not generate the plan yet
+    - do not use markdown/bullets/headings
+    - stop immediately after the final period
+  - `skynet/qwen_cli.py` now injects contract-specific output rules into the runtime prompt for:
+    - `emit_ready_sentence`
+    - `ask_next_question`
+    - `emit_plan`
+  - gateway planner payload generation now passes `reply_contract` into shared Qwen context construction in:
+    - `openclaw-gateway/bot/handlers/project.py`
+    - `openclaw-gateway/tests/live_diagnostics.py`
+  - regression coverage added in:
+    - `openclaw-agent/tests/test_executor.py`
+    - `openclaw-gateway/tests/test_project_specialist_prompt.py`
+  - targeted validation passed:
+    - `67 passed, 2 skipped`
+- Planner approval-mode correction:
+  - canonical settings now use `SKYNET_QWEN_PLANNER_APPROVAL_MODE=default` in:
+    - `openclaw-agent/settings/defaults.yaml`
+    - `openclaw-gateway/settings/settings.yaml`
+  - reason:
+    - official Qwen docs describe `plan` mode as a tool-driven planning workflow that can invoke `exit_plan_mode`
+    - our planner-chat / requirements-gathering stage is not that workflow and should not encourage tool usage
+- Real Qwen verification on the local machine:
+  - direct `run_coding_agent` probe with:
+    - `task_mode=planner_chat`
+    - `reply_contract=emit_ready_sentence`
+    - structured `planner_state_json`
+    - structured `requirement_summary_md`
+  - result:
+    - `returncode=0`
+    - `output_contract=ok`
+    - exact assistant text: `I have everything I need. Send /plan to generate your project plan.`
+    - `permission_denials=[]`
+    - `tools.totalCalls=0`
+- Live E2E status after local fixes:
+  - latest trace:
+    - `logs/e2e-live-1773156492.log`
+  - preflight is now fully green:
+    - planner-ready probe passes
+    - plan-generation probe passes
+  - actual Telegram requirements turn still fails with:
+    - `QWEN_CONTRACT_VIOLATION: planner_tool_use`
+    - bot-visible failure: `AI is unavailable right now. Please try again.`
+  - worker audit proves the failure is from stale deployed gateway prompt generation, not the local worker runtime:
+    - preflight actions used the new contract and passed
+    - live requirements action still carried the older `emit_ready_sentence` prompt/context without the new "do not generate the plan yet / stop after the sentence" guidance
+- Current required next step:
+  - commit/push/deploy the new gateway-side prompt/context changes, then rerun `telegram_real`
+  - until that deploy happens, live Telegram flow will continue exercising the stale prompt builder in the remote container even though the local worker runtime is fixed
 
 ### 2026-03-10 Qwen Planner State Machine + Provider-Flex Capability Probes
 

@@ -248,9 +248,37 @@ def build_qwen_runtime_prompt(
     contract = str(reply_contract or "").strip().lower()
     summary = str(requirement_summary_md or "").strip()
     base_prompt = str(prompt or "").strip()
+    output_rules: list[str] = []
+    if contract == "emit_ready_sentence":
+        output_rules = [
+            "Output rules:",
+            f"- Return exactly this sentence: {_READY_SENTENCE}",
+            "- Do not generate the project plan yet.",
+            "- Do not add markdown, bullets, headings, or any extra text.",
+            "- Stop immediately after the final period.",
+            "",
+        ]
+    elif contract == "ask_next_question":
+        output_rules = [
+            "Output rules:",
+            "- Ask only about missing slots from planner_state_json.",
+            "- Ask 1-2 concise questions maximum.",
+            "- Do not ask about answered slots.",
+            "- Return only the next assistant reply text.",
+            "",
+        ]
+    elif contract == "emit_plan":
+        output_rules = [
+            "Output rules:",
+            "- Generate the full project plan now.",
+            "- Do not ask follow-up questions.",
+            "- Return only the final plan text.",
+            "",
+        ]
     lines = [
         f"task_mode: {str(task_mode or '').strip().lower()}",
         f"reply_contract: {contract or 'none'}",
+        *output_rules,
         "Planner state JSON:",
         json.dumps(state, ensure_ascii=True),
         "",

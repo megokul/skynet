@@ -386,10 +386,16 @@ def _planner_task_mode(
     return "planner_chat"
 
 
-def _planner_qwen_context(task_mode: str, system: str, planner_state: dict[str, Any]) -> str:
+def _planner_qwen_context(
+    task_mode: str,
+    system: str,
+    planner_state: dict[str, Any],
+    *,
+    reply_contract: str = "",
+) -> str:
     if str(task_mode or "").strip().lower() == "plan_generation":
         return build_qwen_plan_generation_context(system, planner_state)
-    return build_qwen_planner_context(system, planner_state)
+    return build_qwen_planner_context(system, planner_state, reply_contract=reply_contract)
 
 
 def _planner_prompt_and_payload(
@@ -411,7 +417,7 @@ def _planner_prompt_and_payload(
             reply_contract=reply_contract,
         ),
         task_mode,
-        _planner_qwen_context(task_mode, system, planner_state),
+        _planner_qwen_context(task_mode, system, planner_state, reply_contract=reply_contract),
         requirement_summary_md,
     )
 

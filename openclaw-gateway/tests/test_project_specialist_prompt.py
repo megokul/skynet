@@ -88,6 +88,33 @@ def test_qwen_planner_prompt_can_force_completion_sentence_for_detailed_request(
     assert ready_sentence() in prompt
 
 
+def test_qwen_ready_sentence_context_forbids_inline_plan_generation() -> None:
+    state = {
+        "plan_ready": True,
+        "missing_slots": [],
+        "requirement_summary": (
+            "- Project Kind: local terminal utility script\n"
+            "- Constraints: show a popup saying \"hi\" and play a beep"
+        ),
+    }
+
+    context = build_qwen_planner_context(
+        "System instructions go here.",
+        state,
+        reply_contract="emit_ready_sentence",
+    )
+    prompt = build_qwen_planner_prompt(
+        [{"role": "user", "content": "Generate the next reply only."}],
+        planner_state=state,
+        reply_contract="emit_ready_sentence",
+    )
+
+    assert "Do not generate the project plan yet." in context
+    assert "Stop immediately after the final period" in context
+    assert "Do not generate the plan yet." in prompt
+    assert ready_sentence() in prompt
+
+
 def test_build_planner_state_marks_complete_windows_script_request_ready() -> None:
     messages = [
         {"role": "assistant", "content": "What does this app do? (web service, automation, utility, other)"},

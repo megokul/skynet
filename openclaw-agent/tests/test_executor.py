@@ -36,6 +36,7 @@ from skynet.project_specialist import (
     build_project_specialist_opening,
     build_project_specialist_system_prompt,
 )
+from skynet.qwen_cli import build_qwen_runtime_prompt
 
 
 # ── exec_command ──────────────────────────────────────────────────────────────
@@ -669,6 +670,19 @@ class TestRunCodingAgent:
         assert seen["cwd"] != str(tmp_path)
         assert result["qwen_requested_working_dir"] == str(tmp_path)
         assert result["qwen_effective_working_dir"] == seen["cwd"]
+
+    def test_qwen_ready_sentence_runtime_prompt_forbids_inline_plan_generation(self):
+        prompt = build_qwen_runtime_prompt(
+            prompt="reply exactly with the ready sentence",
+            task_mode="planner_chat",
+            reply_contract="emit_ready_sentence",
+            planner_state={"plan_ready": True, "missing_slots": []},
+            requirement_summary_md="- Project Kind: local terminal utility script",
+        )
+
+        assert "Return exactly this sentence" in prompt
+        assert "Do not generate the project plan yet." in prompt
+        assert "Stop immediately after the final period." in prompt
 
     @pytest.mark.asyncio
     async def test_real_qwen_planner_multiline_prompt(self, tmp_path):

@@ -352,18 +352,45 @@ def should_qwen_finalize_planner_chat(messages: list[dict[str, Any]]) -> bool:
     return app_score >= 1 and implementation_score >= 1 and delivery_score >= 1
 
 
-def build_qwen_planner_context(system: str, planner_state: dict[str, Any] | None = None) -> str:
+def build_qwen_planner_context(
+    system: str,
+    planner_state: dict[str, Any] | None = None,
+    *,
+    reply_contract: str = "",
+) -> str:
     state = dict(planner_state or {})
     summary = build_requirement_summary_markdown(state)
+    contract = str(reply_contract or "").strip().lower()
+    contract_lines = [
+        "- The gateway owns planner state and requirement readiness.",
+        "- Treat the supplied planner state and requirement summary as the source of truth.",
+        "- Ignore the working directory, filesystem state, and any empty-workspace context.",
+        "- Do not mention the workspace, files, or directory.",
+        "- Do not say you are ready to assist and do not restart the conversation.",
+        "- Return only the assistant reply text.",
+        f"- The only valid completion sentence is '{_READY_SENTENCE}'.",
+    ]
+    if contract == "emit_ready_sentence":
+        contract_lines.extend(
+            [
+                "- planner_state.plan_ready is already true.",
+                "- Do not generate the project plan yet.",
+                "- Do not use markdown, headings, bullets, or code fences.",
+                "- Reply with exactly the required completion sentence and nothing else.",
+                "- Stop immediately after the final period of the completion sentence.",
+            ]
+        )
+    elif contract == "ask_next_question":
+        contract_lines.extend(
+            [
+                "- Ask only about the currently missing slots.",
+                "- Ask 1-2 concise questions maximum.",
+                "- Do not ask about answered slots.",
+            ]
+        )
     return (
         "Planner chat behavior for Qwen Code:\n"
-        "- The gateway owns planner state and requirement readiness.\n"
-        "- Treat the supplied planner state and requirement summary as the source of truth.\n"
-        "- Ignore the working directory, filesystem state, and any empty-workspace context.\n"
-        "- Do not mention the workspace, files, or directory.\n"
-        "- Do not say you are ready to assist and do not restart the conversation.\n"
-        "- Return only the assistant reply text.\n"
-        f"- The only valid completion sentence is '{_READY_SENTENCE}'.\n\n"
+        f"{chr(10).join(contract_lines)}\n\n"
         f"Planner state JSON:\n{json.dumps(state, ensure_ascii=True)}\n\n"
         f"Requirement summary:\n{summary or '- None yet'}\n\n"
         f"System instructions:\n{system}\n"
@@ -430,7 +457,9 @@ def build_qwen_planner_prompt(
             "The gateway has already determined that all required slots are satisfied.\n"
             "Reply exactly with the required completion sentence below.\n"
             "Do not ask follow-up questions.\n"
-            "Return only the sentence.\n\n"
+            "Do not generate the plan yet.\n"
+            "Do not use markdown, bullets, headings, or extra explanation.\n"
+            "Return only the sentence and stop immediately after the final period.\n\n"
             "Required completion sentence:\n"
             f"{_READY_SENTENCE}\n\n"
             f"Planner state JSON:\n{json.dumps(state, ensure_ascii=True)}\n\n"

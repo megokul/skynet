@@ -369,6 +369,41 @@ class TestCodingAgentViaWebSocket:
         assert response["result"]["returncode"] != 0
         assert "unknown" in response["result"]["stderr"].lower()
 
+    async def test_qwen_planner_summary_payload_passes_security_validation(self, ws_pair):
+        """
+        Structured planner summary payloads must reach the executor.
+
+        This guards the live preflight path where requirement_summary_md contains
+        quotes and markdown bullets. The request should not be rejected by the
+        shell-metacharacter validator.
+        """
+        if shutil.which("cline"):
+            pytest.skip("cline is installed on this machine - skipping missing-binary path")
+
+        gw, tmp_path = ws_pair
+
+        response = await gw.send_action(
+            "run_coding_agent",
+            {
+                "agent": "cline",
+                "prompt": "Write a hello-world Python script",
+                "working_dir": str(tmp_path),
+                "timeout_seconds": 30,
+                "reply_contract": "emit_ready_sentence",
+                "planner_state_json": {"plan_ready": True, "missing_slots": []},
+                "requirement_summary_md": (
+                    "- Project Kind: local terminal utility script\n"
+                    "- Constraints: show a popup saying \"hi\" and play a beep\n"
+                    "- Integrations: none"
+                ),
+            },
+        )
+
+        assert response["type"] == "action_response"
+        assert response["status"] == "success"
+        assert response["result"]["returncode"] != 0
+        assert "disallowed shell metacharacters" not in response["result"].get("stderr", "").lower()
+
 
 class TestSecurityPolicyViaWebSocket:
     """
