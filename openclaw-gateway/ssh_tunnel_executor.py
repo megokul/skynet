@@ -35,6 +35,14 @@ from runtime_trace import (
     command_preview,
     emit_runtime_trace,
 )
+from skynet.qwen_cli import (
+    QWEN_TASK_MODES,
+    build_qwen_command_args,
+    classify_qwen_output_contract,
+    discover_qwen_context_paths,
+    parse_qwen_json_output,
+    qwen_profile_for_task_mode,
+)
 from search.web_search import WebSearcher
 
 
@@ -493,6 +501,7 @@ class SSHTunnelExecutor:
             "codex": bot_cfg.get_str("OPENCLAW_SSH_CODEX_BIN", "codex"),
             "claude": bot_cfg.get_str("OPENCLAW_SSH_CLAUDE_BIN", "claude"),
             "cline": bot_cfg.get_str("OPENCLAW_SSH_CLINE_BIN", "cline"),
+            "qwen": bot_cfg.get_str("OPENCLAW_QWEN_BIN", bot_cfg.get_str("SKYNET_QWEN_BIN", "qwen")),
         }
         self._coding_prefix = {
             "codex": ["exec"],
@@ -510,6 +519,7 @@ class SSHTunnelExecutor:
             )
             configured_codex_write_mode = "danger_full_access"
         self._codex_write_mode = configured_codex_write_mode
+        self._qwen_policy = bot_cfg.get_qwen_execution_policy()
         self._closeable_apps = {
             "chrome": "chrome.exe",
             "firefox": "firefox.exe",
@@ -2483,6 +2493,129 @@ class SSHTunnelExecutor:
                 return False
         return default
 
+    def _normalize_qwen_run(
+        self,
+        run: dict[str, Any],
+        *,
+        task_mode: str,
+        cwd: str | None,
+    ) -> dict[str, Any]:
+        profile = qwen_profile_for_task_mode(self._qwen_policy, task_mode)
+        output_format = str(profile.get("output_format") or "").strip().lower()
+        raw_stdout = str(run.get("stdout") or "")
+        if output_format == "json":
+            try:
+                parsed = parse_qwen_json_output(raw_stdout)
+                parse_error = ""
+            except Exception as exc:
+                parsed = {
+                    "assistant_text": "",
+                    "session_id": "",
+                    "model": str(profile.get("model") or "").strip(),
+                    "tool_use_names": [],
+                    "raw_result_tail": raw_stdout[-2000:],
+                }
+                parse_error = f"invalid_json_output:{type(exc).__name__}"
+        else:
+            parsed = {
+                "assistant_text": raw_stdout.strip(),
+                "session_id": "",
+                "model": str(profile.get("model") or "").strip(),
+                "tool_use_names": [],
+                "raw_result_tail": raw_stdout[-2000:],
+            }
+            parse_error = ""
+
+        assistant_text = str(parsed.get("assistant_text") or "").strip()
+        tool_use_names = [str(name).strip() for name in list(parsed.get("tool_use_names") or []) if str(name).strip()]
+        output_contract = (
+            parse_error
+            if parse_error
+            else classify_qwen_output_contract(
+                task_mode=task_mode,
+                assistant_text=assistant_text,
+                tool_use_names=tool_use_names,
+            )
+        )
+        run["assistant_text"] = assistant_text
+        run["session_id"] = str(parsed.get("session_id") or "").strip()
+        run["model"] = str(parsed.get("model") or profile.get("model") or "").strip()
+        run["auth_type"] = str(self._qwen_policy.get("auth_type") or "").strip()
+        run["output_contract"] = output_contract
+        run["raw_result_tail"] = str(parsed.get("raw_result_tail") or raw_stdout[-2000:])
+        run["qwen_task_mode"] = task_mode
+        run["qwen_context_files"] = (
+            discover_qwen_context_paths(str(cwd or ""))
+            if bool(self._qwen_policy.get("context_diagnostics", True))
+            else []
+        )
+        run["qwen_tool_use_names"] = tool_use_names
+        run["stdout"] = assistant_text or raw_stdout
+        if output_contract != "ok":
+            detail = f"QWEN_CONTRACT_VIOLATION: {output_contract}"
+            stderr = str(run.get("stderr") or "").strip()
+            run["stderr"] = f"{stderr}\n{detail}".strip() if stderr else detail
+            if int(run.get("returncode", 0) or 0) == 0:
+                run["returncode"] = 1
+        return run
+
+    @contextlib.contextmanager
+    def _managed_remote_qwen_context_file(
+        self,
+        *,
+        client: paramiko.SSHClient,
+        cwd: str | None,
+        context_text: str,
+        enabled: bool,
+    ) -> Any:
+        text = str(context_text or "").strip()
+        working_dir = str(cwd or "").strip()
+        if not enabled or not text or not working_dir:
+            yield None
+            return
+
+        context_path = _norm_remote_path(
+            str(
+                (PureWindowsPath(working_dir) / "QWEN.md")
+                if self.remote_os == "windows"
+                else (PurePosixPath(working_dir) / "QWEN.md")
+            ),
+            self.remote_os,
+        )
+        parent_dir = str(PureWindowsPath(context_path).parent) if self.remote_os == "windows" else str(PurePosixPath(context_path).parent)
+        previous_text = ""
+        had_existing = False
+        sftp = client.open_sftp()
+        try:
+            self._sftp_makedirs(sftp, parent_dir)
+            try:
+                with sftp.open(context_path, "r") as handle:
+                    existing = handle.read()
+                if isinstance(existing, bytes):
+                    previous_text = existing.decode("utf-8", errors="replace")
+                else:
+                    previous_text = str(existing)
+                had_existing = True
+            except OSError:
+                had_existing = False
+                previous_text = ""
+
+            with sftp.open(context_path, "w") as handle:
+                handle.write(text)
+
+            yield context_path
+        finally:
+            try:
+                if had_existing:
+                    with sftp.open(context_path, "w") as handle:
+                        handle.write(previous_text)
+                else:
+                    with contextlib.suppress(OSError):
+                        sftp.remove(context_path)
+            finally:
+                with contextlib.suppress(Exception):
+                    sftp.close()
+
     def _resolve_backend(self, *, agent: str, backend: str) -> tuple[str | None, str | None]:
         backend = (backend or "auto").strip().lower()
         if backend not in {"auto", "ollama", "native"}:
@@ -2630,6 +2763,8 @@ class SSHTunnelExecutor:
         cwd: str | None,
         timeout: int,
         model: str,
+        task_mode: str = "",
+        qwen_context_text: str = "",
     ) -> dict[str, Any]:
         binary = self._coding_bins[agent]
         if self.remote_os == "windows":
@@ -2709,8 +2844,41 @@ class SSHTunnelExecutor:
                 else:
                     args.append(prompt)
                     initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
+            elif agent == "qwen":
+                qwen_task_mode = str(task_mode or "").strip().lower()
+                if qwen_task_mode not in QWEN_TASK_MODES:
+                    allowed = ", ".join(sorted(QWEN_TASK_MODES))
+                    return {
+                        "returncode": 1,
+                        "stdout": "",
+                        "stderr": f"Unsupported qwen task_mode '{qwen_task_mode}'. Allowed: {allowed}",
+                    }
+                args = build_qwen_command_args(
+                    binary=binary,
+                    prompt=prompt,
+                    session_id=uuid.uuid4().hex,
+                    task_mode=qwen_task_mode,
+                    policy=self._qwen_policy,
+                )
+                profile = qwen_profile_for_task_mode(self._qwen_policy, qwen_task_mode)
+                with self._managed_remote_qwen_context_file(
+                    client=client,
+                    cwd=cwd,
+                    context_text=qwen_context_text,
+                    enabled=bool(profile.get("use_context_file", False)),
+                ):
+                    if self.remote_os == "windows":
+                        initial = self._run_windows_command_with_prompt_file(
+                            client=client,
+                            args_without_prompt=args[:-1],
+                            prompt=args[-1],
+                            cwd=cwd,
+                            timeout=timeout,
+                        )
+                    else:
+                        initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
             else:
-                # Cline agent — use file-based prompt on Windows to avoid
+                # Cline agent â€” use file-based prompt on Windows to avoid
                 # exceeding the 8191-char command-line limit.
                 if self.remote_os == "windows":
                     args_no_prompt = [binary, *self._coding_prefix[agent]]
@@ -2724,7 +2892,9 @@ class SSHTunnelExecutor:
                 else:
                     args = [binary, *self._coding_prefix[agent], prompt]
                     initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
-            if agent != "cline":
+            if agent == "qwen":
+                run = self._normalize_qwen_run(initial, task_mode=task_mode, cwd=cwd)
+            elif agent != "cline":
                 run = initial
             elif initial["returncode"] == 0:
                 run = initial
@@ -3165,6 +3335,8 @@ class SSHTunnelExecutor:
             timeout = params.get("timeout_seconds", 1800)
             backend_raw = str(params.get("backend") or "auto").strip().lower()
             model = str(params.get("model") or "").strip()
+            task_mode = str(params.get("task_mode") or "").strip().lower()
+            qwen_context_text = str(params.get("qwen_context_text") or "").strip()
             base_url = str(
                 params.get("base_url")
                 or bot_cfg.CLAUDE_OLLAMA_BASE_URL
@@ -3192,6 +3364,13 @@ class SSHTunnelExecutor:
                     "returncode": 1,
                     "stdout": "",
                     "stderr": "timeout_seconds must be an integer between 30 and 3600.",
+                }
+            if agent == "qwen" and task_mode not in QWEN_TASK_MODES:
+                allowed = ", ".join(sorted(QWEN_TASK_MODES))
+                return {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": f"Unsupported qwen task_mode '{task_mode}'. Allowed: {allowed}",
                 }
 
             resolved_backend, backend_error = self._resolve_backend(
@@ -3222,6 +3401,8 @@ class SSHTunnelExecutor:
                 cwd=cwd if isinstance(cwd, str) else None,
                 timeout=timeout,
                 model=model,
+                task_mode=task_mode,
+                qwen_context_text=qwen_context_text,
             )
             if worker_id:
                 run["worker_id"] = worker_id

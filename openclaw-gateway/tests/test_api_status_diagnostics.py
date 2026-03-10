@@ -38,6 +38,7 @@ async def test_status_includes_ssh_diagnostics(monkeypatch: pytest.MonkeyPatch) 
     stub = _StubSSHExecutor(configured=True, ok=False, detail="SSH circuit open")
     monkeypatch.setenv("OPENCLAW_EXECUTION_MODE", "ssh_tunnel")
     monkeypatch.setenv("SKYNET_E2E_LIVE", "1")
+    monkeypatch.setattr(gateway_api.cfg, "BUILD_REVISION", "rev-123")
     monkeypatch.setattr(gateway_api, "get_ssh_executor", lambda: stub)
     monkeypatch.setattr(gateway_api, "is_agent_connected", lambda: False)
     monkeypatch.setattr(
@@ -94,6 +95,7 @@ async def test_status_includes_ssh_diagnostics(monkeypatch: pytest.MonkeyPatch) 
     assert payload["ssh_failure_streak"] == 3
     assert payload["ssh_circuit_open_until"] == 1234567890
     assert payload["ssh_endpoint"] == "host.docker.internal:2222"
+    assert payload["build_revision"] == "rev-123"
     assert payload["telegram_poller_state"] == "blocked"
     assert payload["telegram_poller_lease_owner"] == "gw-remote"
     assert payload["telegram_poller_lock_healthy"] is False
@@ -106,6 +108,7 @@ async def test_status_prefers_websocket_primary_when_healthy(monkeypatch: pytest
     stub = _StubSSHExecutor(configured=True, ok=True, detail="SSH healthy")
     monkeypatch.setenv("OPENCLAW_EXECUTION_MODE", "agent_preferred")
     monkeypatch.setenv("SKYNET_E2E_LIVE", "1")
+    monkeypatch.setattr(gateway_api.cfg, "BUILD_REVISION", "rev-456")
     monkeypatch.setattr(gateway_api, "get_ssh_executor", lambda: stub)
     monkeypatch.setattr(gateway_api, "is_agent_connected", lambda: True)
     monkeypatch.setattr(
@@ -151,6 +154,7 @@ async def test_status_prefers_websocket_primary_when_healthy(monkeypatch: pytest
     assert payload["fallback_ready"] is True
     assert payload["worker_id"] == "worker-primary"
     assert payload["websocket_health_ok"] is True
+    assert payload["build_revision"] == "rev-456"
     assert payload["telegram_poller_state"] == "running"
     assert payload["telegram_poller_lock_healthy"] is True
     assert payload["live_e2e_active"] is True

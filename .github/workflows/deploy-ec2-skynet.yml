@@ -156,6 +156,7 @@ jobs:
       - name: Build deployment env file
         shell: bash
         run: |
+          SKYNET_BUILD_REVISION="${GITHUB_SHA}" \
           python scripts/ci/render_settings_env.py \
             --component control \
             --component gateway \
@@ -303,6 +304,14 @@ jobs:
                   "status live_e2e_active mismatch: "
                   f"payload={payload.get('live_e2e_active')!r} "
                   f"config={expected_live_policy.get('active')!r}"
+              )
+          expected_build_revision = (config.get_str("SKYNET_BUILD_REVISION", "") or "").strip()
+          actual_build_revision = str(payload.get("build_revision") or "").strip()
+          if expected_build_revision and actual_build_revision != expected_build_revision:
+              raise SystemExit(
+                  "status build_revision mismatch: "
+                  f"payload={actual_build_revision!r} "
+                  f"config={expected_build_revision!r}"
               )
           if "telegram_poller_state" not in payload or "telegram_poller_lock_healthy" not in payload:
               raise SystemExit("status payload missing telegram poller diagnostics")

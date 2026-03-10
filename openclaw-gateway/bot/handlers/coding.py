@@ -1132,6 +1132,7 @@ def _stage_payload(
     elif stage_name == "qwen":
         payload["agent"] = "qwen"
         payload["backend"] = "auto"
+        payload["task_mode"] = "coding_implementation"
     else:
         raise ValueError(f"Unsupported coding stage: {stage_name}")
     return payload
@@ -8082,6 +8083,7 @@ async def _extract_milestones_codex_then_router(
                 {
                     "agent": planner_agent,
                     "backend": "auto",
+                    **({"task_mode": "plan_generation"} if planner_agent == "qwen" else {}),
                     "prompt": prompt,
                     "working_dir": working_dir,
                     "timeout_seconds": timeout,

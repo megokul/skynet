@@ -16,6 +16,7 @@ SECURITY INVARIANTS
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -35,6 +36,15 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from skynet.settings.loader import get_component_settings  # noqa: E402
+from skynet.qwen_cli import (  # noqa: E402
+    QWEN_TASK_MODES,
+    build_qwen_command_args,
+    classify_qwen_output_contract,
+    discover_qwen_context_paths,
+    load_qwen_execution_policy,
+    parse_qwen_json_output,
+    qwen_profile_for_task_mode,
+)
 
 _settings_loader = get_component_settings("agent")
 
@@ -1033,8 +1043,8 @@ async def _run_tracked_coding_subprocess(
         cleanup_status = f"timed_out_after_{timeout}s"
     result = {
         "returncode": proc.returncode if status != "timed_out" else -1,
-        "stdout": stdout_bytes.decode("utf-8", errors="replace")[:8192],
-        "stderr": stderr_bytes.decode("utf-8", errors="replace")[:4096],
+        "stdout": stdout_bytes.decode("utf-8", errors="replace"),
+        "stderr": stderr_bytes.decode("utf-8", errors="replace"),
         "session_key": session_key,
         "remote_pid": str(getattr(proc, "pid", "") or ""),
     }
@@ -1052,6 +1062,118 @@ async def _run_tracked_coding_subprocess(
     )
     await _pop_runtime_session(session_key)
     return result
+
+
+def _get_qwen_execution_policy() -> dict[str, Any]:
+    return load_qwen_execution_policy(get_str=_cfg_s, get_bool=_cfg_b)
+
+
+def _normalize_qwen_task_mode(params: dict[str, Any]) -> str:
+    task_mode = str(params.get("task_mode") or "").strip().lower()
+    if not task_mode:
+        raise ValueError("Missing required parameter: 'task_mode'")
+    if task_mode not in QWEN_TASK_MODES:
+        allowed = ", ".join(sorted(QWEN_TASK_MODES))
+        raise ValueError(f"Unsupported qwen task_mode '{task_mode}'. Allowed: {allowed}")
+    return task_mode
+
+
+def _normalize_qwen_result(
+    result: dict[str, Any],
+    *,
+    task_mode: str,
+    policy: dict[str, Any],
+    working_dir: str | None,
+) -> dict[str, Any]:
+    profile = qwen_profile_for_task_mode(policy, task_mode)
+    output_format = str(profile.get("output_format") or "").strip().lower()
+    raw_stdout = str(result.get("stdout") or "")
+    parsed: dict[str, Any]
+
+    if output_format == "json":
+        try:
+            parsed = parse_qwen_json_output(raw_stdout)
+            parse_error = ""
+        except Exception as exc:
+            parsed = {
+                "assistant_text": "",
+                "session_id": str(result.get("session_key") or "").strip(),
+                "model": str(profile.get("model") or "").strip(),
+                "tool_use_names": [],
+                "raw_result_tail": raw_stdout[-2000:],
+            }
+            parse_error = f"invalid_json_output:{type(exc).__name__}"
+    else:
+        parsed = {
+            "assistant_text": raw_stdout.strip(),
+            "session_id": str(result.get("session_key") or "").strip(),
+            "model": str(profile.get("model") or "").strip(),
+            "tool_use_names": [],
+            "raw_result_tail": raw_stdout[-2000:],
+        }
+        parse_error = ""
+
+    assistant_text = str(parsed.get("assistant_text") or "").strip()
+    tool_use_names = [str(name).strip() for name in list(parsed.get("tool_use_names") or []) if str(name).strip()]
+    output_contract = (
+        parse_error
+        if parse_error
+        else classify_qwen_output_contract(
+            task_mode=task_mode,
+            assistant_text=assistant_text,
+            tool_use_names=tool_use_names,
+        )
+    )
+    context_files = discover_qwen_context_paths(str(working_dir or "")) if bool(policy.get("context_diagnostics", True)) else []
+
+    result["assistant_text"] = assistant_text
+    result["session_id"] = str(parsed.get("session_id") or result.get("session_key") or "").strip()
+    result["model"] = str(parsed.get("model") or profile.get("model") or "").strip()
+    result["auth_type"] = str(policy.get("auth_type") or "").strip()
+    result["output_contract"] = output_contract
+    result["raw_result_tail"] = str(parsed.get("raw_result_tail") or raw_stdout[-2000:])
+    result["qwen_task_mode"] = task_mode
+    result["qwen_context_files"] = context_files
+    result["qwen_tool_use_names"] = tool_use_names
+    result["stdout"] = assistant_text or raw_stdout
+
+    if output_contract != "ok":
+        detail = f"QWEN_CONTRACT_VIOLATION: {output_contract}"
+        stderr = str(result.get("stderr") or "").strip()
+        result["stderr"] = f"{stderr}\n{detail}".strip() if stderr else detail
+        if int(result.get("returncode", 0) or 0) == 0:
+            result["returncode"] = 1
+    return result
+
+
+@contextlib.contextmanager
+def _managed_qwen_context_file(*, working_dir: str | None, context_text: str, enabled: bool) -> Any:
+    text = str(context_text or "").strip()
+    cwd = str(working_dir or "").strip()
+    if not enabled or not text or not cwd:
+        yield None
+        return
+
+    os.makedirs(cwd, exist_ok=True)
+    context_path = Path(cwd) / "QWEN.md"
+    had_existing = context_path.exists()
+    previous_text = ""
+    if had_existing:
+        try:
+            previous_text = context_path.read_text(encoding="utf-8")
+        except OSError:
+            previous_text = ""
+    context_path.write_text(text, encoding="utf-8")
+    try:
+        yield str(context_path)
+    finally:
+        try:
+            if had_existing:
+                context_path.write_text(previous_text, encoding="utf-8")
+            else:
+                context_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
@@ -1089,7 +1211,39 @@ async def run_coding_agent(params: dict[str, Any]) -> dict[str, Any]:
     # Snapshot working directory before execution to detect written files.
     before_snapshot = _local_working_tree_snapshot(cwd) if cwd else {}
 
-    if agent == "claude":
+    if agent == "qwen":
+        task_mode = _normalize_qwen_task_mode(params)
+        qwen_policy = _get_qwen_execution_policy()
+        profile = qwen_profile_for_task_mode(qwen_policy, task_mode)
+        qwen_context_text = str(params.get("qwen_context_text") or "").strip()
+        if not model:
+            model = str(profile.get("model") or "").strip()
+        args = build_qwen_command_args(
+            binary=resolved,
+            prompt=prompt,
+            session_id=session_key,
+            task_mode=task_mode,
+            policy=qwen_policy,
+        )
+        with _managed_qwen_context_file(
+            working_dir=cwd,
+            context_text=qwen_context_text,
+            enabled=bool(profile.get("use_context_file", False)),
+        ):
+            result = await _run_tracked_coding_subprocess(
+                args=args,
+                cwd=cwd,
+                timeout=timeout,
+                session_key=session_key,
+                agent=agent,
+            )
+        result = _normalize_qwen_result(
+            result,
+            task_mode=task_mode,
+            policy=qwen_policy,
+            working_dir=cwd,
+        )
+    elif agent == "claude":
         args = [resolved]
         if model:
             args.extend(["--model", model])

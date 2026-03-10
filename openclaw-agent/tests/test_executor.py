@@ -23,9 +23,18 @@ from __future__ import annotations
 import os
 import sys
 import json
-import textwrap
+import shutil
+import uuid
+from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
+
+from skynet.project_specialist import (
+    build_qwen_planner_context,
+    build_qwen_planner_prompt,
+    build_project_specialist_opening,
+    build_project_specialist_system_prompt,
+)
 
 
 # ── exec_command ──────────────────────────────────────────────────────────────
@@ -240,6 +249,226 @@ class TestRunCodingAgent:
 
         assert result["returncode"] == 1
         assert "timeout" in result["stderr"].lower()
+
+    @pytest.mark.asyncio
+    async def test_qwen_requires_task_mode(self, tmp_path):
+        import executor.actions as actions_mod
+
+        saved = actions_mod._CODING_AGENT_BINARIES["qwen"]
+        actions_mod._CODING_AGENT_BINARIES["qwen"] = "qwen"
+        try:
+            with pytest.raises(ValueError, match="task_mode"):
+                await run_coding_agent({
+                    "agent": "qwen",
+                    "prompt": "plan this",
+                    "working_dir": str(tmp_path),
+                })
+        finally:
+            actions_mod._CODING_AGENT_BINARIES["qwen"] = saved
+
+    @pytest.mark.asyncio
+    async def test_qwen_json_output_is_normalized(self, tmp_path):
+        import executor.actions as actions_mod
+
+        fake_stdout = json.dumps(
+            [
+                {
+                    "type": "system",
+                    "subtype": "init",
+                    "session_id": "sess-123",
+                    "model": "coder-model",
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "Which framework should this script use?"}
+                        ]
+                    },
+                },
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "session_id": "sess-123",
+                    "result": "Which framework should this script use?",
+                },
+            ]
+        )
+
+        with (
+            patch.object(actions_mod, "_resolve_coding_binary", return_value=("qwen", "qwen")),
+            patch.object(
+                actions_mod,
+                "_run_tracked_coding_subprocess",
+                AsyncMock(
+                    return_value={
+                        "returncode": 0,
+                        "stdout": fake_stdout,
+                        "stderr": "",
+                        "session_key": "sess-123",
+                        "remote_pid": "100",
+                    }
+                ),
+            ),
+        ):
+            result = await run_coding_agent({
+                "agent": "qwen",
+                "task_mode": "planner_chat",
+                "prompt": "plan this",
+                "working_dir": str(tmp_path),
+            })
+
+        assert result["returncode"] == 0
+        assert result["assistant_text"] == "Which framework should this script use?"
+        assert result["stdout"] == "Which framework should this script use?"
+        assert result["output_contract"] == "ok"
+        assert result["session_id"] == "sess-123"
+        assert result["auth_type"] == "qwen-oauth"
+
+    @pytest.mark.asyncio
+    async def test_qwen_command_normalizes_session_id_to_uuid(self, tmp_path):
+        import executor.actions as actions_mod
+
+        seen: dict[str, list[str]] = {}
+
+        async def _fake_run_tracked_coding_subprocess(**kwargs):
+            seen["args"] = list(kwargs["args"])
+            return {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    [
+                        {"type": "system", "subtype": "init", "session_id": str(uuid.uuid4())},
+                        {
+                            "type": "result",
+                            "subtype": "success",
+                            "result": "Grounded planner reply.",
+                        },
+                    ]
+                ),
+                "stderr": "",
+                "session_key": "abc123",
+                "remote_pid": "100",
+            }
+
+        with (
+            patch.object(actions_mod, "_resolve_coding_binary", return_value=("qwen", "qwen")),
+            patch.object(actions_mod, "_run_tracked_coding_subprocess", AsyncMock(side_effect=_fake_run_tracked_coding_subprocess)),
+        ):
+            result = await run_coding_agent({
+                "agent": "qwen",
+                "task_mode": "planner_chat",
+                "session_key": "abc123",
+                "prompt": "plan this",
+                "working_dir": str(tmp_path),
+            })
+
+        session_id = seen["args"][seen["args"].index("--session-id") + 1]
+        assert result["returncode"] == 0
+        assert session_id == str(uuid.uuid5(uuid.NAMESPACE_URL, "abc123"))
+
+    @pytest.mark.asyncio
+    async def test_qwen_meta_output_becomes_contract_failure(self, tmp_path):
+        import executor.actions as actions_mod
+
+        fake_stdout = json.dumps(
+            [
+                {"type": "system", "subtype": "init", "session_id": "sess-456", "model": "coder-model"},
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Understood. I'm ready to assist with your Telegram product workflow planning. What would you like to work on?",
+                            }
+                        ]
+                    },
+                },
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "session_id": "sess-456",
+                    "result": "Understood. I'm ready to assist with your Telegram product workflow planning. What would you like to work on?",
+                },
+            ]
+        )
+
+        with (
+            patch.object(actions_mod, "_resolve_coding_binary", return_value=("qwen", "qwen")),
+            patch.object(
+                actions_mod,
+                "_run_tracked_coding_subprocess",
+                AsyncMock(
+                    return_value={
+                        "returncode": 0,
+                        "stdout": fake_stdout,
+                        "stderr": "",
+                        "session_key": "sess-456",
+                        "remote_pid": "100",
+                    }
+                ),
+            ),
+        ):
+            result = await run_coding_agent({
+                "agent": "qwen",
+                "task_mode": "planner_chat",
+                "prompt": "plan this",
+                "working_dir": str(tmp_path),
+            })
+
+        assert result["returncode"] == 1
+        assert result["output_contract"] == "planner_meta_output"
+        assert "QWEN_CONTRACT_VIOLATION" in result["stderr"]
+
+    @pytest.mark.asyncio
+    async def test_real_qwen_planner_multiline_prompt(self, tmp_path):
+        if os.environ.get("SKYNET_RUN_REAL_QWEN_TESTS", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            pytest.skip("real qwen tests are opt-in via SKYNET_RUN_REAL_QWEN_TESTS=1")
+        if not shutil.which("qwen"):
+            pytest.skip("qwen binary not installed")
+        if not Path.home().joinpath(".qwen", "settings.json").exists():
+            pytest.skip("qwen auth settings not configured")
+
+        template = {
+            "stack": "Python 3.11+ + FastAPI or Flask + SQLAlchemy + PostgreSQL",
+            "questions": [
+                "What does this app do? (web service, automation, utility, other)",
+                "Which framework? (FastAPI, Flask, plain Python script)",
+                "Does it need a database? If so, what data does it store?",
+                "Will it run as a background service, scheduled job, or on-demand?",
+                "Any external APIs or services to integrate with?",
+            ],
+        }
+        system = build_project_specialist_system_prompt("real-qwen-probe", "Python App", template)
+        messages = [
+            {
+                "role": "assistant",
+                "content": build_project_specialist_opening("real-qwen-probe", "Python App", template),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "I'm building a small Windows Python script that runs from the terminal. "
+                    "When executed, it should show a popup saying \"hi\" and play a short beep sound. "
+                    "Use only Python standard library, include tests, and add a valid skynet_run.json."
+                ),
+            },
+        ]
+
+        result = await run_coding_agent({
+            "agent": "qwen",
+            "task_mode": "planner_chat",
+            "prompt": build_qwen_planner_prompt(messages),
+            "qwen_context_text": build_qwen_planner_context(system),
+            "working_dir": str(tmp_path),
+            "timeout_seconds": 120,
+        })
+
+        assert result["returncode"] == 0, result
+        assert result["output_contract"] == "ok", result
+        lowered = result["assistant_text"].lower()
+        assert "what would you like" not in lowered, result["assistant_text"]
+        assert "ready to assist" not in lowered, result["assistant_text"]
 
 
 # ── ollama_chat ───────────────────────────────────────────────────────────────

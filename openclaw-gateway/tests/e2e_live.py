@@ -32,7 +32,12 @@ for candidate in (str(REPO_ROOT), str(GATEWAY_ROOT)):
         sys.path.insert(0, candidate)
 
 from live_settings import auto_detect_env_file, build_gateway_runtime_env, trace_gateway_runtime
-from live_diagnostics import LiveRunCleanupManager, LiveTrace
+from live_diagnostics import (
+    LiveRunCleanupManager,
+    LiveTrace,
+    fetch_local_gateway_status,
+    fetch_remote_gateway_status,
+)
 
 
 PROMPT = (
@@ -180,6 +185,222 @@ def _apply_live_policy_env(env: dict[str, str], flow: str) -> dict[str, str]:
     for key, value in runtime_env.items():
         env[key] = str(value)
     return env
+
+
+def _worker_bootstrap_log_path() -> Path:
+    return REPO_ROOT / "logs" / "worker-agent.bootstrap.log"
+
+
+def _read_worker_bootstrap_log_tail(*, max_chars: int = 4000) -> str:
+    path = _worker_bootstrap_log_path()
+    if not path.exists():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return f"<could not read {path}: {type(exc).__name__}: {exc}>"
+    return text[-max_chars:]
+
+
+def _resolve_worker_bootstrap_paths(config: dict[str, Any]) -> tuple[Path, Path]:
+    script = Path(str(config.get("script") or "").strip())
+    env_file = Path(str(config.get("env_file") or "").strip())
+    if not script.is_absolute():
+        script = REPO_ROOT / script
+    if not env_file.is_absolute():
+        env_file = REPO_ROOT / env_file
+    return script, env_file
+
+
+def _select_worker_bootstrap_shell(script: Path) -> str:
+    if script.suffix.lower() == ".ps1":
+        return "powershell" if sys.platform == "win32" else "pwsh"
+    return str(script)
+
+
+def _worker_status_missing_agents(status_payload: dict[str, Any], required_agents: list[str]) -> list[str]:
+    coding_agents = status_payload.get("coding_agents") or {}
+    available = {str(name).strip().lower() for name in dict(coding_agents).keys()}
+    missing: list[str] = []
+    for raw in required_agents:
+        agent = str(raw or "").strip().lower()
+        if agent and agent not in available:
+            missing.append(agent)
+    return missing
+
+
+async def _fetch_gateway_status_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
+    if str(policy.get("status_probe_mode") or "") == "remote_container_http":
+        return await fetch_remote_gateway_status(
+            container_name=str(policy.get("remote_gateway_container") or "openclaw-gateway"),
+            status_url=str(policy.get("remote_status_url") or "http://localhost:8766/status"),
+            diagnostics_profile=str(policy.get("diagnostics_profile") or ""),
+        )
+    cfg_module = _get_cfg()
+    return await fetch_local_gateway_status(
+        url=f"http://127.0.0.1:{int(getattr(cfg_module, 'HTTP_PORT', 8766) or 8766)}/status",
+    )
+
+
+def _worker_status_ready(policy: dict[str, Any], status_payload: dict[str, Any]) -> tuple[bool, list[str]]:
+    required_transport = str(policy.get("required_transport") or "").strip().lower()
+    actual_transport = str(status_payload.get("primary_transport_mode") or "").strip().lower()
+    missing_agents = _worker_status_missing_agents(
+        status_payload,
+        list(policy.get("required_worker_agents") or []),
+    )
+    if not bool(status_payload.get("live_e2e_active", False)):
+        return False, missing_agents
+    if required_transport and actual_transport != required_transport:
+        return False, missing_agents
+    if required_transport == "websocket_primary":
+        if not bool(status_payload.get("agent_connected", False)):
+            return False, missing_agents
+        if not bool(status_payload.get("websocket_health_ok", False)):
+            return False, missing_agents
+    if missing_agents:
+        return False, missing_agents
+    return True, []
+
+
+async def _maybe_bootstrap_worker(
+    trace: LiveTrace,
+    cleanup: LiveRunCleanupManager,
+    *,
+    flow: str,
+    policy: dict[str, Any],
+) -> None:
+    if flow in {"direct"}:
+        trace.log("worker.bootstrap.skip", reason="direct_flow")
+        return
+    if str(policy.get("required_transport") or "").strip().lower() != "websocket_primary":
+        trace.log("worker.bootstrap.skip", reason="transport_not_websocket_primary")
+        return
+
+    bootstrap_cfg = dict(policy.get("worker_bootstrap") or {})
+    if not bool(bootstrap_cfg.get("enabled", True)):
+        trace.log("worker.bootstrap.skip", reason="disabled")
+        return
+
+    try:
+        status_payload = await _fetch_gateway_status_for_policy(policy)
+    except Exception as exc:
+        status_payload = {}
+        trace.log(
+            "worker.bootstrap.status",
+            status="retry",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    else:
+        ready, missing_agents = _worker_status_ready(policy, status_payload)
+        trace.log(
+            "worker.bootstrap.status",
+            status="ready" if ready else "pending",
+            primary_transport_mode=str(status_payload.get("primary_transport_mode") or ""),
+            agent_connected=bool(status_payload.get("agent_connected", False)),
+            websocket_health_ok=bool(status_payload.get("websocket_health_ok", False)),
+            missing_agents=missing_agents,
+            coding_agents=sorted(dict(status_payload.get("coding_agents") or {}).keys()),
+        )
+        if ready:
+            trace.log("worker.bootstrap.skip", reason="already_ready")
+            return
+
+    script_path, env_file = _resolve_worker_bootstrap_paths(bootstrap_cfg)
+    if not script_path.exists():
+        raise AssertionError(f"WORKER_BOOTSTRAP_CONFIG_ERROR: bootstrap script not found ({script_path})")
+    if not env_file.exists():
+        raise AssertionError(f"WORKER_BOOTSTRAP_CONFIG_ERROR: bootstrap env file not found ({env_file})")
+
+    python_path = str(bootstrap_cfg.get("python_path") or "").strip() or sys.executable
+    shell = _select_worker_bootstrap_shell(script_path)
+    if script_path.suffix.lower() == ".ps1":
+        cmd = [
+            shell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+            "-RepoRoot",
+            str(REPO_ROOT),
+            "-EnvFile",
+            str(env_file),
+            "-PythonPath",
+            python_path,
+        ]
+    else:
+        cmd = [str(script_path), str(REPO_ROOT), str(env_file), python_path]
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(REPO_ROOT),
+        env=dict(os.environ),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    cleanup.register_subprocess(proc, label="worker_bootstrap")
+    trace.log(
+        "worker.bootstrap.start",
+        pid=int(getattr(proc, "pid", 0) or 0),
+        script=str(script_path),
+        env_file=str(env_file),
+        python_path=python_path,
+        wait_seconds=int(bootstrap_cfg.get("wait_seconds") or 60),
+        poll_seconds=int(bootstrap_cfg.get("poll_seconds") or 3),
+    )
+
+    deadline = time.monotonic() + max(10, int(bootstrap_cfg.get("wait_seconds") or 60))
+    poll_seconds = max(1, int(bootstrap_cfg.get("poll_seconds") or 3))
+    last_status: dict[str, Any] = {}
+    last_error = ""
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            log_tail = _read_worker_bootstrap_log_tail()
+            raise AssertionError(
+                "WORKER_BOOTSTRAP_FAILED: launcher exited early "
+                f"(exit={int(proc.returncode or 0)}). {log_tail[-1500:] if log_tail else ''}"
+            )
+        try:
+            status_payload = await _fetch_gateway_status_for_policy(policy)
+            last_status = status_payload
+            last_error = ""
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            trace.log("worker.bootstrap.status", status="retry", error=last_error)
+            await asyncio.sleep(poll_seconds)
+            continue
+
+        ready, missing_agents = _worker_status_ready(policy, status_payload)
+        trace.log(
+            "worker.bootstrap.status",
+            status="ready" if ready else "pending",
+            primary_transport_mode=str(status_payload.get("primary_transport_mode") or ""),
+            agent_connected=bool(status_payload.get("agent_connected", False)),
+            websocket_health_ok=bool(status_payload.get("websocket_health_ok", False)),
+            missing_agents=missing_agents,
+            coding_agents=sorted(dict(status_payload.get("coding_agents") or {}).keys()),
+        )
+        if ready:
+            trace.log(
+                "worker.bootstrap.ready",
+                pid=int(getattr(proc, "pid", 0) or 0),
+                worker_id=str(status_payload.get("worker_id") or ""),
+            )
+            return
+        await asyncio.sleep(poll_seconds)
+
+    log_tail = _read_worker_bootstrap_log_tail()
+    detail = {
+        "last_error": last_error,
+        "primary_transport_mode": str(last_status.get("primary_transport_mode") or ""),
+        "agent_connected": bool(last_status.get("agent_connected", False)),
+        "websocket_health_ok": bool(last_status.get("websocket_health_ok", False)),
+        "coding_agents": sorted(dict(last_status.get("coding_agents") or {}).keys()),
+        "log_tail": log_tail[-1500:] if log_tail else "",
+    }
+    raise AssertionError(f"WORKER_BOOTSTRAP_TIMEOUT: {detail}")
 
 
 def _run_subprocess_with_cleanup(
@@ -457,6 +678,7 @@ async def _run_direct_flow(trace: LiveTrace) -> None:
             "agent": agent,
             "backend": backend,
             "model": model,
+            **({"task_mode": "coding_implementation"} if agent == "qwen" else {}),
             "prompt": PROMPT,
             "working_dir": working_dir,
             "timeout_seconds": 1800,
@@ -529,6 +751,16 @@ async def run() -> None:
     trace.log("run.policy", **policy)
     try:
         _check_env(trace, flow, policy)
+        try:
+            await _maybe_bootstrap_worker(trace, cleanup, flow=flow, policy=policy)
+        except AssertionError as exc:
+            trace.log(
+                "e2e.step.fail",
+                step="worker_bootstrap",
+                status="fail",
+                error_message=str(exc)[:400],
+            )
+            _fail(trace, "Live E2E worker bootstrap failed.", detail=str(exc))
         trace.log("run.mode", flow=flow)
         if flow in {"conversation", "chat"}:
             _run_conversation_flow(trace, cleanup)

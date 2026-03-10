@@ -22,6 +22,8 @@ async def test_planner_codex_success_skips_router_fallback():
                 "status": "success",
                 "result": {"returncode": 0, "stdout": "Codex planner reply", "stderr": ""},
             }
+        if action == "delete_directory":
+            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
         raise AssertionError(f"Unexpected action: {action}")
 
     with (
@@ -54,10 +56,14 @@ async def test_planner_qwen_success_skips_router_fallback():
             return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
         if action == "run_coding_agent":
             assert params["agent"] == "qwen"
+            assert params["task_mode"] == "planner_chat"
+            assert "qwen_context_text" in params
             return {
                 "status": "success",
                 "result": {"returncode": 0, "stdout": "Qwen planner reply", "stderr": ""},
             }
+        if action == "delete_directory":
+            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
         raise AssertionError(f"Unexpected action: {action}")
 
     with (
@@ -113,6 +119,8 @@ async def test_planner_codex_failure_falls_back_to_router():
             return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
         if action == "run_coding_agent":
             return {"status": "error", "error": "codex unavailable"}
+        if action == "delete_directory":
+            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
         raise AssertionError(f"Unexpected action: {action}")
 
     with (
@@ -149,6 +157,8 @@ async def test_planner_ssh_mode_forces_send_action_path():
                 "status": "success",
                 "result": {"returncode": 0, "stdout": "Codex planner over SSH", "stderr": ""},
             }
+        if action == "delete_directory":
+            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
         raise AssertionError(f"Unexpected action: {action}")
 
     with (

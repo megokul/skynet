@@ -118,6 +118,7 @@ async def test_extract_milestones_qwen_uses_primary_agent_without_router():
             return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
         if action == "run_coding_agent":
             assert params["agent"] == "qwen"
+            assert params["task_mode"] == "plan_generation"
             return {
                 "status": "success",
                 "result": {
@@ -126,6 +127,8 @@ async def test_extract_milestones_qwen_uses_primary_agent_without_router():
                     "stderr": "",
                 },
             }
+        if action == "delete_directory":
+            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
         raise AssertionError(f"Unexpected action: {action}")
 
     with (
@@ -217,6 +220,7 @@ async def test_extract_milestones_live_policy_uses_qwen_without_router(monkeypat
             return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
         if action == "run_coding_agent":
             assert params["agent"] == "qwen"
+            assert params["task_mode"] == "plan_generation"
             return {
                 "status": "success",
                 "result": {
@@ -225,6 +229,8 @@ async def test_extract_milestones_live_policy_uses_qwen_without_router(monkeypat
                     "stderr": "",
                 },
             }
+        if action == "delete_directory":
+            return {"status": "success", "result": {"returncode": 0, "stdout": "", "stderr": ""}}
         raise AssertionError(f"Unexpected action: {action}")
 
     monkeypatch.setenv("SKYNET_E2E_LIVE", "1")

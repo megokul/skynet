@@ -1,18 +1,19 @@
 """
-SKYNET Bot — Project Creation Flow
+SKYNET Bot â€” Project Creation Flow
 
 ConversationHandler states:
-    AWAITING_PROJECT_NAME  (1) — waiting for the user to type a project name
-    AWAITING_PROJECT_TYPE  (2) — waiting for the user to tap a project type button
-    GATHERING_REQUIREMENTS (3) — Project Specialist AI gathers requirements
-    REVIEWING_PLAN         (4) — user reviewing the generated plan
+    AWAITING_PROJECT_NAME  (1) â€” waiting for the user to type a project name
+    AWAITING_PROJECT_TYPE  (2) â€” waiting for the user to tap a project type button
+    GATHERING_REQUIREMENTS (3) â€” Project Specialist AI gathers requirements
+    REVIEWING_PLAN         (4) â€” user reviewing the generated plan
 
-Entry point: user taps "🚀 Start a Project" from the main menu.
+Entry point: user taps "ðŸš€ Start a Project" from the main menu.
 Exit:        project saved to DB with approved plan; confirmation sent.
 Cancel:      /cancel or /start at any point.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -49,10 +50,17 @@ from db.store import create_project, ensure_user
 from gateway import is_worker_available, send_action
 from orchestration.openclaw_runner import get_openclaw_runner
 from runtime_trace import build_debug_bundle, command_hash, emit_runtime_trace_async
+from skynet.project_specialist import (
+    build_planner_chat_prompt,
+    build_qwen_planner_context,
+    build_qwen_planner_prompt,
+    build_project_specialist_opening,
+    build_project_specialist_system_prompt,
+)
 
 logger = logging.getLogger("skynet.bot.project")
 
-# ── Conversation states ───────────────────────────────────────────────────────
+# â”€â”€ Conversation states â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 AWAITING_PROJECT_NAME  = 1
 AWAITING_PROJECT_TYPE  = 2
 GATHERING_REQUIREMENTS = 3
@@ -73,7 +81,7 @@ _PLAN_BANNED_PHRASES = (
     "i am now operating as",
     "i can help you plan",
     "i'll act as your planner assistant",
-    "i’ll act as your planner assistant",
+    "iâ€™ll act as your planner assistant",
     "you must generate the full project plan now",
     "telegram product workflow",
     "send the first item",
@@ -142,31 +150,10 @@ async def _emit_runtime(
     )
 
 
-# ── System prompt ─────────────────────────────────────────────────────────────
+# â”€â”€ System prompt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _specialist_prompt(name: str, project_type_label: str, template: dict) -> str:
-    questions = "\n".join(f"- {q}" for q in template["questions"])
-    return (
-        f"You are the Project Specialist for OpenClaw — a sharp, experienced "
-        f"software architect.\n"
-        f"You are helping the user plan '{name}', a {project_type_label} project.\n\n"
-        f"Recommended stack: {template['stack']}\n\n"
-        f"Key requirements to cover (ask in order, 1-2 at a time):\n"
-        f"{questions}\n\n"
-        f"Guidelines:\n"
-        f"- Be concise — this is a Telegram chat, not a document\n"
-        f"- Ask follow-up questions if answers are vague\n"
-        f"- After covering the key questions, tell the user exactly:\n"
-        f"  'I have everything I need. Send /plan to generate your project plan.'\n\n"
-        f"When generating the plan, use this exact format:\n"
-        f"**{name} — Project Plan**\n"
-        f"**Overview:** (2-3 sentences)\n"
-        f"**Core Features:**\n  - feature 1\n  - feature 2\n"
-        f"**Tech Stack:** (specific versions/libraries)\n"
-        f"**Project Structure:** (top-level folders)\n"
-        f"**Milestones:**\n  1. milestone\n  2. milestone\n"
-        f"**Open Questions:** (anything still unclear, or 'None')"
-    )
+    return build_project_specialist_system_prompt(name, project_type_label, template)
 
 
 def _trim_history(history: list[dict]) -> list[dict]:
@@ -337,7 +324,7 @@ def _build_deterministic_plan(
     )
 
     return (
-        f"**{name} — Project Plan**\n"
+        f"**{name} â€” Project Plan**\n"
         f"**Overview:** {overview}\n\n"
         f"**Core Features:**\n"
         f"{features_block}\n\n"
@@ -351,14 +338,20 @@ def _build_deterministic_plan(
     )
 
 
-def _planner_sandbox_dir(user_id: int) -> str:
-    return f"{cfg.WORKER_PROJECTS_DIR}/_planner_sessions/{user_id}"
+def _planner_sandbox_dir(user_id: int, session_key: str) -> str:
+    return f"{cfg.WORKER_PROJECTS_DIR}/_planner_sessions/{user_id}/{session_key}"
 
 
 def _planner_action_text(result: dict) -> str:
     inner = result.get("result", result)
-    text = str(inner.get("stdout") or "").strip()
+    text = str(inner.get("assistant_text") or inner.get("stdout") or "").strip()
     return text
+
+
+def _planner_task_mode(agent: str) -> str:
+    if str(agent or "").strip().lower() == "qwen":
+        return "planner_chat"
+    return ""
 
 
 def _planner_primary_agent() -> str:
@@ -413,15 +406,12 @@ async def _planner_via_codex_then_router(
             f"Planner fallback is disabled and the primary agent '{planner_agent}' is not eligible."
         )
     if use_planner_agent:
-        sandbox_dir = _planner_sandbox_dir(user_id)
-        planner_prompt = (
-            "You are the planner assistant for a Telegram product workflow.\n"
-            "Follow the provided system instructions and conversation history.\n"
-            "Do not create or modify files.\n"
-            "Return plain chat text only.\n\n"
-            f"System instructions:\n{system}\n\n"
-            f"Conversation history JSON:\n{json.dumps(messages, ensure_ascii=True)}\n"
-        )
+        qwen_context_text = ""
+        if planner_agent == "qwen":
+            planner_prompt = build_qwen_planner_prompt(messages)
+            qwen_context_text = build_qwen_planner_context(system)
+        else:
+            planner_prompt = build_planner_chat_prompt(system, messages)
         timeout = max(
             30,
             int(
@@ -433,9 +423,10 @@ async def _planner_via_codex_then_router(
                 or 120
             ),
         )
+        planner_session_key = uuid.uuid4().hex
+        sandbox_dir = _planner_sandbox_dir(user_id, planner_session_key)
         try:
             orchestration_mode = str(cfg.effective_orchestration_mode() or "legacy").strip().lower()
-            planner_session_key = uuid.uuid4().hex
             if orchestration_mode == "acp_first" and planner_agent in _planner_acp_agents():
                 runner = get_openclaw_runner()
                 session = await runner.start_session(
@@ -481,6 +472,12 @@ async def _planner_via_codex_then_router(
                     {
                         "agent": planner_agent,
                         "backend": "auto",
+                        **(
+                            {"task_mode": _planner_task_mode(planner_agent)}
+                            if _planner_task_mode(planner_agent)
+                            else {}
+                        ),
+                        **({"qwen_context_text": qwen_context_text} if qwen_context_text else {}),
                         "prompt": planner_prompt,
                         "working_dir": sandbox_dir,
                         "timeout_seconds": timeout,
@@ -518,6 +515,20 @@ async def _planner_via_codex_then_router(
             )
             if not allow_router_fallback:
                 raise
+        finally:
+            if sandbox_dir and is_worker_available():
+                with contextlib.suppress(Exception):
+                    await send_action(
+                        "delete_directory",
+                        {
+                            "directory": sandbox_dir,
+                            "project_id": f"user-{user_id}",
+                            "worker_id": str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
+                            "session_key": planner_session_key,
+                        },
+                        timeout=20,
+                        confirmed=True,
+                    )
 
     if not allow_router_fallback and use_planner_agent:
         raise RuntimeError(
@@ -529,10 +540,10 @@ async def _planner_via_codex_then_router(
         max_tokens=max_tokens,
         task_type=task_type,
     )
-    return (response.text or "").strip() or "…"
+    return (response.text or "").strip() or "â€¦"
 
 
-# ── Handlers ──────────────────────────────────────────────────────────────────
+# â”€â”€ Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def ask_project_name(
     update: Update,
@@ -602,7 +613,7 @@ async def receive_project_type(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
-    """User tapped a project type — hand off to Project Specialist."""
+    """User tapped a project type â€” hand off to Project Specialist."""
     await update.callback_query.answer()
 
     cb_data    = update.callback_query.data or ""
@@ -621,12 +632,7 @@ async def receive_project_type(
     )
 
     # Opening message from the Project Specialist (seeded into history)
-    opening = (
-        f"I'm your Project Specialist.\n\n"
-        f"Project: <b>{name}</b> — {type_label}\n"
-        f"Stack: {template['stack']}\n\n"
-        f"{template['questions'][0]}"
-    )
+    opening = build_project_specialist_opening(name, type_label, template)
 
     context.user_data[_REQS_HISTORY] = [
         {"role": "assistant", "content": opening},
@@ -679,7 +685,7 @@ async def handle_requirements_message(
 
     history.append({"role": "user", "content": user_text})
     history = _trim_history(history)
-    system_prompt = _specialist_prompt(name, type_label, template)
+    system_prompt = build_project_specialist_system_prompt(name, type_label, template)
 
     try:
         reply = await _planner_via_codex_then_router(
@@ -728,7 +734,7 @@ async def requirements_done_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
-    """User tapped 'Done — Generate Plan' button during requirements chat."""
+    """User tapped 'Done â€” Generate Plan' button during requirements chat."""
     await update.callback_query.answer()
     await _emit_runtime(
         context=context,
@@ -745,7 +751,7 @@ async def cmd_generate_plan(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
-    """User sent /plan — generate the full project plan."""
+    """User sent /plan â€” generate the full project plan."""
     return await _do_generate_plan(update.message, context)
 
 
@@ -776,7 +782,7 @@ async def _do_generate_plan(
     type_label = context.user_data.get(_TYPE_KEY, "Other")
     template   = get_template(type_label)
     history: list[dict] = context.user_data.get(_REQS_HISTORY, [])
-    system_prompt = _specialist_prompt(name, type_label, template)
+    system_prompt = build_project_specialist_system_prompt(name, type_label, template)
 
     history.append({
         "role": "user",
@@ -831,7 +837,7 @@ async def _do_generate_plan(
     is_real_plan = _is_requirement_grounded_plan(plan, history)
     if not is_real_plan:
         # Retry once with a more explicit prompt.
-        logger.warning("Plan looks invalid (no milestones/structure) — retrying")
+        logger.warning("Plan looks invalid (no milestones/structure) â€” retrying")
         retry_msg = (
             "You MUST generate the full project plan now. "
             "Include: Overview, Core Features, Tech Stack, Project Structure, and "
@@ -876,7 +882,7 @@ async def approve_plan(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
-    """User approved the plan — save project to DB and offer to start coding."""
+    """User approved the plan â€” save project to DB and offer to start coding."""
     await update.callback_query.answer()
 
     db      = context.bot_data.get(KEY_DB)
@@ -957,7 +963,7 @@ async def approve_plan(
     _clear_user_data(context)
 
     await update.callback_query.message.reply_text(
-        f"✅ <b>{project['name']}</b> saved!\n"
+        f"âœ… <b>{project['name']}</b> saved!\n"
         f"Type: {project['project_type']}\n\n"
         "Ready to build it?",
         parse_mode="HTML",
@@ -970,10 +976,10 @@ async def request_changes(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
-    """User wants changes — return to requirements chat."""
+    """User wants changes â€” return to requirements chat."""
     await update.callback_query.answer()
     await update.callback_query.message.reply_text(
-        "Sure — what would you like to change or add?\n"
+        "Sure â€” what would you like to change or add?\n"
         "Send /plan again when you're ready for a new version."
     )
     return GATHERING_REQUIREMENTS
@@ -994,7 +1000,7 @@ async def cancel_project(
     return ConversationHandler.END
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _clear_user_data(context: ContextTypes.DEFAULT_TYPE) -> None:
     for key in (_NAME_KEY, _TYPE_KEY, _REQS_HISTORY, _PLAN_KEY):
@@ -1002,7 +1008,7 @@ def _clear_user_data(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 
-# ── Builder ───────────────────────────────────────────────────────────────────
+# â”€â”€ Builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def build_project_conversation_handler() -> ConversationHandler:
     """

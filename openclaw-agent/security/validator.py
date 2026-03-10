@@ -83,6 +83,7 @@ _SANITISE_EXEMPT_KEYS: set[str] = {
     "system",
     "tools",
     "prompt",
+    "qwen_context_text",
     "command",
 }
 

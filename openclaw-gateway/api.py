@@ -296,6 +296,7 @@ async def handle_status(request: web.Request) -> web.Response:
         "ssh_endpoint": str(diagnostics.get("ssh_endpoint", f"{ssh_exec.host}:{ssh_exec.port}")),
         "worker_capabilities": list(agent_status.get("worker_capabilities") or []),
         "coding_agents": dict(agent_status.get("coding_agents") or {}),
+        "build_revision": str(getattr(cfg, "BUILD_REVISION", "") or ""),
         "live_e2e_active": bool(live_e2e_policy.get("active", False)),
         "live_e2e_flow": str(live_e2e_policy.get("flow") or ""),
         "live_e2e_allow_fallback": bool(live_e2e_policy.get("allow_fallback", False)),

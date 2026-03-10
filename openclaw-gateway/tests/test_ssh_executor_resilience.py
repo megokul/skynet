@@ -225,6 +225,97 @@ def test_build_windows_command_uses_base64_argument_transport() -> None:
     assert "& $__cmd @__rest" in script
 
 
+def test_run_coding_agent_passes_qwen_context_text_to_native(
+    ssh_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = SSHTunnelExecutor()
+    executor.remote_os = "linux"
+    seen: dict[str, object] = {}
+
+    def _fake_native(**kwargs):
+        seen.update(kwargs)
+        return {"returncode": 0, "stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr(executor, "_run_coding_agent_native", _fake_native)
+
+    result = executor._run_command_action(
+        client=MagicMock(),
+        action="run_coding_agent",
+        params={
+            "agent": "qwen",
+            "prompt": "plan this",
+            "working_dir": "/tmp/qwen-project",
+            "timeout_seconds": 120,
+            "task_mode": "planner_chat",
+            "qwen_context_text": "Planner chat behavior for Qwen Code",
+        },
+    )
+
+    assert result["returncode"] == 0
+    assert seen["agent"] == "qwen"
+    assert seen["task_mode"] == "planner_chat"
+    assert seen["qwen_context_text"] == "Planner chat behavior for Qwen Code"
+
+
+def test_managed_remote_qwen_context_file_restores_previous_text(
+    ssh_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = SSHTunnelExecutor()
+    executor.remote_os = "linux"
+    monkeypatch.setattr(executor, "_sftp_makedirs", lambda *_args, **_kwargs: None)
+    files = {"/tmp/qwen-project/QWEN.md": "previous instructions"}
+
+    class _FakeHandle:
+        def __init__(self, path: str, mode: str) -> None:
+            self._path = path
+            self._mode = mode
+            self._buffer = files.get(path, "")
+
+        def read(self):
+            return self._buffer
+
+        def write(self, text):
+            files[self._path] = str(text)
+            self._buffer = str(text)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeSFTP:
+        def open(self, path: str, mode: str):
+            if "r" in mode and path not in files:
+                raise OSError("missing")
+            return _FakeHandle(path, mode)
+
+        def remove(self, path: str) -> None:
+            files.pop(path, None)
+
+        def close(self) -> None:
+            return None
+
+    class _FakeClient:
+        def open_sftp(self):
+            return _FakeSFTP()
+
+    client = _FakeClient()
+    context_path = "/tmp/qwen-project/QWEN.md"
+
+    with executor._managed_remote_qwen_context_file(
+        client=client,
+        cwd="/tmp/qwen-project",
+        context_text="temporary planner instructions",
+        enabled=True,
+    ):
+        assert files[context_path] == "temporary planner instructions"
+
+    assert files[context_path] == "previous instructions"
+
+
 def test_build_windows_command_requires_args() -> None:
     with pytest.raises(ValueError, match="args must not be empty"):
         _build_windows_command([])
@@ -257,21 +348,47 @@ def test_windows_prompt_file_runner_avoids_raw_prompt_in_command(
         def open(self, _path, _mode):
             return self.writer
 
+        def stat(self, _path):
+            raise OSError("not found")
+
         def close(self):
             return None
 
+    class _FakeChan:
+        def __init__(self, stdout_data: bytes, stderr_data: bytes, rc: int):
+            self._stdout_data = stdout_data
+            self._stderr_data = stderr_data
+            self._rc = rc
+            self._stdout_sent = False
+            self._stderr_sent = False
+
+        def recv_ready(self):
+            return not self._stdout_sent and bool(self._stdout_data)
+
+        def recv_stderr_ready(self):
+            return not self._stderr_sent and bool(self._stderr_data)
+
+        def recv(self, _n):
+            if self._stdout_sent:
+                return b""
+            self._stdout_sent = True
+            return self._stdout_data
+
+        def recv_stderr(self, _n):
+            if self._stderr_sent:
+                return b""
+            self._stderr_sent = True
+            return self._stderr_data
+
+        def exit_status_ready(self):
+            return self._stdout_sent and (self._stderr_sent or not self._stderr_data)
+
+        def recv_exit_status(self):
+            return self._rc
+
     class _FakeStdout:
         def __init__(self, data: bytes, rc: int):
-            self._data = data
-
-            class _Chan:
-                def recv_exit_status(self_nonlocal):
-                    return rc
-
-            self.channel = _Chan()
-
-        def read(self):
-            return self._data
+            self.channel = _FakeChan(data, b"", rc)
 
     class _FakeStderr:
         def __init__(self, data: bytes):
@@ -334,21 +451,47 @@ def test_windows_prompt_file_runner_supports_stdin_prompt_delivery(
         def open(self, _path, _mode):
             return self.writer
 
+        def stat(self, _path):
+            raise OSError("not found")
+
         def close(self):
             return None
 
+    class _FakeChan:
+        def __init__(self, stdout_data: bytes, stderr_data: bytes, rc: int):
+            self._stdout_data = stdout_data
+            self._stderr_data = stderr_data
+            self._rc = rc
+            self._stdout_sent = False
+            self._stderr_sent = False
+
+        def recv_ready(self):
+            return not self._stdout_sent and bool(self._stdout_data)
+
+        def recv_stderr_ready(self):
+            return not self._stderr_sent and bool(self._stderr_data)
+
+        def recv(self, _n):
+            if self._stdout_sent:
+                return b""
+            self._stdout_sent = True
+            return self._stdout_data
+
+        def recv_stderr(self, _n):
+            if self._stderr_sent:
+                return b""
+            self._stderr_sent = True
+            return self._stderr_data
+
+        def exit_status_ready(self):
+            return self._stdout_sent and (self._stderr_sent or not self._stderr_data)
+
+        def recv_exit_status(self):
+            return self._rc
+
     class _FakeStdout:
         def __init__(self, data: bytes, rc: int):
-            self._data = data
-
-            class _Chan:
-                def recv_exit_status(self_nonlocal):
-                    return rc
-
-            self.channel = _Chan()
-
-        def read(self):
-            return self._data
+            self.channel = _FakeChan(data, b"", rc)
 
     class _FakeStderr:
         def __init__(self, data: bytes):

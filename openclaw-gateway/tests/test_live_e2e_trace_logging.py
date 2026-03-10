@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -206,6 +207,26 @@ def test_live_e2e_policy_derives_required_worker_agents(monkeypatch) -> None:
     assert policy["required_worker_agents"] == ["qwen"]
     assert policy["require_telegram_poller"] is True
     assert policy["status_probe_mode"] == "remote_container_http"
+    assert policy["qwen_smoke"]["enabled"] is True
+    assert policy["qwen_smoke"]["timeout_seconds"] == 45
+
+
+def test_live_e2e_qwen_smoke_config_defaults(monkeypatch) -> None:
+    monkeypatch.delenv("SKYNET_LIVE_E2E_QWEN_SMOKE_ENABLED", raising=False)
+    monkeypatch.delenv("SKYNET_LIVE_E2E_QWEN_SMOKE_TIMEOUT_SECONDS", raising=False)
+
+    cfg = gateway_config.get_live_e2e_qwen_smoke_config()
+    assert cfg["enabled"] is True
+    assert cfg["timeout_seconds"] == 45
+
+
+def test_live_e2e_qwen_smoke_config_env_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("SKYNET_LIVE_E2E_QWEN_SMOKE_ENABLED", "0")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_QWEN_SMOKE_TIMEOUT_SECONDS", "61")
+
+    cfg = gateway_config.get_live_e2e_qwen_smoke_config()
+    assert cfg["enabled"] is False
+    assert cfg["timeout_seconds"] == 61
 
 
 def test_live_e2e_runtime_env_clamps_stage_fallback_when_strict(monkeypatch) -> None:
@@ -253,6 +274,43 @@ def test_live_e2e_cleanup_config_env_overrides(monkeypatch) -> None:
     assert cfg["enabled"] is False
     assert cfg["targets"] == ["live_runner", "worker_launcher", "worker_agent"]
     assert cfg["grace_seconds"] == 11
+
+
+def test_live_e2e_worker_bootstrap_config_defaults(monkeypatch) -> None:
+    for key in (
+        "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_ENABLED",
+        "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_SCRIPT",
+        "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_ENV_FILE",
+        "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_PYTHON",
+        "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_WAIT_SECONDS",
+        "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_POLL_SECONDS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    cfg = gateway_config.get_live_e2e_worker_bootstrap_config()
+    assert cfg["enabled"] is True
+    assert cfg["script"] == "scripts/run_worker_agent.ps1"
+    assert cfg["env_file"] == ".env.worker-agent"
+    assert cfg["python_path"] == ""
+    assert cfg["wait_seconds"] == 60
+    assert cfg["poll_seconds"] == 3
+
+
+def test_live_e2e_worker_bootstrap_config_env_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_ENABLED", "0")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_SCRIPT", "scripts/custom_worker.ps1")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_ENV_FILE", ".env.custom-worker")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_PYTHON", "E:/MyProjects/skynet/venv/Scripts/python.exe")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_WAIT_SECONDS", "75")
+    monkeypatch.setenv("SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_POLL_SECONDS", "5")
+
+    cfg = gateway_config.get_live_e2e_worker_bootstrap_config()
+    assert cfg["enabled"] is False
+    assert cfg["script"] == "scripts/custom_worker.ps1"
+    assert cfg["env_file"] == ".env.custom-worker"
+    assert cfg["python_path"] == "E:/MyProjects/skynet/venv/Scripts/python.exe"
+    assert cfg["wait_seconds"] == 75
+    assert cfg["poll_seconds"] == 5
 
 
 @pytest.mark.asyncio
@@ -462,6 +520,11 @@ async def test_run_live_e2e_preflight_fails_on_transport_mismatch(monkeypatch, t
         },
     )
     monkeypatch.setattr(live_diagnostics, "fetch_local_gateway_status", _fake_local_status)
+    monkeypatch.setattr(
+        live_diagnostics,
+        "run_qwen_preflight_smoke_probe",
+        AsyncMock(return_value=None),
+    )
 
     with pytest.raises(AssertionError, match="PREFLIGHT_TRANSPORT_MISMATCH"):
         await live_diagnostics.run_live_e2e_preflight(
@@ -475,6 +538,7 @@ async def test_run_live_e2e_preflight_fails_on_transport_mismatch(monkeypatch, t
                 "diagnostics_profile": "tunnel",
                 "status_probe_mode": "local_http",
                 "require_telegram_poller": False,
+                "qwen_smoke": {"enabled": False, "timeout_seconds": 45},
             },
             local_status_url="http://127.0.0.1:8766/status",
         )
@@ -511,6 +575,11 @@ async def test_run_live_e2e_preflight_fails_when_live_policy_inactive(monkeypatc
         },
     )
     monkeypatch.setattr(live_diagnostics, "fetch_local_gateway_status", _fake_local_status)
+    monkeypatch.setattr(
+        live_diagnostics,
+        "run_qwen_preflight_smoke_probe",
+        AsyncMock(return_value=None),
+    )
 
     with pytest.raises(AssertionError, match="PREFLIGHT_LIVE_POLICY_INACTIVE"):
         await live_diagnostics.run_live_e2e_preflight(
@@ -524,9 +593,120 @@ async def test_run_live_e2e_preflight_fails_when_live_policy_inactive(monkeypatc
                 "diagnostics_profile": "tunnel",
                 "status_probe_mode": "local_http",
                 "require_telegram_poller": False,
+                "qwen_smoke": {"enabled": False, "timeout_seconds": 45},
             },
             local_status_url="http://127.0.0.1:8766/status",
         )
+
+
+@pytest.mark.asyncio
+async def test_run_live_e2e_preflight_fails_when_build_revision_mismatches(monkeypatch, tmp_path: Path) -> None:
+    key_path = tmp_path / "diag.pem"
+    key_path.write_text("key", encoding="utf-8")
+
+    async def _fake_local_status(*, url: str, timeout_seconds: int = 10) -> dict[str, object]:
+        _ = (url, timeout_seconds)
+        return {
+            "build_revision": "remote-rev",
+            "live_e2e_active": True,
+            "live_e2e_flow": "conversation",
+            "live_e2e_effective_coding_stage_chain": ["qwen"],
+            "primary_transport_mode": "websocket_primary",
+            "agent_connected": True,
+            "websocket_health_ok": True,
+            "coding_agents": {"qwen": "/usr/bin/qwen"},
+        }
+
+    monkeypatch.setattr(
+        live_diagnostics,
+        "resolve_container_log_stream_ssh",
+        lambda *_args, **_kwargs: {
+            "host": "ec2.example",
+            "user": "ubuntu",
+            "key": str(key_path),
+            "key_source": "test",
+            "port": 22,
+        },
+    )
+    monkeypatch.setattr(live_diagnostics, "fetch_local_gateway_status", _fake_local_status)
+    monkeypatch.setattr(
+        live_diagnostics,
+        "run_qwen_preflight_smoke_probe",
+        AsyncMock(return_value=None),
+    )
+
+    with pytest.raises(AssertionError, match="PREFLIGHT_BUILD_REVISION_MISMATCH"):
+        await live_diagnostics.run_live_e2e_preflight(
+            trace_fn=lambda *_args, **_kwargs: None,
+            flow="conversation",
+            policy={
+                "required_transport": "websocket_primary",
+                "allow_fallback": False,
+                "required_worker_agents": ["qwen"],
+                "container_log": {"ssh_profile": "tunnel"},
+                "diagnostics_profile": "tunnel",
+                "status_probe_mode": "local_http",
+                "expected_remote_build_revision": "local-rev",
+                "require_telegram_poller": False,
+                "qwen_smoke": {"enabled": False, "timeout_seconds": 45},
+            },
+            local_status_url="http://127.0.0.1:8766/status",
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_live_e2e_preflight_invokes_qwen_smoke_probe(monkeypatch, tmp_path: Path) -> None:
+    key_path = tmp_path / "diag.pem"
+    key_path.write_text("key", encoding="utf-8")
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_local_status(*, url: str, timeout_seconds: int = 10) -> dict[str, object]:
+        _ = (url, timeout_seconds)
+        return {
+            "live_e2e_active": True,
+            "live_e2e_flow": "conversation",
+            "live_e2e_effective_coding_stage_chain": ["qwen"],
+            "primary_transport_mode": "websocket_primary",
+            "agent_connected": True,
+            "websocket_health_ok": True,
+            "coding_agents": {"qwen": "/usr/bin/qwen"},
+        }
+
+    async def _fake_qwen_smoke_probe(**kwargs):
+        calls.append((str(kwargs.get("flow") or ""), dict(kwargs.get("policy") or {})))
+
+    monkeypatch.setattr(
+        live_diagnostics,
+        "resolve_container_log_stream_ssh",
+        lambda *_args, **_kwargs: {
+            "host": "ec2.example",
+            "user": "ubuntu",
+            "key": str(key_path),
+            "key_source": "test",
+            "port": 22,
+        },
+    )
+    monkeypatch.setattr(live_diagnostics, "fetch_local_gateway_status", _fake_local_status)
+    monkeypatch.setattr(live_diagnostics, "run_qwen_preflight_smoke_probe", _fake_qwen_smoke_probe)
+
+    await live_diagnostics.run_live_e2e_preflight(
+        trace_fn=lambda *_args, **_kwargs: None,
+        flow="conversation",
+        policy={
+            "required_transport": "websocket_primary",
+            "allow_fallback": False,
+            "required_worker_agents": ["qwen"],
+            "container_log": {"ssh_profile": "tunnel"},
+            "diagnostics_profile": "tunnel",
+            "status_probe_mode": "local_http",
+            "require_telegram_poller": False,
+            "qwen_smoke": {"enabled": True, "timeout_seconds": 45},
+        },
+        local_status_url="http://127.0.0.1:8766/status",
+    )
+
+    assert calls
+    assert calls[0][0] == "conversation"
 
 
 def test_runtime_trace_progress_uses_mtime_and_line_count() -> None:

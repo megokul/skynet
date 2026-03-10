@@ -125,6 +125,26 @@ def _strict_stage_policy_violation_text(text: str, *, allowed_stages: set[str]) 
     return ""
 
 
+def _terminal_bot_failure_text(text: str) -> str:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return ""
+    for marker in (
+        "ai is unavailable right now",
+        "planner is unavailable right now",
+        "i couldn't generate a plan right now",
+        "i could not generate a plan right now",
+        "requirements ai call failed",
+    ):
+        if marker in lowered:
+            return str(text).strip()
+    return ""
+
+
+class _TerminalBotFailure(AssertionError):
+    pass
+
+
 class _RuntimeTraceProgress:
     def __init__(self) -> None:
         self.last_mtime_iso = ""
@@ -356,6 +376,20 @@ async def _wait_for_bot_message(
             last_seen_id = max(last_seen_id, int(getattr(msg, "id", 0)))
             text = str(getattr(msg, "message", "") or "")
             btns = _button_texts(msg)
+            terminal_failure = _terminal_bot_failure_text(text)
+            if terminal_failure:
+                trace_fn(
+                    "telegram.wait.terminal_failure",
+                    step=step,
+                    message_id=int(getattr(msg, "id", 0)),
+                    text_preview=terminal_failure[:220],
+                    buttons=btns,
+                    polls=poll_count,
+                    waited_s=round(time.monotonic() - started, 1),
+                )
+                raise _TerminalBotFailure(
+                    f"Terminal bot failure encountered: {terminal_failure[:260]}"
+                )
             if predicate(text, btns):
                 trace_fn(
                     "telegram.wait.match",
@@ -659,21 +693,21 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 flow="telegram_real",
                 policy=policy,
             )
-            trace("e2e.step.start", step=1, name="send_hi")
-            await client.send_message(bot, "hi")
+            trace("e2e.step.start", step=1, name="reset_to_main_menu")
+            await client.send_message(bot, "/start")
             msg = await _wait_for_bot_message(
                 client,
                 bot,
                 last_id,
                 timeout_s=120,
                 trace_fn=trace,
-                step="menu_after_hi",
+                step="menu_after_start",
                 predicate=lambda text, btns: any("start a project" in b.lower() for b in btns),
             )
             last_id = int(msg.id)
             await _click_button_contains(msg, "Start a Project", trace_fn=trace, step="click_start_project")
             runtime_progress.observe(_emit_runtime_trace_snapshot(trace, checkpoint="after.start_project", tail_lines=60))
-            trace("e2e.step.end", step=1, name="send_hi", status="ok")
+            trace("e2e.step.end", step=1, name="reset_to_main_menu", status="ok")
 
             trace("e2e.step.start", step=2, name="project_name")
             msg = await _wait_for_bot_message(
@@ -892,6 +926,10 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                         step=f"coding_poll_{idx + 1}",
                         predicate=lambda text, btns: bool(text.strip()) or bool(btns),
                     )
+                except _TerminalBotFailure as exc:
+                    bundle_status = "fail"
+                    bundle_reason = "terminal_bot_failure"
+                    raise AssertionError(str(exc)) from exc
                 except AssertionError:
                     tracker_last_text, tracker_edit_count, tracker_progress = await _poll_tracker_message_edit(
                         client=client,

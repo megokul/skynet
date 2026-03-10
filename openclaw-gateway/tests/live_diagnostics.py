@@ -10,12 +10,20 @@ import shlex
 import subprocess
 import sys
 import time
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 import aiohttp
+from bot.project_templates import get_template
+from skynet.project_specialist import (
+    build_qwen_planner_context,
+    build_qwen_planner_prompt,
+    build_project_specialist_opening,
+    build_project_specialist_system_prompt,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GATEWAY_ROOT = REPO_ROOT / "openclaw-gateway"
@@ -34,6 +42,13 @@ _TELEGRAM_BOT_TOKEN_PATTERN = re.compile(r"(?i)bot\d+:[A-Za-z0-9_-]{20,}")
 
 def _get_config_module() -> Any:
     return importlib.import_module("config")
+
+
+def _status_to_action_url(status_url: str) -> str:
+    text = str(status_url or "").strip()
+    if text.endswith("/status"):
+        return text.rsplit("/", 1)[0] + "/action"
+    return text.rstrip("/") + "/action"
 
 
 class LiveTrace:
@@ -605,6 +620,195 @@ async def fetch_remote_gateway_status(
     return dict(payload) if isinstance(payload, dict) else {}
 
 
+async def _post_local_gateway_action(
+    *,
+    action_url: str,
+    action: str,
+    params: dict[str, Any],
+    timeout_seconds: int = 20,
+) -> dict[str, Any]:
+    timeout = aiohttp.ClientTimeout(total=max(5, int(timeout_seconds)))
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(
+            action_url,
+            json={"action": action, "params": params, "confirmed": True},
+        ) as resp:
+            text = await resp.text()
+            if resp.status >= 400:
+                raise AssertionError(
+                    f"PREFLIGHT_QWEN_ACTION_FAILED: action={action} status={resp.status} detail={text[:240]}"
+                )
+            payload = json.loads(text)
+            return dict(payload) if isinstance(payload, dict) else {}
+
+
+async def _post_remote_gateway_action(
+    *,
+    container_name: str,
+    action_url: str,
+    diagnostics_profile: str,
+    action: str,
+    params: dict[str, Any],
+    timeout_seconds: int = 25,
+) -> dict[str, Any]:
+    ssh = resolve_container_log_stream_ssh(diagnostics_profile)
+    if not ssh:
+        raise AssertionError("PREFLIGHT_QWEN_ACTION_FAILED: missing SSH credentials for remote action probe")
+    key_path = Path(str(ssh.get("key") or "").strip())
+    if not key_path.exists():
+        raise AssertionError(
+            "PREFLIGHT_QWEN_ACTION_FAILED: SSH key path does not exist "
+            f"({key_path})"
+        )
+    request_body = json.dumps({"action": action, "params": params, "confirmed": True}, ensure_ascii=True)
+    script = (
+        "import json,sys,urllib.request;"
+        f"body={request_body!r}.encode('utf-8');"
+        f"req=urllib.request.Request({_status_to_action_url(action_url)!r}, data=body, headers={{'Content-Type':'application/json'}}, method='POST');"
+        "sys.stdout.write(urllib.request.urlopen(req, timeout=20).read().decode('utf-8'))"
+    )
+    remote_cmd = f"docker exec {shlex.quote(container_name)} python -c {shlex.quote(script)}"
+    cmd = _build_ssh_command(ssh, remote_cmd)
+    rc, stdout, stderr = await _run_capture_command(cmd, timeout_s=max(5.0, float(timeout_seconds)))
+    if rc != 0:
+        detail = stderr.strip() or stdout.strip() or f"returncode:{rc}"
+        raise AssertionError(f"PREFLIGHT_QWEN_ACTION_FAILED: action={action} detail={detail[:240]}")
+    payload = json.loads(stdout)
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _qwen_smoke_request() -> dict[str, str]:
+    template = get_template("Python App")
+    system = build_project_specialist_system_prompt("preflight-qwen", "Python App", template)
+    conversation = [
+        {
+            "role": "assistant",
+            "content": build_project_specialist_opening("preflight-qwen", "Python App", template),
+        },
+        {
+            "role": "user",
+            "content": (
+                "I'm building a small Windows Python script that runs from the terminal. "
+                "When executed, it should show a popup saying \"hi\" and play a short beep sound. "
+                "Use only Python standard library, include tests, and add a valid skynet_run.json."
+            ),
+        },
+    ]
+    return {
+        "prompt": build_qwen_planner_prompt(conversation),
+        "qwen_context_text": build_qwen_planner_context(system),
+    }
+
+
+async def run_qwen_preflight_smoke_probe(
+    *,
+    trace_fn: Callable[..., None],
+    flow: str,
+    policy: dict[str, Any],
+    local_status_url: str | None = None,
+) -> None:
+    qwen_smoke_cfg = dict(policy.get("qwen_smoke") or {})
+    required_agents = {str(item).strip().lower() for item in list(policy.get("required_worker_agents") or []) if str(item).strip()}
+    if not bool(qwen_smoke_cfg.get("enabled", True)) or "qwen" not in required_agents:
+        trace_fn("preflight.qwen_smoke.skip", flow=flow, enabled=bool(qwen_smoke_cfg.get("enabled", True)))
+        return
+
+    cfg = _get_config_module()
+    timeout_seconds = max(15, int(qwen_smoke_cfg.get("timeout_seconds", 45) or 45))
+    diagnostics_profile = str(policy.get("diagnostics_profile") or "tunnel")
+    worker_id = str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary")
+    session_key = uuid.uuid4().hex
+    working_dir = f"{cfg.WORKER_PROJECTS_DIR}/_planner_sessions/_preflight/{session_key}"
+    action_url = str(local_status_url or f"http://127.0.0.1:{int(getattr(cfg, 'HTTP_PORT', 8766) or 8766)}/status")
+    trace_fn(
+        "preflight.qwen_smoke.start",
+        flow=flow,
+        timeout_seconds=timeout_seconds,
+        working_dir=working_dir,
+        status_probe_mode=str(policy.get("status_probe_mode") or ""),
+    )
+
+    async def _dispatch(action: str, params: dict[str, Any]) -> dict[str, Any]:
+        if str(policy.get("status_probe_mode") or "") == "remote_container_http":
+            return await _post_remote_gateway_action(
+                container_name=str(policy.get("remote_gateway_container") or "openclaw-gateway"),
+                action_url=str(policy.get("remote_status_url") or "http://localhost:8766/status"),
+                diagnostics_profile=diagnostics_profile,
+                action=action,
+                params=params,
+                timeout_seconds=timeout_seconds,
+            )
+        return await _post_local_gateway_action(
+            action_url=_status_to_action_url(action_url),
+            action=action,
+            params=params,
+            timeout_seconds=timeout_seconds,
+        )
+
+    try:
+        smoke_request = _qwen_smoke_request()
+        await _dispatch(
+            "create_directory",
+            {
+                "directory": working_dir,
+                "project_id": "preflight-qwen",
+                "worker_id": worker_id,
+                "session_key": session_key,
+            },
+        )
+        result = await _dispatch(
+            "run_coding_agent",
+            {
+                "agent": "qwen",
+                "backend": "auto",
+                "task_mode": "planner_chat",
+                "prompt": str(smoke_request.get("prompt") or ""),
+                "qwen_context_text": str(smoke_request.get("qwen_context_text") or ""),
+                "working_dir": working_dir,
+                "timeout_seconds": timeout_seconds,
+                "project_id": "preflight-qwen",
+                "task_id": "preflight-qwen-planner",
+                "worker_id": worker_id,
+                "session_key": session_key,
+            },
+        )
+        if result.get("status") == "error":
+            raise AssertionError(str(result.get("error") or "run_coding_agent failed"))
+        inner = result.get("result", result)
+        returncode = int(inner.get("returncode", inner.get("exit_code", 0)) or 0)
+        assistant_text = str(inner.get("assistant_text") or inner.get("stdout") or "").strip()
+        output_contract = str(inner.get("output_contract") or "").strip()
+        trace_fn(
+            "preflight.qwen_smoke.result",
+            flow=flow,
+            returncode=returncode,
+            output_contract=output_contract,
+            assistant_preview=assistant_text[:200],
+            model=str(inner.get("model") or ""),
+            session_id=str(inner.get("session_id") or ""),
+            context_files=list(inner.get("qwen_context_files") or []),
+        )
+        if returncode != 0 or output_contract != "ok" or not assistant_text:
+            detail = str(
+                inner.get("stderr")
+                or assistant_text
+                or inner.get("raw_result_tail")
+                or "empty qwen smoke response"
+            )
+            raise AssertionError(f"PREFLIGHT_QWEN_CONTRACT_FAILED: {detail[:240]}")
+    finally:
+        with contextlib.suppress(Exception):
+            await _dispatch(
+                "delete_directory",
+                {
+                    "directory": working_dir,
+                    "project_id": "preflight-qwen",
+                    "worker_id": worker_id,
+                    "session_key": session_key,
+                },
+            )
+
+
 def _preflight_missing_agents(status_payload: dict[str, Any], required_agents: list[str]) -> list[str]:
     coding_agents = status_payload.get("coding_agents") or {}
     available = {str(name).strip().lower() for name in dict(coding_agents).keys()}
@@ -632,6 +836,7 @@ async def run_live_e2e_preflight(
         required_worker_agents=list(policy.get("required_worker_agents") or []),
         diagnostics_profile=str(policy.get("diagnostics_profile") or ""),
         require_telegram_poller=bool(policy.get("require_telegram_poller", False)),
+        qwen_smoke_enabled=bool(dict(policy.get("qwen_smoke") or {}).get("enabled", True)),
     )
 
     container_log_cfg = dict(policy.get("container_log") or {})
@@ -663,6 +868,7 @@ async def run_live_e2e_preflight(
     trace_fn(
         "preflight.status",
         flow=flow,
+        build_revision=str(status_payload.get("build_revision") or ""),
         primary_transport_mode=str(status_payload.get("primary_transport_mode") or ""),
         agent_connected=bool(status_payload.get("agent_connected", False)),
         websocket_health_ok=bool(status_payload.get("websocket_health_ok", False)),
@@ -678,6 +884,14 @@ async def run_live_e2e_preflight(
 
     if not bool(status_payload.get("live_e2e_active", False)):
         raise AssertionError("PREFLIGHT_LIVE_POLICY_INACTIVE: gateway is not enforcing live E2E policy")
+
+    expected_build_revision = str(policy.get("expected_remote_build_revision") or "").strip()
+    actual_build_revision = str(status_payload.get("build_revision") or "").strip()
+    if expected_build_revision and actual_build_revision != expected_build_revision:
+        raise AssertionError(
+            "PREFLIGHT_BUILD_REVISION_MISMATCH: "
+            f"expected={expected_build_revision} actual={actual_build_revision or 'missing'}"
+        )
 
     required_transport = str(policy.get("required_transport") or "").strip().lower()
     actual_transport = str(status_payload.get("primary_transport_mode") or "").strip().lower()
@@ -703,6 +917,13 @@ async def run_live_e2e_preflight(
         raise AssertionError(
             "PREFLIGHT_REQUIRED_AGENTS_MISSING: " + ",".join(sorted(missing_agents))
         )
+
+    await run_qwen_preflight_smoke_probe(
+        trace_fn=trace_fn,
+        flow=flow,
+        policy=policy,
+        local_status_url=local_status_url,
+    )
 
     if bool(policy.get("require_telegram_poller", False)):
         poller_state = str(status_payload.get("telegram_poller_state") or "").strip().lower()

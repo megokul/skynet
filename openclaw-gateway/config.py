@@ -20,6 +20,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from skynet.settings.loader import get_component_settings  # noqa: E402
+from skynet.qwen_cli import load_qwen_execution_policy  # noqa: E402
 
 # Initialize global settings loader
 _settings_loader = get_component_settings("gateway")
@@ -64,8 +65,11 @@ __all__ = [
     "get_live_e2e_agent",
     "get_live_e2e_container_log_config",
     "get_live_e2e_cleanup_config",
+    "get_live_e2e_worker_bootstrap_config",
+    "get_live_e2e_qwen_smoke_config",
     "get_live_e2e_policy",
     "get_live_e2e_runtime_env",
+    "get_qwen_execution_policy",
     "get_provider_priority",
     "get_ssh_config",
     "dump_config",
@@ -470,6 +474,37 @@ LIVE_E2E_CLEANUP_TARGETS: tuple[str, ...] = tuple(
     )
 )
 LIVE_E2E_CLEANUP_GRACE_SECONDS: int = _i("SKYNET_LIVE_E2E_CLEANUP_GRACE_SECONDS", 5)
+LIVE_E2E_WORKER_BOOTSTRAP_ENABLED: bool = _b("SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_ENABLED", True)
+LIVE_E2E_WORKER_BOOTSTRAP_SCRIPT: str = _s(
+    "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_SCRIPT",
+    "scripts/run_worker_agent.ps1",
+).strip()
+LIVE_E2E_WORKER_BOOTSTRAP_ENV_FILE: str = _s(
+    "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_ENV_FILE",
+    ".env.worker-agent",
+).strip()
+LIVE_E2E_WORKER_BOOTSTRAP_PYTHON: str = _s(
+    "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_PYTHON",
+    "",
+).strip()
+LIVE_E2E_WORKER_BOOTSTRAP_WAIT_SECONDS: int = _i(
+    "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_WAIT_SECONDS",
+    60,
+)
+LIVE_E2E_WORKER_BOOTSTRAP_POLL_SECONDS: int = _i(
+    "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_POLL_SECONDS",
+    3,
+)
+LIVE_E2E_QWEN_SMOKE_ENABLED: bool = _b("SKYNET_LIVE_E2E_QWEN_SMOKE_ENABLED", True)
+LIVE_E2E_QWEN_SMOKE_TIMEOUT_SECONDS: int = _i(
+    "SKYNET_LIVE_E2E_QWEN_SMOKE_TIMEOUT_SECONDS",
+    45,
+)
+LIVE_E2E_EXPECT_REMOTE_BUILD_REVISION: str = _s(
+    "SKYNET_LIVE_E2E_EXPECT_REMOTE_BUILD_REVISION",
+    "",
+).strip()
+BUILD_REVISION: str = _s("SKYNET_BUILD_REVISION", "").strip()
 
 # SSH tunnel reliability controls
 SSH_MAX_PARALLEL: int = _i("OPENCLAW_SSH_MAX_PARALLEL", 2)
@@ -739,11 +774,74 @@ def get_live_e2e_cleanup_config() -> dict[str, Any]:
     }
 
 
+def get_live_e2e_worker_bootstrap_config() -> dict[str, Any]:
+    """Return normalized live E2E worker bootstrap settings."""
+    script = get_str(
+        "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_SCRIPT",
+        LIVE_E2E_WORKER_BOOTSTRAP_SCRIPT,
+    ).strip()
+    env_file = get_str(
+        "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_ENV_FILE",
+        LIVE_E2E_WORKER_BOOTSTRAP_ENV_FILE,
+    ).strip()
+    python_path = get_str(
+        "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_PYTHON",
+        LIVE_E2E_WORKER_BOOTSTRAP_PYTHON,
+    ).strip()
+    return {
+        "enabled": get_bool(
+            "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_ENABLED",
+            LIVE_E2E_WORKER_BOOTSTRAP_ENABLED,
+        ),
+        "script": script or "scripts/run_worker_agent.ps1",
+        "env_file": env_file or ".env.worker-agent",
+        "python_path": python_path,
+        "wait_seconds": max(
+            10,
+            get_int(
+                "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_WAIT_SECONDS",
+                LIVE_E2E_WORKER_BOOTSTRAP_WAIT_SECONDS,
+            ),
+        ),
+        "poll_seconds": max(
+            1,
+            get_int(
+                "SKYNET_LIVE_E2E_WORKER_BOOTSTRAP_POLL_SECONDS",
+                LIVE_E2E_WORKER_BOOTSTRAP_POLL_SECONDS,
+            ),
+        ),
+    }
+
+
+def get_qwen_execution_policy() -> dict[str, Any]:
+    """Return normalized qwen execution policy from settings."""
+    return load_qwen_execution_policy(get_str=get_str, get_bool=get_bool)
+
+
+def get_live_e2e_qwen_smoke_config() -> dict[str, Any]:
+    """Return normalized live E2E qwen preflight smoke settings."""
+    return {
+        "enabled": get_bool(
+            "SKYNET_LIVE_E2E_QWEN_SMOKE_ENABLED",
+            LIVE_E2E_QWEN_SMOKE_ENABLED,
+        ),
+        "timeout_seconds": max(
+            15,
+            get_int(
+                "SKYNET_LIVE_E2E_QWEN_SMOKE_TIMEOUT_SECONDS",
+                LIVE_E2E_QWEN_SMOKE_TIMEOUT_SECONDS,
+            ),
+        ),
+    }
+
+
 def get_live_e2e_policy(flow: str | None = None) -> dict[str, Any]:
     """Return normalized live E2E runtime policy from settings."""
     resolved_flow = str(flow or get_live_e2e_flow() or "conversation").strip().lower()
     diagnostics = get_live_e2e_container_log_config()
     cleanup = get_live_e2e_cleanup_config()
+    worker_bootstrap = get_live_e2e_worker_bootstrap_config()
+    qwen_smoke = get_live_e2e_qwen_smoke_config()
     active = get_bool("SKYNET_E2E_LIVE", E2E_LIVE)
     allow_fallback = get_bool("SKYNET_LIVE_E2E_ALLOW_FALLBACK", LIVE_E2E_ALLOW_FALLBACK)
     required_transport = get_str(
@@ -809,6 +907,10 @@ def get_live_e2e_policy(flow: str | None = None) -> dict[str, Any]:
             ),
         ),
         "strict_preflight": get_bool("SKYNET_LIVE_E2E_STRICT_PREFLIGHT", LIVE_E2E_STRICT_PREFLIGHT),
+        "expected_remote_build_revision": get_str(
+            "SKYNET_LIVE_E2E_EXPECT_REMOTE_BUILD_REVISION",
+            LIVE_E2E_EXPECT_REMOTE_BUILD_REVISION,
+        ).strip(),
         "diagnostics_strict": bool(diagnostics.get("require_stream", True)),
         "diagnostics_profile": get_str(
             "SKYNET_LIVE_E2E_DIAGNOSTICS_PROFILE",
@@ -816,6 +918,8 @@ def get_live_e2e_policy(flow: str | None = None) -> dict[str, Any]:
         ).strip().lower(),
         "container_log": diagnostics,
         "cleanup": cleanup,
+        "worker_bootstrap": worker_bootstrap,
+        "qwen_smoke": qwen_smoke,
         "effective_coding_stage_chain": effective_coding_stage_chain,
         "planner_router_fallback_enabled": planner_router_fallback_enabled,
         "control_loop_router_fallback_enabled": control_loop_router_fallback_enabled,
