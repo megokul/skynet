@@ -36,6 +36,7 @@
     expose:
       - "8766"       # HTTP API (internal to docker network only)
     environment:
+      - SKYNET_API_KEY
       - SKYNET_AUTH_TOKEN
       - SKYNET_ORCHESTRATOR_URL=http://skynet-api:8000
       - OPENCLAW_GATEWAY_URL=http://openclaw-gateway:8766
@@ -121,4 +122,3 @@ volumes:
 networks:
   skynet-network:
     driver: bridge
-

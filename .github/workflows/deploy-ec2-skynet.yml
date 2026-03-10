@@ -288,6 +288,16 @@ jobs:
           missing = [key for key in required if key not in payload]
           if missing:
               raise SystemExit(f"status payload missing fields: {missing}")
+          if "telegram_poller_state" not in payload or "telegram_poller_lock_healthy" not in payload:
+              raise SystemExit("status payload missing telegram poller diagnostics")
+          if payload.get("telegram_poller_lease_enabled"):
+              if payload.get("telegram_poller_state") != "running":
+                  raise SystemExit(
+                      "telegram poller is not running after deploy: "
+                      f"{payload.get('telegram_poller_state')!r}"
+                  )
+              if not payload.get("telegram_poller_lock_healthy"):
+                  raise SystemExit("telegram poller lease is unhealthy after deploy")
           print("status diagnostics contract ok")
           PY
 
