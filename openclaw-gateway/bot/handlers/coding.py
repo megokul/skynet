@@ -4846,12 +4846,21 @@ async def _run_control_loop_v1(
                 f"{compressed}\n"
             )
             payload["prompt"] = prompt
-        result = await send_action(
-            "run_coding_agent",
-            payload,
-            timeout=timeout,
-            confirmed=True,
-        )
+        try:
+            result = await send_action(
+                "run_coding_agent",
+                payload,
+                timeout=timeout,
+                confirmed=True,
+            )
+        except asyncio.TimeoutError:
+            return {
+                "ok": False,
+                "parse_error": False,
+                "error": f"Critic timed out after {timeout}s",
+                "timed_out": True,
+                "critic_name": "review",
+            }
         if result.get("status") == "error":
             return {
                 "ok": False,

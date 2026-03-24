@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import datetime, timezone
@@ -407,11 +408,15 @@ class ClosedLoopController:
                     try:
                         result = await execute_critic(node)
                     except Exception as exc:
-                        return await _fail_graph_from_executor_exception(
-                            node=node,
-                            exc=exc,
-                            failure_type=FAIL_CRITIC_PARSE,
-                        )
+                        error_text = (str(exc).strip() or type(exc).__name__)[:600]
+                        result = {
+                            "ok": False,
+                            "parse_error": not isinstance(exc, (asyncio.TimeoutError, TimeoutError)),
+                            "error": f"CRITIC_EXECUTOR_ERROR: {error_text}",
+                            "failure_type": FAIL_CRITIC_PARSE,
+                            "critic_name": "review",
+                            "timed_out": isinstance(exc, (asyncio.TimeoutError, TimeoutError)),
+                        }
                     handled = await self._handle_critic_result(node=node, result=result, emit=_emit)
                     await update_task_graph_counters(
                         self._db,
@@ -552,6 +557,17 @@ class ClosedLoopController:
             )
 
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        if result.get("timed_out"):
+            await update_task_node_status(
+                self._db,
+                node_id=node.node_id,
+                status="done",
+                result_summary="critic timed out — skipped (advisory)",
+                finished_at=now,
+            )
+            node.status = "done"
+            await emit(node, "done", {"summary": "critic timed out", "warning": "timeout"})
+            return "done"
         if parse_error:
             await update_task_node_status(
                 self._db,
