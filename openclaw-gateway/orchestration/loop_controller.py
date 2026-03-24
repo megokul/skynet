@@ -12,6 +12,7 @@ from db.store import (
     create_critic_finding,
     create_task_graph,
     create_task_node,
+    delete_critic_findings_for_node,
     increment_task_node_attempt,
     list_graph_nodes,
     update_task_graph_counters,
@@ -656,6 +657,7 @@ class ClosedLoopController:
                 inputs={
                     "critic_node_key": node.node_key,
                     "findings": findings,
+                    "milestone_text": str((node.payload or {}).get("milestone_text") or node.title or ""),
                 },
                 retry_budget=0,
                 tools_required=list(node.tools_required),
@@ -665,6 +667,8 @@ class ClosedLoopController:
             )
             current_deps.append(repair_key)
             await update_task_node_deps(self._db, node_id=node.node_id, deps=current_deps)
+            # Clear stale findings so gate_final won't count pre-repair findings
+            await delete_critic_findings_for_node(self._db, node_id=node.node_id)
             await update_task_node_status(
                 self._db,
                 node_id=node.node_id,

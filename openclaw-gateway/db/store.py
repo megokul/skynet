@@ -655,6 +655,20 @@ async def list_critic_findings(
         return [dict(r) for r in await cur.fetchall()]
 
 
+async def delete_critic_findings_for_node(
+    db: aiosqlite.Connection,
+    *,
+    node_id: int,
+) -> int:
+    async with db.execute(
+        "DELETE FROM critic_findings WHERE node_id = ?",
+        (int(node_id),),
+    ) as cur:
+        count = cur.rowcount
+    await db.commit()
+    return count
+
+
 async def upsert_project_memory(
     db: aiosqlite.Connection,
     *,
