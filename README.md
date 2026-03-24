@@ -1,7 +1,7 @@
 # SKYNET Control Plane
 
 Authoritative contract: `docs/SKYNET_OPENCLAW_CONTRACT.md`.
-Implementation/debug/policy docs: `docs/INDEX.md`.
+Implementation/debug/policy docs: `docs/INDEX.md` (`docs/CODE_QUALITY_STANDARDS.md` is the code-structure baseline for refactors).
 
 - OpenClaw executes tasks.
 - SKYNET orchestrates OpenClaw gateways.
@@ -12,7 +12,7 @@ Implementation/debug/policy docs: `docs/INDEX.md`.
 Current worker transport policy:
 
 1. `openclaw-gateway` prefers the connected `openclaw-agent` websocket channel.
-2. SSH remains configured as automatic fallback.
+2. SSH fallback is available, but disabled by default in the checked-in settings.
 3. Gateway runtime traces and `/status` now expose:
    - `primary_transport_mode`
    - websocket heartbeat health
@@ -49,7 +49,8 @@ Live E2E websocket expectations:
 3. The recommended deployment default remains:
    - `OPENCLAW_EXECUTION_MODE=agent_preferred`
    - `SKYNET_CODING_TRANSPORT=websocket_primary`
-   - `SKYNET_WEBSOCKET_FALLBACK_TO_SSH=1`
+   - `SKYNET_WEBSOCKET_FALLBACK_TO_SSH=0`
+   - `OPENCLAW_SSH_FALLBACK_ENABLED=0`
 
 ## Active Scope
 
@@ -124,6 +125,24 @@ docker compose up -d skynet-api openclaw-gateway
 docker compose -f docker-compose.skynet-only.yml up -d
 ```
 
+## Install
+
+```bash
+# Shared control-plane and gateway dependencies
+make install
+
+# Worker-agent dependencies
+make install-agent
+
+# Both dependency sets
+make install-all
+```
+
+Dependency ownership:
+
+- root `requirements.txt`: control plane, shared tooling, and gateway test/runtime dependencies
+- `openclaw-agent/requirements.txt`: worker-agent specific dependencies
+
 ## Config Split: Settings vs Secrets
 
 - Non-secret defaults live in:
@@ -181,16 +200,32 @@ SKYNET_SKIP_ENV_SYNC=1 git push
 ## Tests
 
 ```bash
-make test
+make test-control-plane
+make test-gateway
+make test-agent
+make test-policy
+make test-all
 make smoke
+python scripts/ci/check_repo_hygiene.py
 python scripts/ci/check_settings_policy.py
 python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
 ```
 
-Primary API tests:
+Curated root tests are explicit and limited to control-plane and repo-policy coverage:
 - `tests/test_api_lifespan.py`
 - `tests/test_api_provider_config.py`
 - `tests/test_api_control_plane.py`
+- `tests/test_job_locking.py`
+- `tests/test_task_queue_control_plane.py`
+- `tests/test_worker_registry.py`
+- `tests/test_ci_engineering_policy.py`
+- `tests/test_prompt_references.py`
+
+Default pytest discovery remains focused on:
+- `openclaw-gateway/tests/`
+- `openclaw-agent/tests/`
+
+Curated root-suite guidance lives in `tests/README.md`.
 
 ## Manual Integration
 
@@ -236,12 +271,12 @@ You can override this chain with `OPENROUTER_MODEL` (primary) and `OPENROUTER_FA
 The router can use all configured APIs and select providers by priority plus task needs.
 
 Default provider priority:
-1. `gemini`
-2. `groq`
-3. `openrouter`
+1. `claude`
+2. `gemini`
+3. `openai`
 4. `deepseek`
-5. `openai`
-6. `claude`
+5. `openrouter`
+6. `groq`
 7. `ollama`
 
 Override via `AI_PROVIDER_PRIORITY` (comma-separated).
@@ -250,7 +285,7 @@ Override via `AI_PROVIDER_PRIORITY` (comma-separated).
 
 Default behavior now supports end-to-end autonomous project execution:
 
-1. New projects are created under `SKYNET_PROJECT_BASE_DIR` (default `E:\MyProjects`).
+1. New projects are created under `SKYNET_PROJECT_BASE_DIR` (default `E:\SKYNET-SANDBOX\Projects`).
 2. On project creation, the gateway bootstraps:
    - project directory
    - `README.md`
@@ -440,17 +475,21 @@ Tracker troubleshooting:
 - If transport is healthy but no stage progress is visible, inspect `telegram.tracker.*` logs in gateway output.
 - If chat shows `coding preflight failed: no control-plane coding agents available`, you are running ACP checks in an SSH-first topology. Set `SKYNET_ORCHESTRATION_MODE=legacy` (or keep ACP and install CLIs in EC2 runtime).
 
-### SSH-First Closed Loop v1.2 (Default)
+### Control Loop v2 (Enabled By Default)
 
-Current default policy in this repo is hierarchical closed-loop orchestration for coding sessions:
+Current checked-in defaults combine the control loop with websocket-primary worker execution:
 
-- `Director -> Architect -> Planner(DAG) -> Scheduler -> Executor -> Critics -> Memory -> Learning -> Gate`
-- all coding actions dispatch to worker through SSH (`OPENCLAW_EXECUTION_MODE=ssh_tunnel`)
-- worker is execution plane only (Codex + toolchain + project files)
-- EC2 gateway is control plane only (state/orchestration/telemetry)
-- coding chain is codex-only (`SKYNET_CODING_FALLBACK_CHAIN=codex`)
-- strict gates are mandatory before milestone completion
-- architecture contract checks are blocking in loop v2
+- `SKYNET_CONTROL_LOOP_ENABLED=true`
+- `SKYNET_CONTROL_LOOP_DEFAULT_PROFILE=loop_v2`
+- `SKYNET_ORCHESTRATION_MODE=legacy`
+- `OPENCLAW_EXECUTION_MODE=agent_preferred`
+- `SKYNET_CODING_TRANSPORT=websocket_primary`
+- `OPENCLAW_SSH_FALLBACK_ENABLED=false`
+- `SKYNET_WEBSOCKET_FALLBACK_TO_SSH=false`
+- planner primary agent: `codex` (`SKYNET_PLANNER_PRIMARY_AGENT=codex`)
+- coding fallback chain: `qwen,codex` (`SKYNET_CODING_FALLBACK_CHAIN=qwen,codex`)
+
+The optional SSH-primary profile remains available, but it is no longer the default repo state.
 
 Closed-loop config flags:
 

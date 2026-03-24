@@ -46,29 +46,6 @@ class ProviderRouter:
         db: aiosqlite.Connection,
         provider_priority: list[str] | None = None,
     ):
-        """
-        Initialize runtime dependencies and object state.
-        
-        Purpose:
-        - Implement `__init__` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `providers`: input used by this function to compute or route work.
-        - `db`: input used by this function to compute or route work.
-        - `provider_priority`: input used by this function to compute or route work.
-        
-        Returns:
-        - Function-specific value or side effects consumed by upstream callers.
-        """
 
         self.providers = providers
         self.db = db
@@ -308,53 +285,11 @@ class ProviderRouter:
 
 
 def _is_truthy(value: Any) -> bool:
-    """
-    Is truthy.
-    
-    Purpose:
-    - Implement `_is_truthy` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `value`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `bool` when available; otherwise side effects only.
-    """
 
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def parse_provider_priority(value: str | None) -> list[str]:
-    """
-    Parse provider priority.
-    
-    Purpose:
-    - Implement `parse_provider_priority` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `value`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `list[str]` when available; otherwise side effects only.
-    """
 
     if not value:
         return []

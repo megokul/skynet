@@ -27,27 +27,6 @@ _write_lock = asyncio.Lock()
 
 
 def _ensure_log_dir() -> str:
-    """
-    Ensure log dir.
-    
-    Purpose:
-    - Implement `_ensure_log_dir` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - None.
-    
-    Returns:
-    - Return value typed as `str` when available; otherwise side effects only.
-    """
 
     global _log_path
     if _log_path is None:
@@ -66,33 +45,6 @@ def _build_entry(
     detail: Any = None,
     duration_ms: float | None = None,
 ) -> dict[str, Any]:
-    """
-    Build entry.
-    
-    Purpose:
-    - Implement `_build_entry` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `request_id`: input used by this function to compute or route work.
-    - `action`: input used by this function to compute or route work.
-    - `tier`: input used by this function to compute or route work.
-    - `params`: input used by this function to compute or route work.
-    - `outcome`: input used by this function to compute or route work.
-    - `detail`: input used by this function to compute or route work.
-    - `duration_ms`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
-    """
 
     return {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -148,28 +100,6 @@ async def log_event(
 
 
 def _append_line(path: str, line: str) -> None:
-    """
-    Append line.
-    
-    Purpose:
-    - Implement `_append_line` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `path`: input used by this function to compute or route work.
-    - `line`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `None` when available; otherwise side effects only.
-    """
 
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(line)

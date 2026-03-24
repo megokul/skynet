@@ -58,6 +58,27 @@ def _write_handoff(
     )
 
 
+def _write_template_docstring(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        (
+            'def example() -> None:\n'
+            '    """\n'
+            "    Purpose:\n"
+            "    - Template marker.\n"
+            "\n"
+            "    How it works:\n"
+            "    - Template marker.\n"
+            "\n"
+            "    Why this exists:\n"
+            "    - Template marker.\n"
+            '    """\n'
+            "    return None\n"
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_required_doc_headings_fail_when_missing(tmp_path: Path) -> None:
     policy = _load_policy_module()
     remove = ("docs/INDEX.md", "## Authoritative Sources")
@@ -103,6 +124,25 @@ def test_docs_only_change_passes(tmp_path: Path) -> None:
 
     violations = policy.evaluate_policy(tmp_path, ["docs/INDEX.md"], strict=True)
     assert violations == []
+
+
+def test_template_docstrings_fail_outside_allowlist(tmp_path: Path) -> None:
+    policy = _load_policy_module()
+    _write_required_docs(tmp_path, policy)
+    _write_template_docstring(tmp_path / "skynet" / "api" / "routes.py")
+
+    violations = policy.evaluate_policy(tmp_path, [], strict=False)
+    assert any("template-generated docstring markers" in v for v in violations)
+
+
+def test_template_docstrings_allowed_for_deferred_allowlist_paths(tmp_path: Path) -> None:
+    policy = _load_policy_module()
+    _write_required_docs(tmp_path, policy)
+    rel_path = next(iter(sorted(policy.TEMPLATE_DOCSTRING_ALLOWLIST)))
+    _write_template_docstring(tmp_path / rel_path)
+
+    violations = policy.evaluate_policy(tmp_path, [], strict=False)
+    assert all(rel_path not in violation for violation in violations)
 
 
 def test_valid_evidence_passes_for_code_change(tmp_path: Path) -> None:

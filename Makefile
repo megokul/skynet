@@ -1,4 +1,4 @@
-.PHONY: help install test test-all test-unit test-gateway-e2e test-live-conversation clean clean-data run-api run-bot dev-setup manual-check-api manual-check-e2e manual-check-delegate check-stale-paths check-control-boundary check-settings-policy check-policy smoke format lint check
+.PHONY: help install install-agent install-all test test-all test-unit test-control-plane test-gateway test-agent test-policy test-gateway-e2e test-live-conversation clean clean-data run-api run-bot dev-setup manual-check-api manual-check-e2e manual-check-delegate check-stale-paths check-control-boundary check-settings-policy check-hygiene check-policy smoke format lint check
 
 # Default target
 help:
@@ -6,13 +6,19 @@ help:
 	@echo "============================"
 	@echo ""
 	@echo "Setup:"
-	@echo "  make install      - Install dependencies"
+	@echo "  make install      - Install control-plane and shared dependencies"
+	@echo "  make install-agent - Install worker-agent dependencies"
+	@echo "  make install-all  - Install both shared and worker-agent dependencies"
 	@echo "  make dev-setup    - Complete development setup"
 	@echo ""
 	@echo "Testing:"
-	@echo "  make test         - Run control-plane tests (fast)"
-	@echo "  make test-all     - Run all remaining tests"
+	@echo "  make test         - Run curated control-plane and policy tests"
+	@echo "  make test-all     - Run the curated full repo matrix"
 	@echo "  make test-unit    - Alias of control-plane tests"
+	@echo "  make test-control-plane - Run curated root tests"
+	@echo "  make test-gateway - Run gateway tests"
+	@echo "  make test-agent   - Run agent tests"
+	@echo "  make test-policy  - Run repo policy tests"
 	@echo "  make test-gateway-e2e - Run deterministic gateway conversation E2E tests"
 	@echo "  make test-live-conversation - Run manual live conversation E2E test"
 	@echo ""
@@ -35,6 +41,7 @@ help:
 	@echo "  make check-stale-paths - Fail on stale root path references"
 	@echo "  make check-control-boundary - Enforce SKYNET control-plane boundaries"
 	@echo "  make check-settings-policy - Enforce shared settings source-of-truth policy"
+	@echo "  make check-hygiene - Enforce repo hygiene and curated test topology"
 	@echo "  make check-policy - Enforce engineering policy docs/evidence rules"
 	@echo "  make smoke        - Quick repo health checks"
 	@echo "  make check        - Run all checks"
@@ -42,22 +49,51 @@ help:
 install:
 	pip install -r requirements.txt
 
-dev-setup: install
+install-agent:
+	pip install -r openclaw-agent/requirements.txt
+
+install-all: install install-agent
+
+dev-setup: install-all
 	@echo "Setting up development environment..."
 	@python -c "from pathlib import Path; src=Path('.env.example'); dst=Path('.env'); (dst.write_text(src.read_text(encoding='utf-8'), encoding='utf-8'), print('Created .env file - please configure it')) if (src.exists() and not dst.exists()) else print('.env already exists or .env.example missing')"
 	@echo "Development setup complete!"
 
 test:
-	@echo "Running control-plane tests..."
-	python -m pytest tests/test_api_lifespan.py tests/test_api_provider_config.py tests/test_api_control_plane.py tests/test_job_locking.py tests/test_worker_registry.py -q
+	@echo "Running curated control-plane and policy tests..."
+	$(MAKE) test-control-plane
+	$(MAKE) test-policy
 
 test-all:
-	@echo "Running all remaining tests..."
-	python -m pytest tests/ -v
+	@echo "Running curated full repo matrix..."
+	$(MAKE) test-control-plane
+	$(MAKE) test-gateway
+	$(MAKE) test-agent
+	$(MAKE) test-policy
 
 test-unit:
 	@echo "Running control-plane unit tests..."
-	python -m pytest tests/test_api_lifespan.py tests/test_api_provider_config.py tests/test_api_control_plane.py -q
+	$(MAKE) test-control-plane
+
+test-control-plane:
+	@echo "Running curated root control-plane and repo-policy tests..."
+	python -m pytest tests/test_api_lifespan.py tests/test_api_provider_config.py tests/test_api_control_plane.py tests/test_job_locking.py tests/test_task_queue_control_plane.py tests/test_worker_registry.py tests/test_ci_engineering_policy.py tests/test_prompt_references.py -q
+
+test-gateway:
+	@echo "Running gateway tests..."
+	python -m pytest openclaw-gateway/tests -q
+
+test-agent:
+	@echo "Running agent tests..."
+	python -m pytest openclaw-agent/tests -q
+
+test-policy:
+	@echo "Running policy and hygiene guards..."
+	python scripts/ci/check_stale_paths.py
+	python scripts/ci/check_control_plane_boundary.py
+	python scripts/ci/check_settings_policy.py
+	python scripts/ci/check_repo_hygiene.py
+	python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
 
 test-gateway-e2e:
 	@echo "Running deterministic gateway conversation E2E tests..."
@@ -99,17 +135,21 @@ check-settings-policy:
 	@echo "Checking shared settings policy..."
 	python scripts/ci/check_settings_policy.py
 
+check-hygiene:
+	@echo "Checking repo hygiene..."
+	python scripts/ci/check_repo_hygiene.py
+
 check-policy:
 	@echo "Checking engineering policy compliance..."
 	python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
 
-smoke: check-stale-paths check-control-boundary check-settings-policy check-policy
+smoke: check-stale-paths check-control-boundary check-settings-policy check-hygiene check-policy
 	@echo "Running smoke checks..."
 	python scripts/dev/smoke.py
 
 clean:
 	@echo "Cleaning cache and temporary files..."
-	@python -c "from pathlib import Path; import shutil; [shutil.rmtree(p, ignore_errors=True) for p in Path('.').rglob('__pycache__') if p.is_dir()]; [p.unlink(missing_ok=True) for p in Path('.').rglob('*.pyc') if p.is_file()]; shutil.rmtree('.pytest_cache', ignore_errors=True); print('Clean complete!')"
+	@python -c "from pathlib import Path; import shutil; root=Path('.'); scratch_dirs=[root / '.pytest_cache', root / '.pytest-qwen-probe', root / '.pytest-tmp', root / '.tmp', root / 'openclaw-gateway/tests/.artifacts', root / 'openclaw-agent/MyProjectsskynetlogs']; scratch_dirs.extend(root.glob('tmp-probe-dir*')); [shutil.rmtree(p, ignore_errors=True) for p in root.rglob('__pycache__') if p.is_dir()]; [p.unlink(missing_ok=True) for p in root.rglob('*.pyc') if p.is_file()]; [shutil.rmtree(p, ignore_errors=True) for p in scratch_dirs]; print('Clean complete!')"
 
 clean-data:
 	@echo "Cleaning test data..."
@@ -117,11 +157,11 @@ clean-data:
 
 format:
 	@echo "Formatting code with black..."
-	black skynet/ tests/ scripts/
+	black skynet/ openclaw-gateway/ openclaw-agent/ tests/ scripts/
 
 lint:
 	@echo "Running linters..."
-	flake8 skynet/ tests/ scripts/ --max-line-length=100
+	flake8 skynet/ openclaw-gateway/ openclaw-agent/ tests/ scripts/ --max-line-length=100
 
 check: clean test lint
 	@echo "All checks passed!"

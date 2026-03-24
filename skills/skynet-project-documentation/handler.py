@@ -99,9 +99,7 @@ class ControlPlaneClient:
     def enqueue_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post("/v1/tasks/enqueue", payload)
 
-    def list_tasks(self, project_id: str | None = None) -> dict[str, Any]:
-        if project_id:
-            return self.get(f"/v1/tasks?project_id={project_id}")
+    def list_tasks(self) -> dict[str, Any]:
         return self.get("/v1/tasks")
 
     def get_task(self, task_id: str) -> dict[str, Any]:
@@ -116,9 +114,7 @@ class ControlPlaneClient:
     def release_task(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post(f"/v1/tasks/{task_id}/release", payload)
 
-    def list_file_ownership(self, project_id: str | None = None) -> dict[str, Any]:
-        if project_id:
-            return self.get(f"/v1/files/ownership?project_id={project_id}")
+    def list_file_ownership(self) -> dict[str, Any]:
         return self.get("/v1/files/ownership")
 
 
@@ -126,6 +122,8 @@ TASK_SECTION_RE = re.compile(
     r"^###\s+(?P<task_id>TASK-\d+)\s*:\s*(?P<title>.+?)\s*$",
     re.MULTILINE,
 )
+
+TASK_GRAPH_PATH = Path("control") / "TASK_GRAPH.yaml"
 
 
 def parse_task_plan_md(plan_text: str) -> tuple[str, list[dict[str, Any]]]:
@@ -143,9 +141,9 @@ def parse_task_plan_md(plan_text: str) -> tuple[str, list[dict[str, Any]]]:
         title = m.group("title").strip()
 
         deps: list[str] = []
-        dep_match = re.search(r"^Dependencies:\s*(.+?)\s*$", block, re.MULTILINE)
+        dep_match = re.search(r"^Dependencies:(?P<deps>[^\n]*)$", block, re.MULTILINE)
         if dep_match:
-            deps = [d.strip() for d in dep_match.group(1).split(",") if d.strip()]
+            deps = [d.strip() for d in dep_match.group("deps").split(",") if d.strip()]
 
         outputs: list[str] = []
         out_match = re.search(r"^Outputs:\s*$", block, re.MULTILINE)
@@ -169,6 +167,128 @@ def parse_task_plan_md(plan_text: str) -> tuple[str, list[dict[str, Any]]]:
         )
 
     return status, tasks
+
+
+def project_id_for_dir(project_dir: Path) -> str:
+    return read_yaml(project_dir / "PROJECT.yaml").get("project", {}).get("id") or project_dir.name
+
+
+def load_task_graph(project_dir: Path) -> dict[str, Any]:
+    graph = read_yaml(project_dir / TASK_GRAPH_PATH)
+    tasks = graph.get("tasks")
+    if not isinstance(tasks, dict):
+        return {"tasks": {}}
+    return {"tasks": tasks}
+
+
+def build_task_graph(
+    tasks: list[dict[str, Any]],
+    existing_graph: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    existing_tasks = dict((existing_graph or {}).get("tasks") or {})
+    graph = {"tasks": {}}
+    for task in tasks:
+        task_id = str(task["task_id"])
+        previous = existing_tasks.get(task_id)
+        merged = {
+            "title": task["title"],
+            "dependencies": list(task.get("dependencies") or []),
+            "outputs": list(task.get("outputs") or []),
+        }
+        if isinstance(previous, dict):
+            for key, value in previous.items():
+                if key not in {"title", "dependencies", "outputs"}:
+                    merged[key] = value
+        graph["tasks"][task_id] = merged
+    return graph
+
+
+def queue_payload_for_task(
+    *,
+    task: dict[str, Any],
+    graph_task: dict[str, Any],
+    project_id: str,
+    gateway_hint: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    action = str(graph_task.get("action") or "").strip()
+    if not action:
+        return None, "missing control-plane action metadata in control/TASK_GRAPH.yaml"
+
+    params = graph_task.get("params") or {}
+    if not isinstance(params, dict):
+        return None, "control/TASK_GRAPH.yaml action params must be a mapping"
+
+    priority_raw = graph_task.get("priority", 0)
+    try:
+        priority = int(priority_raw)
+    except (TypeError, ValueError):
+        return None, f"invalid priority value: {priority_raw!r}"
+
+    required_files_raw = graph_task.get("required_files") or []
+    if not isinstance(required_files_raw, list):
+        return None, "control/TASK_GRAPH.yaml required_files must be a list"
+    required_files = [str(item).strip() for item in required_files_raw if str(item).strip()]
+
+    gateway_id = str(graph_task.get("gateway_id") or gateway_hint or "").strip() or None
+    payload_params = dict(params)
+    payload_params.setdefault("project_id", project_id)
+
+    return {
+        "action": action,
+        "params": payload_params,
+        "task_id": task["task_id"],
+        "priority": priority,
+        "dependencies": list(task.get("dependencies") or []),
+        "required_files": required_files,
+        "gateway_id": gateway_id,
+    }, None
+
+
+def task_matches_project(
+    task: dict[str, Any],
+    *,
+    project_id: str,
+    known_task_ids: set[str],
+) -> bool:
+    task_id = str(task.get("task_id") or task.get("id") or "").strip()
+    if task_id and task_id in known_task_ids:
+        return True
+    params = task.get("params") if isinstance(task.get("params"), dict) else {}
+    return str(params.get("project_id") or "").strip() == project_id
+
+
+def normalize_remote_task(
+    task: dict[str, Any],
+    *,
+    graph_task: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    graph_task = graph_task or {}
+    task_id = str(task.get("task_id") or task.get("id") or "").strip()
+    return {
+        "task_id": task_id,
+        "title": str(task.get("title") or graph_task.get("title") or ""),
+        "status": str(task.get("status") or ""),
+        "locked_by": task.get("locked_by"),
+        "locked_at": task.get("locked_at"),
+        "dependencies": list(task.get("dependencies") or graph_task.get("dependencies") or []),
+        "outputs": list(task.get("outputs") or graph_task.get("outputs") or []),
+        "required_files": list(task.get("required_files") or graph_task.get("required_files") or []),
+        "updated_at": task.get("updated_at") or task.get("last_updated"),
+    }
+
+
+def normalize_planned_task(task_id: str, graph_task: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "title": str(graph_task.get("title") or ""),
+        "status": "planned",
+        "locked_by": None,
+        "locked_at": None,
+        "dependencies": list(graph_task.get("dependencies") or []),
+        "outputs": list(graph_task.get("outputs") or []),
+        "required_files": list(graph_task.get("required_files") or []),
+        "updated_at": None,
+    }
 
 
 def load_policy(project_dir: Path) -> dict[str, Any]:
@@ -343,13 +463,7 @@ def generate_plan(project_dir: str) -> dict[str, Any]:
     write_text(plan, task_plan)
 
     status, tasks = parse_task_plan_md(task_plan)
-    graph = {"tasks": {}}
-    for t in tasks:
-        graph["tasks"][t["task_id"]] = {
-            "title": t["title"],
-            "dependencies": t["dependencies"],
-            "outputs": t["outputs"],
-        }
+    graph = build_task_graph(tasks, load_task_graph(proj))
     write_yaml(proj / "control" / "TASK_GRAPH.yaml", graph)
 
     next_actions = {
@@ -399,83 +513,152 @@ def finalize_plan_and_enqueue(project_dir: str, gateway_hint: str | None = None)
 
     base_url = os.getenv("SKYNET_CONTROL_PLANE_BASE_URL", "http://localhost:8000")
     api_key = os.getenv("SKYNET_CONTROL_PLANE_API_KEY")
-    client = ControlPlaneClient(ControlPlaneConfig(base_url=base_url, api_key=api_key))
-
-    project_id = read_yaml(proj / "PROJECT.yaml").get("project", {}).get("id") or proj.name
-    enqueued: list[dict[str, Any]] = []
-    for t in tasks:
-        payload = {
-            "project_id": project_id,
-            "task_id": t["task_id"],
-            "title": t["title"],
-            "dependencies": t["dependencies"],
-            "outputs": t["outputs"],
-            "gateway_hint": gateway_hint,
-        }
-        res = client.enqueue_task(payload)
-        enqueued.append({"task_id": t["task_id"], "result": res})
-
-    graph = {"tasks": {}}
-    for t in tasks:
-        graph["tasks"][t["task_id"]] = {
-            "title": t["title"],
-            "dependencies": t["dependencies"],
-            "outputs": t["outputs"],
-        }
+    project_id = project_id_for_dir(proj)
+    graph = build_task_graph(tasks, load_task_graph(proj))
     write_yaml(proj / "control" / "TASK_GRAPH.yaml", graph)
+
+    payloads: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    for t in tasks:
+        graph_task = dict(graph.get("tasks", {}).get(t["task_id"]) or {})
+        payload, reason = queue_payload_for_task(
+            task=t,
+            graph_task=graph_task,
+            project_id=project_id,
+            gateway_hint=gateway_hint,
+        )
+        if payload is None:
+            skipped.append({"task_id": t["task_id"], "reason": str(reason or "unknown")})
+            continue
+        payloads.append(payload)
+
+    enqueued: list[dict[str, Any]] = []
+    if payloads:
+        client = ControlPlaneClient(ControlPlaneConfig(base_url=base_url, api_key=api_key))
+        for payload in payloads:
+            res = client.enqueue_task(payload)
+            enqueued.append({"task_id": str(payload["task_id"]), "result": res})
 
     changelog = read_yaml(proj / "memory" / "changelog.yaml")
     changelog.setdefault("events", [])
     changelog["events"].append(
         {
             "timestamp": utc_now_iso(),
-            "event": "plan_finalized_and_enqueued",
+            "event": "plan_finalized_and_enqueued" if enqueued else "plan_finalized",
             "actor": "skynet",
             "project_id": project_id,
             "count": len(tasks),
+            "enqueued_count": len(enqueued),
+            "skipped_count": len(skipped),
         }
     )
     write_yaml(proj / "memory" / "changelog.yaml", changelog)
 
-    return {"ok": True, "status": status, "project_id": project_id, "enqueued": enqueued}
+    message = "Plan finalized."
+    if enqueued:
+        message = f"{message} Enqueued {len(enqueued)} control-plane task(s)."
+    else:
+        message = (
+            f"{message} No control-plane tasks were enqueued because "
+            "TASK_GRAPH.yaml does not define queue-compatible action metadata yet."
+        )
+    return {
+        "ok": True,
+        "status": status,
+        "project_id": project_id,
+        "enqueued": enqueued,
+        "skipped": skipped,
+        "message": message,
+    }
 
 
 def sync_progress(project_dir: str) -> dict[str, Any]:
     proj = Path(project_dir).resolve()
-    project_id = read_yaml(proj / "PROJECT.yaml").get("project", {}).get("id") or proj.name
+    project_id = project_id_for_dir(proj)
+    graph = load_task_graph(proj)
+    graph_tasks = dict(graph.get("tasks") or {})
+    known_task_ids = set(graph_tasks)
 
     base_url = os.getenv("SKYNET_CONTROL_PLANE_BASE_URL", "http://localhost:8000")
     api_key = os.getenv("SKYNET_CONTROL_PLANE_API_KEY")
     client = ControlPlaneClient(ControlPlaneConfig(base_url=base_url, api_key=api_key))
 
-    tasks_res = client.list_tasks(project_id=project_id)
+    tasks_res = client.list_tasks()
     tasks = tasks_res.get("tasks", tasks_res)
+    if not isinstance(tasks, list):
+        tasks = []
 
-    normalized: list[dict[str, Any]] = []
-    for t in tasks:
-        normalized.append(
-            {
-                "task_id": t.get("task_id") or t.get("id"),
-                "title": t.get("title", ""),
-                "status": t.get("status", ""),
-                "locked_by": t.get("locked_by"),
-                "locked_at": t.get("locked_at"),
-                "dependencies": t.get("dependencies", []),
-                "outputs": t.get("outputs", []),
-                "updated_at": t.get("updated_at") or t.get("last_updated"),
-            }
-        )
+    remote_tasks = [
+        t
+        for t in tasks
+        if isinstance(t, dict)
+        and task_matches_project(t, project_id=project_id, known_task_ids=known_task_ids)
+    ]
+    remote_by_id = {
+        str(t.get("task_id") or t.get("id") or "").strip(): t
+        for t in remote_tasks
+        if str(t.get("task_id") or t.get("id") or "").strip()
+    }
+
+    normalized: list[dict[str, Any]] = [
+        normalize_planned_task(task_id, graph_task)
+        for task_id, graph_task in graph_tasks.items()
+    ]
+    for item in normalized:
+        task_id = item["task_id"]
+        if task_id in remote_by_id:
+            item.update(normalize_remote_task(remote_by_id[task_id], graph_task=graph_tasks.get(task_id)))
+
+    for task_id, task in remote_by_id.items():
+        if task_id not in graph_tasks:
+            normalized.append(normalize_remote_task(task))
+
+    ownership_res = client.list_file_ownership()
+    ownership_rows = ownership_res.get("ownership", ownership_res)
+    if not isinstance(ownership_rows, list):
+        ownership_rows = []
+    ownership = [
+        row
+        for row in ownership_rows
+        if isinstance(row, dict)
+        and str(row.get("owning_task") or "").strip() in {t["task_id"] for t in normalized}
+    ]
+    owned_files = {
+        str(row.get("file_path") or "").strip(): str(row.get("owning_task") or "").strip()
+        for row in ownership
+        if str(row.get("file_path") or "").strip()
+    }
 
     completed = [t for t in normalized if t["status"] in ("completed", "succeeded", "done")]
     active = [t for t in normalized if t["status"] in ("claimed", "running", "in_progress")]
-    pending = [t for t in normalized if t["status"] in ("pending", "queued")]
+    pending = [t for t in normalized if t["status"] in ("planned", "pending", "queued", "released")]
 
     completed_ids = {t["task_id"] for t in completed}
     eligible: list[dict[str, Any]] = []
+    next_actions_entries: list[dict[str, Any]] = []
     for t in pending:
         deps = set(t.get("dependencies") or [])
-        if deps.issubset(completed_ids):
+        required_files = {str(path).strip() for path in t.get("required_files") or [] if str(path).strip()}
+        blocking_files = sorted(
+            file_path
+            for file_path in required_files
+            if owned_files.get(file_path) not in {None, t["task_id"]}
+        )
+        dependencies_satisfied = deps.issubset(completed_ids)
+        safe_to_start = dependencies_satisfied and not blocking_files
+        if dependencies_satisfied:
             eligible.append(t)
+        next_actions_entries.append(
+            {
+                "task_id": t["task_id"],
+                "title": t["title"],
+                "priority": "high",
+                "eligible": dependencies_satisfied,
+                "dependencies_satisfied": dependencies_satisfied,
+                "safe_to_start": safe_to_start,
+                "blocking_files": blocking_files,
+            }
+        )
 
     ledger = {
         "project": {"id": project_id},
@@ -491,24 +674,20 @@ def sync_progress(project_dir: str) -> dict[str, Any]:
             "pending_tasks": len(pending),
         },
         "tasks": {t["task_id"]: t for t in normalized},
-        "blockers": [],
+        "blockers": [
+            {
+                "type": "file_ownership",
+                "file_path": str(row.get("file_path") or ""),
+                "owning_task": str(row.get("owning_task") or ""),
+                "claimed_at": str(row.get("claimed_at") or ""),
+            }
+            for row in ownership
+        ],
         "next_eligible_tasks": [t["task_id"] for t in eligible],
     }
     write_yaml(proj / "control" / "EXECUTION_LEDGER.yaml", ledger)
 
-    next_actions = {
-        "next_actions": [
-            {
-                "task_id": t["task_id"],
-                "title": t["title"],
-                "priority": "high",
-                "eligible": True,
-                "dependencies_satisfied": True,
-                "safe_to_start": True,
-            }
-            for t in eligible
-        ]
-    }
+    next_actions = {"next_actions": next_actions_entries}
     write_yaml(proj / "control" / "NEXT_ACTIONS.yaml", next_actions)
 
     agents: dict[str, Any] = {}

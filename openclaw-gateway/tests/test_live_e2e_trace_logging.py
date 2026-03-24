@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import aiohttp
 import pytest
 
 import config as gateway_config
@@ -30,6 +32,102 @@ def test_telegram_trace_defaults_to_repo_logs(monkeypatch) -> None:
         trace("unit.event", marker="ok")
     finally:
         path.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_fetch_local_gateway_status_retries_transient_tunnel_disconnect(monkeypatch) -> None:
+    calls: list[tuple[str, str, dict | None]] = []
+    sleep = AsyncMock(return_value=None)
+
+    class _Response:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.status = 200
+            self._text = json.dumps(payload)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def text(self) -> str:
+            return self._text
+
+    class _Session:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def request(self, method: str, url: str, json: dict | None = None):
+            calls.append((method, url, json))
+            if len(calls) == 1:
+                raise aiohttp.ClientOSError(64, "The specified network name is no longer available")
+            return _Response({"live_e2e_active": True})
+
+    monkeypatch.setattr(live_diagnostics.aiohttp, "ClientSession", _Session)
+    monkeypatch.setattr(live_diagnostics.asyncio, "sleep", sleep)
+
+    payload = await live_diagnostics.fetch_local_gateway_status(url="http://127.0.0.1:18766/status")
+
+    assert payload["live_e2e_active"] is True
+    assert len(calls) == 2
+    sleep.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_post_tunnel_gateway_action_retries_transient_tunnel_disconnect(monkeypatch) -> None:
+    calls: list[tuple[str, str, dict | None]] = []
+    sleep = AsyncMock(return_value=None)
+
+    class _Response:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.status = 200
+            self._text = json.dumps(payload)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def text(self) -> str:
+            return self._text
+
+    class _Session:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def request(self, method: str, url: str, json: dict | None = None):
+            calls.append((method, url, json))
+            if len(calls) == 1:
+                raise aiohttp.ClientOSError(64, "The specified network name is no longer available")
+            return _Response({"result": {"ok": True}})
+
+    monkeypatch.setattr(live_diagnostics.aiohttp, "ClientSession", _Session)
+    monkeypatch.setattr(live_diagnostics.asyncio, "sleep", sleep)
+
+    payload = await live_diagnostics._post_tunnel_gateway_action(
+        tunnel_http_port=18766,
+        action="run_coding_agent",
+        params={"agent": "qwen", "task_mode": "planner_chat"},
+    )
+
+    assert payload["result"]["ok"] is True
+    assert len(calls) == 2
+    assert calls[0][0] == "POST"
+    assert calls[0][1] == "http://127.0.0.1:18766/action"
+    sleep.assert_awaited_once()
 
 
 def test_runtime_trace_snapshot_reads_explicit_trace_file(monkeypatch, tmp_path: Path) -> None:
@@ -600,6 +698,120 @@ async def test_run_live_e2e_preflight_fails_when_live_policy_inactive(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_run_live_e2e_preflight_accepts_legacy_status_contract(monkeypatch, tmp_path: Path) -> None:
+    key_path = tmp_path / "diag.pem"
+    key_path.write_text("key", encoding="utf-8")
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def _fake_local_status(*, url: str, timeout_seconds: int = 10) -> dict[str, object]:
+        _ = (url, timeout_seconds)
+        return {
+            "primary_transport_mode": "websocket_primary",
+            "agent_connected": True,
+            "websocket_health_ok": True,
+            "coding_agents": {"qwen": "/usr/bin/qwen"},
+        }
+
+    monkeypatch.setattr(
+        live_diagnostics,
+        "resolve_container_log_stream_ssh",
+        lambda *_args, **_kwargs: {
+            "host": "ec2.example",
+            "user": "ubuntu",
+            "key": str(key_path),
+            "key_source": "test",
+            "port": 22,
+        },
+    )
+    monkeypatch.setattr(live_diagnostics, "fetch_local_gateway_status", _fake_local_status)
+    smoke = AsyncMock(return_value=None)
+    monkeypatch.setattr(live_diagnostics, "run_qwen_preflight_smoke_probe", smoke)
+
+    await live_diagnostics.run_live_e2e_preflight(
+        trace_fn=lambda event, **fields: events.append((event, fields)),
+        flow="telegram_real",
+        policy={
+            "required_transport": "websocket_primary",
+            "allow_fallback": False,
+            "required_worker_agents": ["qwen"],
+            "container_log": {"ssh_profile": "tunnel"},
+            "diagnostics_profile": "tunnel",
+            "status_probe_mode": "local_http",
+            "require_telegram_poller": True,
+            "qwen_smoke": {"enabled": True, "timeout_seconds": 45},
+        },
+        local_status_url="http://127.0.0.1:8766/status",
+    )
+
+    smoke.assert_awaited_once()
+    assert any(event == "preflight.status.legacy_contract" for event, _fields in events)
+    assert any(event == "preflight.telegram_poller.legacy_contract" for event, _fields in events)
+
+
+@pytest.mark.asyncio
+async def test_run_live_e2e_preflight_falls_back_to_remote_status_when_tunnel_resets(monkeypatch, tmp_path: Path) -> None:
+    key_path = tmp_path / "diag.pem"
+    key_path.write_text("key", encoding="utf-8")
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def _broken_local_status(*, url: str, timeout_seconds: int = 10) -> dict[str, object]:
+        _ = (url, timeout_seconds)
+        raise aiohttp.ClientOSError(64, "The specified network name is no longer available")
+
+    async def _remote_status(**_kwargs) -> dict[str, object]:
+        return {
+            "build_revision": "4653cb0576467b65c9f580907cb71528f8670ef9",
+            "live_e2e_active": True,
+            "live_e2e_flow": "telegram_real",
+            "live_e2e_effective_coding_stage_chain": ["qwen"],
+            "primary_transport_mode": "websocket_primary",
+            "agent_connected": True,
+            "websocket_health_ok": True,
+            "telegram_poller_state": "running",
+            "telegram_poller_lock_healthy": True,
+            "coding_agents": {"qwen": "/usr/bin/qwen"},
+        }
+
+    monkeypatch.setattr(
+        live_diagnostics,
+        "resolve_container_log_stream_ssh",
+        lambda *_args, **_kwargs: {
+            "host": "ec2.example",
+            "user": "ubuntu",
+            "key": str(key_path),
+            "key_source": "test",
+            "port": 22,
+        },
+    )
+    monkeypatch.setattr(live_diagnostics, "fetch_local_gateway_status", _broken_local_status)
+    monkeypatch.setattr(live_diagnostics, "fetch_remote_gateway_status", _remote_status)
+    smoke = AsyncMock(return_value=None)
+    monkeypatch.setattr(live_diagnostics, "run_qwen_preflight_smoke_probe", smoke)
+
+    await live_diagnostics.run_live_e2e_preflight(
+        trace_fn=lambda event, **fields: events.append((event, fields)),
+        flow="telegram_real",
+        policy={
+            "required_transport": "websocket_primary",
+            "allow_fallback": False,
+            "required_worker_agents": ["qwen"],
+            "container_log": {"ssh_profile": "tunnel"},
+            "diagnostics_profile": "tunnel",
+            "status_probe_mode": "remote_container_http",
+            "remote_gateway_container": "openclaw-gateway",
+            "remote_status_url": "http://localhost:8766/status",
+            "tunnel_http_port": 18766,
+            "expected_remote_build_revision": "4653cb0",
+            "require_telegram_poller": True,
+            "qwen_smoke": {"enabled": True, "timeout_seconds": 45},
+        },
+    )
+
+    smoke.assert_awaited_once()
+    assert any(event == "preflight.status.tunnel_fallback" for event, _fields in events)
+
+
+@pytest.mark.asyncio
 async def test_run_live_e2e_preflight_fails_when_build_revision_mismatches(monkeypatch, tmp_path: Path) -> None:
     key_path = tmp_path / "diag.pem"
     key_path.write_text("key", encoding="utf-8")
@@ -838,6 +1050,85 @@ async def test_qwen_preflight_smoke_runs_ready_and_plan_generation_probes(monkey
     assert "requirement_summary_md" in actions[1][1]
     assert "working_dir" not in actions[0][1]
     assert "working_dir" not in actions[1][1]
+
+
+@pytest.mark.asyncio
+async def test_qwen_preflight_smoke_falls_back_to_remote_action_when_tunnel_resets(monkeypatch, tmp_path: Path) -> None:
+    key_path = tmp_path / "diag.pem"
+    key_path.write_text("key", encoding="utf-8")
+    events: list[tuple[str, dict[str, object]]] = []
+    remote_actions: list[tuple[str, dict[str, object]]] = []
+
+    async def _broken_tunnel_action(*, tunnel_http_port: int, action: str, params: dict, timeout_seconds: int = 25):
+        _ = (tunnel_http_port, action, params, timeout_seconds)
+        raise aiohttp.ClientOSError(64, "The specified network name is no longer available")
+
+    async def _remote_action(**kwargs):
+        remote_actions.append((str(kwargs.get("action") or ""), dict(kwargs.get("params") or {})))
+        params = dict(kwargs.get("params") or {})
+        task_id = str(params.get("task_id") or "")
+        if task_id == "preflight-qwen-planner_ready":
+            return {
+                "result": {
+                    "returncode": 0,
+                    "assistant_text": "I have everything I need. Send /plan to generate your project plan.",
+                    "output_contract": "ok",
+                    "session_id": "sess-ready",
+                    "model": "coder-model",
+                    "qwen_context_files": [],
+                }
+            }
+        if task_id == "preflight-qwen-plan_generation":
+            return {
+                "result": {
+                    "returncode": 0,
+                    "assistant_text": (
+                        "**preflight-qwen - Project Plan**\n"
+                        "**Overview:** demo\n"
+                        "**Core Features:**\n- popup\n"
+                        "**Tech Stack:** Python\n"
+                        "**Project Structure:**\n- app/\n"
+                        "**Milestones:**\n1. ship\n"
+                        "**Open Questions:** None"
+                    ),
+                    "output_contract": "ok",
+                    "session_id": "sess-plan",
+                    "model": "coder-model",
+                    "qwen_context_files": [],
+                }
+            }
+        raise AssertionError(f"Unexpected task_id: {task_id}")
+
+    monkeypatch.setattr(
+        live_diagnostics,
+        "resolve_container_log_stream_ssh",
+        lambda *_args, **_kwargs: {
+            "host": "ec2.example",
+            "user": "ubuntu",
+            "key": str(key_path),
+            "key_source": "test",
+            "port": 22,
+        },
+    )
+    monkeypatch.setattr(live_diagnostics, "_post_tunnel_gateway_action", _broken_tunnel_action)
+    monkeypatch.setattr(live_diagnostics, "_post_remote_gateway_action", _remote_action)
+
+    await live_diagnostics.run_qwen_preflight_smoke_probe(
+        trace_fn=lambda event, **fields: events.append((event, fields)),
+        flow="telegram_real",
+        policy={
+            "required_worker_agents": ["qwen"],
+            "diagnostics_profile": "tunnel",
+            "status_probe_mode": "remote_container_http",
+            "remote_gateway_container": "openclaw-gateway",
+            "remote_status_url": "http://localhost:8766/status",
+            "tunnel_http_port": 18766,
+            "qwen_smoke": {"enabled": True, "timeout_seconds": 45},
+        },
+    )
+
+    assert len(remote_actions) == 2
+    assert any(event == "preflight.qwen_action.tunnel_fallback" for event, _fields in events)
 
 
 def test_runtime_trace_progress_uses_mtime_and_line_count() -> None:

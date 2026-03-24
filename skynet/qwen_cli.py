@@ -12,6 +12,7 @@ QWEN_TASK_MODES = {
     "plan_generation",
     "coding_implementation",
     "coding_validation",
+    "coding_review",
 }
 
 _OUTPUT_FORMATS = {"text", "json", "stream-json"}
@@ -66,6 +67,11 @@ _CODING_META_PATTERNS = (
     "if you want me to build it out",
     "what would you like to do with this project?",
     "what would you like to do with this project",
+    "what would you like me to build or implement",
+    "what would you like me to build or work on",
+    "what would you like me to work on",
+    "i'm ready to help with coding implementation tasks",
+    "i'm ready to help with your coding implementation task",
 )
 _PLAN_GENERATION_INVALID_PATTERNS = (
     "i don't have any requirements gathered yet",
@@ -194,9 +200,10 @@ def build_qwen_command_args(
     session_id: str,
     task_mode: str,
     policy: dict[str, Any],
-) -> list[str]:
+    binary_prefix_args: list[str] | None = None,
+) -> tuple[list[str], str]:
     profile = qwen_profile_for_task_mode(policy, task_mode)
-    args = [binary]
+    args = [binary, *(binary_prefix_args or [])]
     channel = str(policy.get("channel") or "").strip()
     if channel:
         args.extend(["--channel", channel])
@@ -215,8 +222,17 @@ def build_qwen_command_args(
     args.append(f"--chat-recording={_bool_flag(bool(profile.get('chat_recording', False)))}")
     if session_id:
         args.extend(["--session-id", _normalize_session_id(session_id)])
-    args.append(prompt)
-    return args
+    # Collapse newlines to spaces — qwen CLI drops content after the first
+    # newline in positional prompt arguments on Windows.
+    flat_prompt = " ".join(prompt.splitlines()).strip()
+    # Estimate total command-line length; Windows limits to ~8191 chars.
+    args_len = sum(len(a) for a in args) + len(args)  # args + spaces
+    if args_len + len(flat_prompt) > 7000:
+        # Prompt too long for Windows CLI — must be piped via stdin.
+        args.extend(["--input-format", "text"])
+        return args, flat_prompt
+    args.append(flat_prompt)
+    return args, ""
 
 
 def build_qwen_subprocess_env(policy: dict[str, Any], *, model: str = "") -> dict[str, str]:
@@ -245,9 +261,41 @@ def build_qwen_runtime_prompt(
     requirement_summary_md: str = "",
 ) -> str:
     state = dict(planner_state or {})
+    mode = str(task_mode or "").strip().lower()
     contract = str(reply_contract or "").strip().lower()
     summary = str(requirement_summary_md or "").strip()
     base_prompt = str(prompt or "").strip()
+    if mode == "coding_implementation":
+        return "\n".join(
+            [
+                "Implement the following task now in the current working directory.",
+                "Create or update files directly in the workspace.",
+                "If the workspace is empty, scaffold the required files yourself.",
+                "Do not ask what to build or implement.",
+                "Do not ask clarifying questions.",
+                "Do not restate the task as a question.",
+                "After writing files, return a short summary of what changed.",
+                "",
+                "Task:",
+                base_prompt or "<missing task>",
+            ]
+        ).strip()
+    if mode == "coding_review":
+        return (base_prompt or "<missing task>").strip()
+    if mode == "coding_validation":
+        return "\n".join(
+            [
+                "Validate the current workspace now.",
+                "Run the validation or fix work immediately in the current working directory.",
+                "Do not ask what to validate.",
+                "Do not ask clarifying questions.",
+                "If validation reveals a fix is needed, update the files directly.",
+                "Return a short summary of the checks and any fixes applied.",
+                "",
+                "Task:",
+                base_prompt or "<missing task>",
+            ]
+        ).strip()
     output_rules: list[str] = []
     if contract == "emit_ready_sentence":
         output_rules = [
@@ -276,7 +324,7 @@ def build_qwen_runtime_prompt(
             "",
         ]
     lines = [
-        f"task_mode: {str(task_mode or '').strip().lower()}",
+        f"task_mode: {mode}",
         f"reply_contract: {contract or 'none'}",
         *output_rules,
         "Planner state JSON:",
@@ -445,7 +493,7 @@ def classify_qwen_output_contract(
             overlap = sum(1 for term in summary_terms if term in lowered)
             if overlap < min(2, len(summary_terms)):
                 return "plan_generation_not_grounded"
-    elif mode in {"coding_implementation", "coding_validation"}:
+    elif mode in {"coding_implementation", "coding_validation", "coding_review"}:
         if any(pattern in lowered for pattern in _CODING_META_PATTERNS):
             return "coding_meta_output"
     return "ok"

@@ -684,6 +684,59 @@ class TestRunCodingAgent:
         assert "Do not generate the project plan yet." in prompt
         assert "Stop immediately after the final period." in prompt
 
+    def test_qwen_coding_runtime_prompt_demands_immediate_implementation(self):
+        prompt = build_qwen_runtime_prompt(
+            prompt="Create main.py that prints hello",
+            task_mode="coding_implementation",
+        )
+
+        assert "Implement the following task now" in prompt
+        assert "Do not ask what to build or implement." in prompt
+        assert "If the workspace is empty, scaffold the required files yourself." in prompt
+        assert "Create main.py that prints hello" in prompt
+
+    @pytest.mark.asyncio
+    async def test_qwen_coding_meta_output_becomes_contract_failure(self, tmp_path):
+        import executor.actions as actions_mod
+
+        fake_stdout = json.dumps(
+            [
+                {"type": "system", "subtype": "init", "session_id": "sess-code", "model": "coder-model"},
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "session_id": "sess-code",
+                    "result": "I'm ready to help with your coding implementation task. What would you like me to build or implement?",
+                },
+            ]
+        )
+
+        with (
+            patch.object(actions_mod, "_resolve_coding_binary", return_value=("qwen", "qwen")),
+            patch.object(
+                actions_mod,
+                "_run_tracked_coding_subprocess",
+                AsyncMock(
+                    return_value={
+                        "returncode": 0,
+                        "stdout": fake_stdout,
+                        "stderr": "",
+                        "session_key": "sess-code",
+                        "remote_pid": "100",
+                    }
+                ),
+            ),
+        ):
+            result = await run_coding_agent({
+                "agent": "qwen",
+                "task_mode": "coding_implementation",
+                "prompt": "Create main.py that prints hello",
+                "working_dir": str(tmp_path),
+            })
+
+        assert result["returncode"] == 1
+        assert result["output_contract"] == "coding_meta_output"
+
     @pytest.mark.asyncio
     async def test_real_qwen_planner_multiline_prompt(self, tmp_path):
         if os.environ.get("SKYNET_RUN_REAL_QWEN_TESTS", "").strip().lower() not in {"1", "true", "yes", "on"}:

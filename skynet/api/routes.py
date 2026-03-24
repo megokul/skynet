@@ -86,80 +86,16 @@ async def _lease_state(lease_manager: JobLockManager, lease_name: str) -> schema
 
 
 def _is_auth_required() -> bool:
-    """
-    Is auth required.
-    
-    Purpose:
-    - Implement `_is_auth_required` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - None.
-    
-    Returns:
-    - Return value typed as `bool` when available; otherwise side effects only.
-    """
 
     return _b("SKYNET_PROTECT_DIAGNOSTICS", True)
 
 
 def _resolve_api_key() -> str:
-    """
-    Resolve api key.
-    
-    Purpose:
-    - Implement `_resolve_api_key` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - None.
-    
-    Returns:
-    - Return value typed as `str` when available; otherwise side effects only.
-    """
 
     return _s("SKYNET_API_KEY").strip()
 
 
 def _extract_token(authorization: str | None, x_api_key: str | None) -> str | None:
-    """
-    Extract token.
-    
-    Purpose:
-    - Implement `_extract_token` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `authorization`: input used by this function to compute or route work.
-    - `x_api_key`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `str | None` when available; otherwise side effects only.
-    """
 
     if x_api_key:
         return x_api_key.strip()
@@ -171,27 +107,6 @@ def _extract_token(authorization: str | None, x_api_key: str | None) -> str | No
 
 
 def _enforce_rate_limit(request: Request) -> None:
-    """
-    Enforce rate limit.
-    
-    Purpose:
-    - Implement `_enforce_rate_limit` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `request`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `None` when available; otherwise side effects only.
-    """
 
     limit = _i("SKYNET_DIAGNOSTIC_RATE_LIMIT_PER_MIN", 120)
     if limit <= 0:

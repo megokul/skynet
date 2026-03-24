@@ -19,27 +19,6 @@ SKYNET_API_KEY = os.getenv("SKYNET_API_KEY", "").strip()
 
 
 def _skynet_headers() -> dict[str, str]:
-    """
-    Skynet headers.
-    
-    Purpose:
-    - Implement `_skynet_headers` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - None.
-    
-    Returns:
-    - Return value typed as `dict[str, str]` when available; otherwise side effects only.
-    """
 
     headers = {}
     if SKYNET_API_KEY:
@@ -48,27 +27,6 @@ def _skynet_headers() -> dict[str, str]:
 
 
 async def test_openclaw_skynet_integration() -> bool:
-    """
-    Test scenario `test_openclaw_skynet_integration`.
-    
-    Purpose:
-    - Implement `test_openclaw_skynet_integration` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - None.
-    
-    Returns:
-    - Return value typed as `bool` when available; otherwise side effects only.
-    """
 
     print("=" * 70)
     print("E2E Integration Test: OpenClaw <-> SKYNET")
@@ -141,27 +99,6 @@ async def test_openclaw_skynet_integration() -> bool:
 
 
 async def main() -> int:
-    """
-    Main.
-    
-    Purpose:
-    - Implement `main` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - None.
-    
-    Returns:
-    - Return value typed as `int` when available; otherwise side effects only.
-    """
 
     success = await test_openclaw_skynet_integration()
     print("\n" + "=" * 70)

@@ -5,7 +5,7 @@ description: |
   SKYNET-native project documentation plus governance and progress tracking.
   Creates a deterministic project template (human and agent readable), enforces policy gates,
   generates and locks plans (PlanSuite), and integrates with SKYNET control-plane task queue
-  (enqueue/claim/complete/release) including dependency graph and file ownership safety.
+  reads plus schema-compatible enqueue operations, including dependency graph and file ownership safety.
 
   Use when: starting a project from Telegram, bootstrapping docs, generating plans, finalizing plans,
   syncing progress for multiple agents or people, enforcing policies.
@@ -37,7 +37,7 @@ actions:
       project_dir: { type: string, required: true }
 
   - name: finalize_plan_and_enqueue
-    description: Freeze plan (STATUS FINALIZED) then enqueue tasks into SKYNET control plane with dependencies and outputs.
+    description: Freeze plan (STATUS FINALIZED) then enqueue only tasks whose TASK_GRAPH metadata defines a valid control-plane action payload.
     inputs:
       project_dir: { type: string, required: true }
       gateway_hint: { type: string, required: false }

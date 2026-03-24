@@ -44,7 +44,14 @@ from bot.keyboards import (
     requirements_done,
     start_coding,
 )
-
+from bot.handlers.project_session import (
+    NAME_KEY as _NAME_KEY,
+    PLAN_KEY as _PLAN_KEY,
+    PLANNER_STATE_KEY as _PLANNER_STATE_KEY,
+    REQS_HISTORY_KEY as _REQS_HISTORY,
+    TYPE_KEY as _TYPE_KEY,
+    ProjectConversationSession,
+)
 from bot.project_templates import get_template
 from bot.state import KEY_DB, KEY_ROUTER
 from db.store import create_project, ensure_user
@@ -71,13 +78,6 @@ AWAITING_PROJECT_NAME  = 1
 AWAITING_PROJECT_TYPE  = 2
 GATHERING_REQUIREMENTS = 3
 REVIEWING_PLAN         = 4
-
-# Keys inside context.user_data
-_NAME_KEY     = "project_name"
-_TYPE_KEY     = "project_type"
-_REQS_HISTORY = "project_reqs_history"
-_PLAN_KEY     = "project_plan"
-_PLANNER_STATE_KEY = "project_planner_state"
 
 # Max turns kept in requirements conversation history
 _MAX_REQS_TURNS = 30
@@ -161,11 +161,6 @@ async def _emit_runtime(
 
 def _specialist_prompt(name: str, project_type_label: str, template: dict) -> str:
     return build_project_specialist_system_prompt(name, project_type_label, template)
-
-
-def _trim_history(history: list[dict]) -> list[dict]:
-    max_msgs = _MAX_REQS_TURNS * 2
-    return history[-max_msgs:] if len(history) > max_msgs else history
 
 
 def _planner_state_for_history(name: str, project_type_label: str, history: list[dict]) -> dict[str, Any]:
@@ -660,6 +655,7 @@ async def receive_project_name(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     """User typed the project name."""
+    session = ProjectConversationSession(context.user_data, max_history_turns=_MAX_REQS_TURNS)
     name = (update.message.text or "").strip()
     if not name:
         await _emit_runtime(
@@ -675,7 +671,7 @@ async def receive_project_name(
         await update.message.reply_text("Please give the project a name.")
         return AWAITING_PROJECT_NAME
 
-    context.user_data[_NAME_KEY] = name
+    session.set_project_name(name)
     await _emit_runtime(
         context=context,
         update=update,
@@ -698,13 +694,14 @@ async def receive_project_type(
 ) -> int:
     """User tapped a project type â€” hand off to Project Specialist."""
     await update.callback_query.answer()
+    session = ProjectConversationSession(context.user_data, max_history_turns=_MAX_REQS_TURNS)
 
     cb_data    = update.callback_query.data or ""
     type_label = PROJECT_TYPE_LABELS.get(cb_data, "Other")
-    name       = context.user_data.get(_NAME_KEY, "Untitled")
+    name       = session.project_name("Untitled")
     template   = get_template(type_label)
 
-    context.user_data[_TYPE_KEY] = type_label
+    session.set_project_type(type_label)
     await _emit_runtime(
         context=context,
         update=update,
@@ -717,13 +714,10 @@ async def receive_project_type(
     # Opening message from the Project Specialist (seeded into history)
     opening = build_project_specialist_opening(name, type_label, template)
 
-    context.user_data[_REQS_HISTORY] = [
-        {"role": "assistant", "content": opening},
-    ]
-    context.user_data[_PLANNER_STATE_KEY] = _planner_state_for_history(
-        str(name),
-        type_label,
-        context.user_data[_REQS_HISTORY],
+    session.seed_opening(
+        opening=opening,
+        project_name=str(name),
+        project_type_label=type_label,
     )
 
     await update.callback_query.message.reply_text(
@@ -737,6 +731,7 @@ async def handle_requirements_message(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     """Forward each user message to the Project Specialist LLM."""
+    session = ProjectConversationSession(context.user_data, max_history_turns=_MAX_REQS_TURNS)
     user_text = (update.message.text or "").strip()
     if not user_text:
         await _emit_runtime(
@@ -766,16 +761,14 @@ async def handle_requirements_message(
 
     await update.effective_chat.send_action(ChatAction.TYPING)
 
-    name       = context.user_data.get(_NAME_KEY, "Untitled")
-    type_label = context.user_data.get(_TYPE_KEY, "Other")
+    name       = session.project_name("Untitled")
+    type_label = session.project_type("Other")
     template   = get_template(type_label)
-    history: list[dict] = context.user_data.get(_REQS_HISTORY, [])
+    history: list[dict] = session.history()
 
-    history.append({"role": "user", "content": user_text})
-    history = _trim_history(history)
+    history = session.append_history("user", user_text)
     system_prompt = build_project_specialist_system_prompt(name, type_label, template)
-    planner_state = _planner_state_for_history(str(name), type_label, history)
-    context.user_data[_PLANNER_STATE_KEY] = planner_state
+    planner_state = session.refresh_planner_state(project_name=str(name), project_type_label=type_label)
 
     try:
         reply = await _planner_via_codex_then_router(
@@ -805,9 +798,8 @@ async def handle_requirements_message(
         )
         return GATHERING_REQUIREMENTS
 
-    history.append({"role": "assistant", "content": reply})
-    context.user_data[_REQS_HISTORY] = history
-    context.user_data[_PLANNER_STATE_KEY] = _planner_state_for_history(str(name), type_label, history)
+    history = session.append_history("assistant", reply)
+    planner_state = session.refresh_planner_state(project_name=str(name), project_type_label=type_label)
     await _emit_runtime(
         context=context,
         update=update,
@@ -818,8 +810,8 @@ async def handle_requirements_message(
         details={
             "history_len": len(history),
             "reply_len": len(reply),
-            "plan_ready": bool(context.user_data[_PLANNER_STATE_KEY].get("plan_ready", False)),
-            "missing_slots": list(context.user_data[_PLANNER_STATE_KEY].get("missing_slots") or []),
+            "plan_ready": bool(planner_state.get("plan_ready", False)),
+            "missing_slots": list(planner_state.get("missing_slots") or []),
         },
     )
 
@@ -857,6 +849,7 @@ async def _do_generate_plan(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     """Shared logic: call the Project Specialist to generate the plan."""
+    session = ProjectConversationSession(context.user_data, max_history_turns=_MAX_REQS_TURNS)
     router = context.bot_data.get(KEY_ROUTER)
     if router is None:
         await emit_runtime_trace_async(
@@ -875,18 +868,17 @@ async def _do_generate_plan(
     await message.chat.send_action(ChatAction.TYPING)
     await message.reply_text("Generating your project plan...")
 
-    name       = context.user_data.get(_NAME_KEY, "Untitled")
-    type_label = context.user_data.get(_TYPE_KEY, "Other")
+    name       = session.project_name("Untitled")
+    type_label = session.project_type("Other")
     template   = get_template(type_label)
-    history: list[dict] = context.user_data.get(_REQS_HISTORY, [])
+    history: list[dict] = session.history()
     system_prompt = build_project_specialist_system_prompt(name, type_label, template)
 
-    history.append({
-        "role": "user",
-        "content": "Generate the full project plan now based on everything we discussed.",
-    })
-    planner_state = _planner_state_for_history(str(name), type_label, history)
-    context.user_data[_PLANNER_STATE_KEY] = planner_state
+    history = session.append_history(
+        "user",
+        "Generate the full project plan now based on everything we discussed.",
+    )
+    planner_state = session.refresh_planner_state(project_name=str(name), project_type_label=type_label)
 
     try:
         plan = await _planner_via_codex_then_router(
@@ -970,9 +962,8 @@ async def _do_generate_plan(
                 history=history,
             )
 
-    context.user_data[_PLAN_KEY] = plan
-    history.append({"role": "assistant", "content": plan})
-    context.user_data[_REQS_HISTORY] = history
+    session.set_plan(plan)
+    session.append_history("assistant", plan)
 
     await message.reply_text(plan, reply_markup=plan_review())
     return REVIEWING_PLAN
@@ -984,13 +975,14 @@ async def approve_plan(
 ) -> int:
     """User approved the plan â€” save project to DB and offer to start coding."""
     await update.callback_query.answer()
+    session = ProjectConversationSession(context.user_data, max_history_turns=_MAX_REQS_TURNS)
 
     db      = context.bot_data.get(KEY_DB)
     tg_user = update.effective_user
-    name       = context.user_data.get(_NAME_KEY, "Untitled")
-    type_label = context.user_data.get(_TYPE_KEY, "Other")
-    plan       = context.user_data.get(_PLAN_KEY, "")
-    history: list[dict] = context.user_data.get(_REQS_HISTORY, [])
+    name       = session.project_name("Untitled")
+    type_label = session.project_type("Other")
+    plan       = session.plan("")
+    history: list[dict] = session.history()
     project_description = _build_project_description(plan, history)
 
     try:
@@ -1103,8 +1095,7 @@ async def cancel_project(
 # â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _clear_user_data(context: ContextTypes.DEFAULT_TYPE) -> None:
-    for key in (_NAME_KEY, _TYPE_KEY, _REQS_HISTORY, _PLAN_KEY):
-        context.user_data.pop(key, None)
+    ProjectConversationSession(context.user_data, max_history_turns=_MAX_REQS_TURNS).clear()
 
 
 

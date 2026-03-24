@@ -29,31 +29,6 @@ class StaleLockReaper:
         ttl_seconds: int = 300,
         poll_interval_seconds: float = 15.0,
     ) -> None:
-        """
-        Initialize runtime dependencies and object state.
-        
-        Purpose:
-        - Implement `__init__` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `task_queue`: input used by this function to compute or route work.
-        - `registry`: input used by this function to compute or route work.
-        - `gateway_client`: input used by this function to compute or route work.
-        - `ttl_seconds`: input used by this function to compute or route work.
-        - `poll_interval_seconds`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `None` when available; otherwise side effects only.
-        """
 
         self.task_queue = task_queue
         self.registry = registry
@@ -65,52 +40,10 @@ class StaleLockReaper:
 
     @property
     def running(self) -> bool:
-        """
-        Running.
-        
-        Purpose:
-        - Implement `running` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `bool` when available; otherwise side effects only.
-        """
 
         return self._task is not None and not self._task.done()
 
     async def start(self) -> None:
-        """
-        Start.
-        
-        Purpose:
-        - Implement `start` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `None` when available; otherwise side effects only.
-        """
 
         if self.running:
             return
@@ -123,27 +56,6 @@ class StaleLockReaper:
         )
 
     async def stop(self) -> None:
-        """
-        Stop.
-        
-        Purpose:
-        - Implement `stop` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `None` when available; otherwise side effects only.
-        """
 
         self._stop.set()
         if self._task is not None:
@@ -156,27 +68,6 @@ class StaleLockReaper:
         logger.info("Stale-lock reaper stopped.")
 
     async def _run_loop(self) -> None:
-        """
-        Run loop.
-        
-        Purpose:
-        - Implement `_run_loop` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `None` when available; otherwise side effects only.
-        """
 
         while not self._stop.is_set():
             try:
@@ -188,54 +79,12 @@ class StaleLockReaper:
             await asyncio.sleep(self.poll_interval_seconds)
 
     async def reap_once(self) -> None:
-        """
-        Reap once.
-        
-        Purpose:
-        - Implement `reap_once` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `None` when available; otherwise side effects only.
-        """
 
         stale = await self.task_queue.list_stale_locked_tasks(ttl_seconds=self.ttl_seconds)
         for task in stale:
             await self._handle_stale_task(task)
 
     async def _handle_stale_task(self, task: dict[str, Any]) -> None:
-        """
-        Handle stale task.
-        
-        Purpose:
-        - Implement `_handle_stale_task` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `task`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `None` when available; otherwise side effects only.
-        """
 
         task_id = str(task.get("id") or "")
         worker_id = str(task.get("locked_by") or "")
@@ -275,27 +124,6 @@ class StaleLockReaper:
             logger.warning("Marked stale task failed_timeout (task_id=%s).", task_id)
 
     def _is_worker_healthy(self, worker_id: str) -> bool:
-        """
-        Is worker healthy.
-        
-        Purpose:
-        - Implement `_is_worker_healthy` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `worker_id`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `bool` when available; otherwise side effects only.
-        """
 
         worker_id_lower = worker_id.lower()
         if worker_id_lower.startswith("skynet-control-scheduler"):
@@ -309,27 +137,6 @@ class StaleLockReaper:
         return False
 
     async def _is_gateway_healthy(self, gateway_id: str) -> bool:
-        """
-        Is gateway healthy.
-        
-        Purpose:
-        - Implement `_is_gateway_healthy` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `gateway_id`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `bool` when available; otherwise side effects only.
-        """
 
         gateway = None
         if gateway_id:

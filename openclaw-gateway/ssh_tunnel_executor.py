@@ -8,13 +8,13 @@ Runs allowlisted actions directly on a remote laptop over SSH.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import logging
 import os
 import re
 import shlex
 import stat
-import base64
 import json
 import threading
 import time
@@ -36,415 +36,20 @@ from runtime_trace import (
     emit_runtime_trace,
 )
 from skynet.qwen_cli import (
-    QWEN_TASK_MODES,
     build_qwen_command_args,
-    classify_qwen_output_contract,
-    discover_qwen_context_paths,
-    parse_qwen_json_output,
     qwen_profile_for_task_mode,
 )
+from skynet.qwen_runtime import normalize_qwen_result, normalize_qwen_task_mode
 from search.web_search import WebSearcher
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    """
-    Env bool.
-    
-    Purpose:
-    - Implement `_env_bool` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `name`: input used by this function to compute or route work.
-    - `default`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `bool` when available; otherwise side effects only.
-    """
-
-    raw = bot_cfg.get_str(name, "")
-    if raw == "":
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_int(name: str, default: int) -> int:
-    """
-    Env int.
-    
-    Purpose:
-    - Implement `_env_int` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `name`: input used by this function to compute or route work.
-    - `default`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `int` when available; otherwise side effects only.
-    """
-
-    raw = bot_cfg.get_str(name, "")
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-
-def _looks_like_ssh_infra_error(detail: str) -> bool:
-    text = (detail or "").strip().lower()
-    if not text:
-        return False
-    tokens = (
-        "ssh",
-        "timed out",
-        "timeout",
-        "banner",
-        "authentication",
-        "permission denied",
-        "connection refused",
-        "no route to host",
-        "could not resolve",
-        "maxstartups",
-        "concurrency limit reached",
-        "max_parallel",
-        "no existing session",
-        "name or service not known",
-        "network is unreachable",
-    )
-    return any(token in text for token in tokens)
-
-
-def _python_module_missing(result: dict[str, Any], module: str) -> bool:
-    text = f"{result.get('stderr', '')}\n{result.get('stdout', '')}".lower()
-    return f"no module named {module.lower()}" in text
-
-
-def _parse_roots(raw: str, remote_os: str) -> list[str]:
-    """
-    Parse roots.
-    
-    Purpose:
-    - Implement `_parse_roots` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `raw`: input used by this function to compute or route work.
-    - `remote_os`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `list[str]` when available; otherwise side effects only.
-    """
-
-    parts = [p.strip() for p in raw.replace(",", ";").split(";") if p.strip()]
-    if parts:
-        return parts
-    # No OPENCLAW_SSH_ALLOWED_ROOTS configured - use safe OS-level defaults.
-    # Set OPENCLAW_SSH_ALLOWED_ROOTS to restrict access to specific directories.
-    if remote_os == "windows":
-        return [r"%USERPROFILE%\Projects", r"%USERPROFILE%\Documents"]
-    return ["/home", "/tmp"]
-
-
-def _parse_provider_priority(raw: str) -> list[str]:
-    """
-    Parse provider priority.
-    
-    Purpose:
-    - Implement `_parse_provider_priority` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `raw`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `list[str]` when available; otherwise side effects only.
-    """
-
-    allowed = {"gemini", "deepseek", "groq", "openrouter", "openai", "anthropic"}
-    parts = [p.strip().lower() for p in raw.replace(";", ",").split(",") if p.strip()]
-    ordered: list[str] = []
-    for part in parts:
-        if part in allowed and part not in ordered:
-            ordered.append(part)
-    if ordered:
-        return ordered
-    return ["gemini", "deepseek", "groq", "openrouter"]
-
-
-def _norm_remote_path(path: str, remote_os: str) -> str:
-    """
-    Norm remote path.
-    
-    Purpose:
-    - Implement `_norm_remote_path` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `path`: input used by this function to compute or route work.
-    - `remote_os`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `str` when available; otherwise side effects only.
-    """
-
-    if remote_os == "windows":
-        return str(PureWindowsPath(path))
-    return str(PurePosixPath(path))
-
-
-def _is_allowed_path(path: str, allowed_roots: list[str], remote_os: str) -> bool:
-    """
-    Is allowed path.
-    
-    Purpose:
-    - Implement `_is_allowed_path` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `path`: input used by this function to compute or route work.
-    - `allowed_roots`: input used by this function to compute or route work.
-    - `remote_os`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `bool` when available; otherwise side effects only.
-    """
-
-    candidate = _norm_remote_path(path, remote_os)
-    if remote_os == "windows":
-        cand = candidate.replace("/", "\\").rstrip("\\").lower()
-        for root in allowed_roots:
-            r = _norm_remote_path(root, remote_os).replace("/", "\\").rstrip("\\").lower()
-            if cand == r or cand.startswith(r + "\\"):
-                return True
-        return False
-
-    cand = candidate.rstrip("/")
-    for root in allowed_roots:
-        r = _norm_remote_path(root, remote_os).rstrip("/")
-        if cand == r or cand.startswith(r + "/"):
-            return True
-    return False
-
-
-def _ps_quote(value: str) -> str:
-    """
-    Ps quote.
-    
-    Purpose:
-    - Implement `_ps_quote` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `value`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `str` when available; otherwise side effects only.
-    """
-
-    return "'" + value.replace("'", "''") + "'"
-
-
-def _build_windows_command(
-    args: list[str],
-    cwd: str | None = None,
-    env: dict[str, str] | None = None,
-) -> str:
-    """
-    Build windows command.
-    
-    Purpose:
-    - Implement `_build_windows_command` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `args`: input used by this function to compute or route work.
-    - `cwd`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `str` when available; otherwise side effects only.
-    """
-
-    if not args:
-        raise ValueError("args must not be empty")
-    script_lines = [
-        "$ErrorActionPreference = 'Stop'",
-        "$ProgressPreference = 'SilentlyContinue'",
-    ]
-    if cwd:
-        script_lines.append(f"Set-Location -LiteralPath {_ps_quote(cwd)}")
-    if env:
-        for key, value in env.items():
-            script_lines.append(f"$env:{key} = {_ps_quote(str(value))}")
-    script_lines.append("$__args = @()")
-    for arg in args:
-        b64 = base64.b64encode(str(arg).encode("utf-8")).decode("ascii")
-        script_lines.append(
-            "$__args += [System.Text.Encoding]::UTF8.GetString("
-            f"[System.Convert]::FromBase64String('{b64}'))"
-        )
-    script_lines.append("$__cmd = $__args[0]")
-    script_lines.append("$__rest = @()")
-    script_lines.append("if ($__args.Length -gt 1) { $__rest = $__args[1..($__args.Length-1)] }")
-    script_lines.append("& $__cmd @__rest")
-    script_lines.append("$code = $LASTEXITCODE")
-    script_lines.append("if ($null -eq $code) { $code = 0 }")
-    script_lines.append("exit $code")
-    script = "\n".join(script_lines)
-    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-    return (
-        "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-        f"-EncodedCommand {encoded}"
-    )
-
-
-def _sanitize_powershell_output(text: str) -> str:
-    """
-    Sanitize powershell output.
-    
-    Purpose:
-    - Implement `_sanitize_powershell_output` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `text`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `str` when available; otherwise side effects only.
-    """
-
-    if not text:
-        return text
-    cleaned = text.replace("_x000D__x000A_", "\n").replace("_x000D_", "\r").replace("_x000A_", "\n")
-    # Strip ANSI escape/control sequences (common when commands require a PTY).
-    cleaned = re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", cleaned)
-    cleaned = re.sub(r"\x1B\][^\x07]*\x07", "", cleaned)
-    cleaned = cleaned.replace("\x1b", "")
-    if "<Objs Version=" in cleaned and "</Objs>" in cleaned:
-        # Keep only message payloads from CLIXML blocks.
-        parts = re.findall(r"<S S=\"(?:Error|Warning|Verbose)\">(.*?)</S>", cleaned, flags=re.DOTALL)
-        if parts:
-            cleaned = "\n".join(parts)
-        else:
-            cleaned = re.sub(r"<[^>]+>", "", cleaned)
-    return cleaned.strip()
-
-
-def _build_linux_command(
-    args: list[str],
-    cwd: str | None = None,
-    env: dict[str, str] | None = None,
-) -> str:
-    """
-    Build linux command.
-    
-    Purpose:
-    - Implement `_build_linux_command` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `args`: input used by this function to compute or route work.
-    - `cwd`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `str` when available; otherwise side effects only.
-    """
-
-    import shlex
-
-    run = " ".join(shlex.quote(str(a)) for a in args)
-    export = ""
-    if env:
-        export = " ".join(
-            f"{key}={shlex.quote(str(value))}" for key, value in env.items()
-        )
-        if export:
-            run = f"{export} {run}"
-    if cwd:
-        return f"cd {shlex.quote(cwd)} && {run}"
-    return run
+from ssh_tunnel_config import load_ssh_executor_config
+from ssh_tunnel_support import (
+    build_linux_command as _build_linux_command,
+    build_windows_command as _build_windows_command,
+    is_allowed_path as _is_allowed_path,
+    norm_remote_path as _norm_remote_path,
+    ps_quote as _ps_quote,
+    sanitize_powershell_output as _sanitize_powershell_output,
+)
 
 
 class SSHTunnelExecutor:
@@ -453,101 +58,33 @@ class SSHTunnelExecutor:
     _PATH_KEYS = {"working_dir", "directory", "file", "path", "project_dir"}
 
     def __init__(self) -> None:
-        """
-        Initialize runtime dependencies and object state.
-        
-        Purpose:
-        - Implement `__init__` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `None` when available; otherwise side effects only.
-        """
+        config = load_ssh_executor_config()
 
-        mode = bot_cfg.get_str("OPENCLAW_EXECUTION_MODE", "").strip().lower()
-        self.enabled = mode in {"ssh", "ssh_tunnel", "tunnel", "ssh-only"} or _env_bool("OPENCLAW_SSH_FALLBACK_ENABLED", False)
+        self.enabled = config.enabled
+        self.host = config.host
+        self.port = config.port
+        self.username = config.username
+        self.password = config.password
+        self.key_path = config.key_path
+        self.connect_timeout = config.connect_timeout
+        self.command_timeout = config.command_timeout
+        self.remote_os = config.remote_os
+        self.strict_host_key = config.strict_host_key
+        self.allowed_roots = list(config.allowed_roots)
 
-        self.host = bot_cfg.get_str("OPENCLAW_SSH_HOST", "127.0.0.1").strip()
-        self.port = _env_int("OPENCLAW_SSH_PORT", 2222)
-        self.username = bot_cfg.get_str("OPENCLAW_SSH_USER", "").strip()
-        self.password = bot_cfg.get_str("OPENCLAW_SSH_PASSWORD", "")
-        self.key_path = bot_cfg.get_str("OPENCLAW_SSH_KEY_PATH", "").strip()
-        running_in_container = os.path.exists("/.dockerenv")
-        if self.key_path.startswith("/app/") and not running_in_container:
-            _log.warning(
-                "OPENCLAW_SSH_KEY_PATH=%s looks container-scoped, but process appears host-local.",
-                self.key_path,
-            )
-        self.connect_timeout = _env_int("OPENCLAW_SSH_CONNECT_TIMEOUT", 4)
-        self.command_timeout = _env_int("OPENCLAW_SSH_COMMAND_TIMEOUT", 180)
-        self.remote_os = bot_cfg.get_str("OPENCLAW_SSH_REMOTE_OS", "windows").strip().lower()
-        self.strict_host_key = _env_bool("OPENCLAW_SSH_STRICT_HOST_KEY", False)
-        roots_raw = bot_cfg.get_str("OPENCLAW_SSH_ALLOWED_ROOTS", "")
-        self.allowed_roots = _parse_roots(roots_raw, self.remote_os)
-
-        self._searcher = WebSearcher(bot_cfg.BRAVE_SEARCH_API_KEY)
-        self._coding_bins = {
-            "codex": bot_cfg.get_str("OPENCLAW_SSH_CODEX_BIN", "codex"),
-            "claude": bot_cfg.get_str("OPENCLAW_SSH_CLAUDE_BIN", "claude"),
-            "cline": bot_cfg.get_str("OPENCLAW_SSH_CLINE_BIN", "cline"),
-            "qwen": bot_cfg.get_str("OPENCLAW_QWEN_BIN", bot_cfg.get_str("SKYNET_QWEN_BIN", "qwen")),
-        }
-        self._coding_prefix = {
-            "codex": ["exec"],
-            "claude": ["-p"],
-            "cline": ["-p"],
-        }
-        configured_codex_write_mode = bot_cfg.get_str(
-            "SKYNET_CODEX_WRITE_MODE",
-            str(getattr(bot_cfg, "CODEX_WRITE_MODE", "danger_full_access") or "danger_full_access"),
-        ).strip().lower()
-        if configured_codex_write_mode not in {"danger_full_access", "workspace_write", "read_only"}:
-            _log.warning(
-                "Invalid SKYNET_CODEX_WRITE_MODE=%r, defaulting to danger_full_access",
-                configured_codex_write_mode,
-            )
-            configured_codex_write_mode = "danger_full_access"
-        self._codex_write_mode = configured_codex_write_mode
-        self._qwen_policy = bot_cfg.get_qwen_execution_policy()
-        self._closeable_apps = {
-            "chrome": "chrome.exe",
-            "firefox": "firefox.exe",
-            "edge": "msedge.exe",
-            "notepad": "notepad.exe",
-            "code": "Code.exe",
-            "explorer": "explorer.exe",
-            "slack": "slack.exe",
-            "discord": "Discord.exe",
-            "spotify": "Spotify.exe",
-            "teams": "Teams.exe",
-        }
-        self._health_cache_seconds = _env_int("OPENCLAW_SSH_HEALTH_CACHE_SECONDS", 15)
+        self._searcher = WebSearcher(config.brave_search_api_key)
+        self._coding_bins = dict(config.coding_bins)
+        self._coding_prefix = {name: list(tokens) for name, tokens in config.coding_prefix.items()}
+        self._codex_write_mode = config.codex_write_mode
+        self._qwen_policy = dict(config.qwen_policy)
+        self._closeable_apps = dict(config.closeable_apps)
+        self._health_cache_seconds = config.health_cache_seconds
         self._last_health_at = 0.0
         self._last_health: tuple[bool, str] = (False, "SSH health not checked yet")
-        self._max_parallel = max(1, _env_int("OPENCLAW_SSH_MAX_PARALLEL", bot_cfg.SSH_MAX_PARALLEL))
-        self._circuit_breaker_seconds = max(
-            0,
-            _env_int("OPENCLAW_SSH_CIRCUIT_BREAKER_SECONDS", bot_cfg.SSH_CIRCUIT_BREAKER_SECONDS),
-        )
-        self._capacity_backoff_seconds = max(
-            1,
-            _env_int("OPENCLAW_SSH_CAPACITY_BACKOFF_SECONDS", bot_cfg.SSH_CAPACITY_BACKOFF_SECONDS),
-        )
-        self._health_probe_timeout = max(
-            1,
-            _env_int("OPENCLAW_SSH_HEALTH_PROBE_TIMEOUT", bot_cfg.SSH_HEALTH_PROBE_TIMEOUT),
-        )
+        self._max_parallel = config.max_parallel
+        self._circuit_breaker_seconds = config.circuit_breaker_seconds
+        self._capacity_backoff_seconds = config.capacity_backoff_seconds
+        self._health_probe_timeout = config.health_probe_timeout
         self._trace_local = threading.local()
         self._active_sessions: dict[str, dict[str, Any]] = {}
         self._active_sessions_lock = threading.Lock()
@@ -556,68 +93,14 @@ class SSHTunnelExecutor:
         self._failure_streak = 0
         self._last_error_category = ""
         self._circuit_open_until = 0.0
-        self._cline_auto_switch = _env_bool("OPENCLAW_CLINE_AUTO_SWITCH", True)
-        self._cline_provider_priority = _parse_provider_priority(
-            bot_cfg.get_str("OPENCLAW_CLINE_PROVIDER_PRIORITY", ""),
-        )
-        self._cline_provider_base_urls = {
-            "gemini": bot_cfg.get_str("OPENCLAW_CLINE_GEMINI_BASE_URL", "").strip(),
-            "deepseek": bot_cfg.get_str("OPENCLAW_CLINE_DEEPSEEK_BASE_URL", "").strip(),
-            "groq": bot_cfg.get_str("OPENCLAW_CLINE_GROQ_BASE_URL", "").strip(),
-            "openrouter": bot_cfg.get_str("OPENCLAW_CLINE_OPENROUTER_BASE_URL", "").strip(),
-            "openai": bot_cfg.get_str("OPENCLAW_CLINE_OPENAI_BASE_URL", "").strip(),
-            "anthropic": bot_cfg.get_str("OPENCLAW_CLINE_ANTHROPIC_BASE_URL", "").strip(),
-        }
-        allowed_permission_modes = {
-            "acceptEdits",
-            "bypassPermissions",
-            "default",
-            "dontAsk",
-            "plan",
-        }
-        configured_permission_mode = bot_cfg.get_str(
-            "OPENCLAW_SSH_CLAUDE_PERMISSION_MODE",
-            "bypassPermissions",
-        ).strip()
-        if configured_permission_mode and configured_permission_mode not in allowed_permission_modes:
-            _log.warning(
-                "Invalid OPENCLAW_SSH_CLAUDE_PERMISSION_MODE=%r, falling back to bypassPermissions",
-                configured_permission_mode,
-            )
-            configured_permission_mode = "bypassPermissions"
-        self._claude_permission_mode = configured_permission_mode
-        self._claude_disable_slash_commands = _env_bool(
-            "OPENCLAW_SSH_CLAUDE_DISABLE_SLASH_COMMANDS",
-            False,
-        )
-        self._claude_dangerously_skip_permissions = _env_bool(
-            "OPENCLAW_SSH_CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS",
-            False,
-        )
+        self._cline_auto_switch = config.cline_auto_switch
+        self._cline_provider_priority = list(config.cline_provider_priority)
+        self._cline_provider_base_urls = dict(config.cline_provider_base_urls)
+        self._claude_permission_mode = config.claude_permission_mode
+        self._claude_disable_slash_commands = config.claude_disable_slash_commands
+        self._claude_dangerously_skip_permissions = config.claude_dangerously_skip_permissions
 
     def is_configured(self) -> bool:
-        """
-        Is configured.
-        
-        Purpose:
-        - Implement `is_configured` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `bool` when available; otherwise side effects only.
-        """
-
         return self.enabled and bool(self.username and self.host)
 
     def _classify_ssh_error(self, detail: str) -> str:
@@ -1926,17 +1409,67 @@ class SSHTunnelExecutor:
         script_lines.append("$__cmd = $__args[0]")
         script_lines.append("$__rest = @()")
         script_lines.append("if ($__args.Length -gt 1) { $__rest = $__args[1..($__args.Length-1)] }")
+        # Bypass .cmd/.bat wrappers: cmd.exe interprets |, &, <, > in
+        # arguments and stdin as shell metacharacters, corrupting prompts
+        # that contain them (e.g. "low|medium|high").  Resolving the npm
+        # .cmd wrapper to the underlying node.exe + script.js lets us
+        # call CreateProcess directly, avoiding cmd.exe entirely.
+        script_lines.append(
+            "if ($__cmd -match '\\.(cmd|bat)$' -and (Test-Path $__cmd)) {"
+        )
+        script_lines.append(
+            "  $__body = Get-Content $__cmd -Raw -ErrorAction SilentlyContinue"
+        )
+        script_lines.append(
+            "  if ($__body -match '\"?(%~dp0|%dp0%)[\\\\/ ]*([^\"\\r\\n]+\\.js)\"') {"
+        )
+        script_lines.append(
+            "    $__dp0 = Split-Path -Parent $__cmd"
+        )
+        script_lines.append(
+            "    $__script = Join-Path $__dp0 $Matches[2]"
+        )
+        script_lines.append(
+            "    if (Test-Path $__script) {"
+        )
+        script_lines.append(
+            "      $__rest = @($__script) + $__rest"
+        )
+        script_lines.append(
+            "      $__cmd = 'node'"
+        )
+        script_lines.append("    }")
+        script_lines.append("  }")
+        script_lines.append("}")
         script_lines.append("Set-Content -LiteralPath $__pidPath -Value $PID -Encoding ascii")
+        script_lines.append("$__prompt = Get-Content -LiteralPath $__promptPath -Raw -Encoding UTF8")
         if prompt_via_stdin:
-            # Preserve multiline prompts on Windows by streaming stdin instead of argv.
-            script_lines.append("$__stdinArg = '-'")
-            script_lines.append("$__prompt = Get-Content -LiteralPath $__promptPath -Raw")
-            script_lines.append("$__prompt | & $__cmd @__rest $__stdinArg")
+            # Use System.Diagnostics.Process to pipe stdin properly.
+            # Even after resolving .cmd wrappers, ProcessStartInfo gives
+            # reliable stdin delivery vs PowerShell's pipe operator.
+            script_lines.append("$__allArgs = ($__rest + @('-')) -join ' '")
+            script_lines.append("$psi = [System.Diagnostics.ProcessStartInfo]::new()")
+            script_lines.append("$psi.FileName = $__cmd")
+            script_lines.append("$psi.Arguments = $__allArgs")
+            script_lines.append("$psi.RedirectStandardInput = $true")
+            script_lines.append("$psi.UseShellExecute = $false")
+            script_lines.append("$psi.CreateNoWindow = $true")
+            if cwd:
+                script_lines.append(f"$psi.WorkingDirectory = {_ps_quote(cwd)}")
+            if env:
+                for key, value in env.items():
+                    script_lines.append(
+                        f"$psi.EnvironmentVariables[{_ps_quote(key)}] = {_ps_quote(str(value))}"
+                    )
+            script_lines.append("$proc = [System.Diagnostics.Process]::Start($psi)")
+            script_lines.append("$proc.StandardInput.Write($__prompt)")
+            script_lines.append("$proc.StandardInput.Close()")
+            script_lines.append("$proc.WaitForExit()")
+            script_lines.append("$code = $proc.ExitCode")
         else:
-            script_lines.append("$__prompt = Get-Content -LiteralPath $__promptPath -Raw")
             script_lines.append("& $__cmd @__rest $__prompt")
-        script_lines.append("$code = $LASTEXITCODE")
-        script_lines.append("if ($null -eq $code) { $code = 0 }")
+            script_lines.append("$code = $LASTEXITCODE")
+            script_lines.append("if ($null -eq $code) { $code = 0 }")
         script_lines.append("Remove-Item -LiteralPath $__promptPath -Force -ErrorAction SilentlyContinue")
         script_lines.append("Remove-Item -LiteralPath $__pidPath -Force -ErrorAction SilentlyContinue")
         script_lines.append("exit $code")
@@ -2493,72 +2026,6 @@ class SSHTunnelExecutor:
                 return False
         return default
 
-    def _normalize_qwen_run(
-        self,
-        run: dict[str, Any],
-        *,
-        task_mode: str,
-        cwd: str | None,
-    ) -> dict[str, Any]:
-        profile = qwen_profile_for_task_mode(self._qwen_policy, task_mode)
-        output_format = str(profile.get("output_format") or "").strip().lower()
-        raw_stdout = str(run.get("stdout") or "")
-        if output_format == "json":
-            try:
-                parsed = parse_qwen_json_output(raw_stdout)
-                parse_error = ""
-            except Exception as exc:
-                parsed = {
-                    "assistant_text": "",
-                    "session_id": "",
-                    "model": str(profile.get("model") or "").strip(),
-                    "tool_use_names": [],
-                    "raw_result_tail": raw_stdout[-2000:],
-                }
-                parse_error = f"invalid_json_output:{type(exc).__name__}"
-        else:
-            parsed = {
-                "assistant_text": raw_stdout.strip(),
-                "session_id": "",
-                "model": str(profile.get("model") or "").strip(),
-                "tool_use_names": [],
-                "raw_result_tail": raw_stdout[-2000:],
-            }
-            parse_error = ""
-
-        assistant_text = str(parsed.get("assistant_text") or "").strip()
-        tool_use_names = [str(name).strip() for name in list(parsed.get("tool_use_names") or []) if str(name).strip()]
-        output_contract = (
-            parse_error
-            if parse_error
-            else classify_qwen_output_contract(
-                task_mode=task_mode,
-                assistant_text=assistant_text,
-                tool_use_names=tool_use_names,
-            )
-        )
-        run["assistant_text"] = assistant_text
-        run["session_id"] = str(parsed.get("session_id") or "").strip()
-        run["model"] = str(parsed.get("model") or profile.get("model") or "").strip()
-        run["auth_type"] = str(self._qwen_policy.get("auth_type") or "").strip()
-        run["output_contract"] = output_contract
-        run["raw_result_tail"] = str(parsed.get("raw_result_tail") or raw_stdout[-2000:])
-        run["qwen_task_mode"] = task_mode
-        run["qwen_context_files"] = (
-            discover_qwen_context_paths(str(cwd or ""))
-            if bool(self._qwen_policy.get("context_diagnostics", True))
-            else []
-        )
-        run["qwen_tool_use_names"] = tool_use_names
-        run["stdout"] = assistant_text or raw_stdout
-        if output_contract != "ok":
-            detail = f"QWEN_CONTRACT_VIOLATION: {output_contract}"
-            stderr = str(run.get("stderr") or "").strip()
-            run["stderr"] = f"{stderr}\n{detail}".strip() if stderr else detail
-            if int(run.get("returncode", 0) or 0) == 0:
-                run["returncode"] = 1
-        return run
-
     @contextlib.contextmanager
     def _managed_remote_qwen_context_file(
         self,
@@ -2765,6 +2232,9 @@ class SSHTunnelExecutor:
         model: str,
         task_mode: str = "",
         qwen_context_text: str = "",
+        reply_contract: str = "",
+        planner_state: dict[str, Any] | None = None,
+        requirement_summary_md: str = "",
     ) -> dict[str, Any]:
         binary = self._coding_bins[agent]
         if self.remote_os == "windows":
@@ -2845,15 +2315,15 @@ class SSHTunnelExecutor:
                     args.append(prompt)
                     initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
             elif agent == "qwen":
-                qwen_task_mode = str(task_mode or "").strip().lower()
-                if qwen_task_mode not in QWEN_TASK_MODES:
-                    allowed = ", ".join(sorted(QWEN_TASK_MODES))
+                try:
+                    qwen_task_mode = normalize_qwen_task_mode(task_mode)
+                except ValueError as exc:
                     return {
                         "returncode": 1,
                         "stdout": "",
-                        "stderr": f"Unsupported qwen task_mode '{qwen_task_mode}'. Allowed: {allowed}",
+                        "stderr": str(exc),
                     }
-                args = build_qwen_command_args(
+                args, stdin_prompt = build_qwen_command_args(
                     binary=binary,
                     prompt=prompt,
                     session_id=uuid.uuid4().hex,
@@ -2865,15 +2335,22 @@ class SSHTunnelExecutor:
                     client=client,
                     cwd=cwd,
                     context_text=qwen_context_text,
-                    enabled=bool(profile.get("use_context_file", False)),
+                    enabled=bool(profile.get("use_context_file", False)) or bool(qwen_context_text),
                 ):
                     if self.remote_os == "windows":
+                        # Always pipe the prompt via stdin on Windows for
+                        # qwen to avoid the 8191-char CLI limit that
+                        # PowerShell hits when expanding $__prompt into
+                        # a process command line.
+                        effective_prompt = stdin_prompt or args[-1]
+                        args_no_prompt = args if stdin_prompt else args[:-1]
                         initial = self._run_windows_command_with_prompt_file(
                             client=client,
-                            args_without_prompt=args[:-1],
-                            prompt=args[-1],
+                            args_without_prompt=args_no_prompt,
+                            prompt=effective_prompt,
                             cwd=cwd,
                             timeout=timeout,
+                            prompt_via_stdin=True,
                         )
                     else:
                         initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
@@ -2893,7 +2370,15 @@ class SSHTunnelExecutor:
                     args = [binary, *self._coding_prefix[agent], prompt]
                     initial = self._run_command(client, args, cwd=cwd, timeout=timeout)
             if agent == "qwen":
-                run = self._normalize_qwen_run(initial, task_mode=task_mode, cwd=cwd)
+                run = normalize_qwen_result(
+                    initial,
+                    task_mode=qwen_task_mode,
+                    policy=self._qwen_policy,
+                    working_dir=cwd,
+                    reply_contract=reply_contract,
+                    planner_state=planner_state,
+                    requirement_summary_md=requirement_summary_md,
+                )
             elif agent != "cline":
                 run = initial
             elif initial["returncode"] == 0:
@@ -3337,6 +2822,9 @@ class SSHTunnelExecutor:
             model = str(params.get("model") or "").strip()
             task_mode = str(params.get("task_mode") or "").strip().lower()
             qwen_context_text = str(params.get("qwen_context_text") or "").strip()
+            reply_contract = str(params.get("reply_contract") or "").strip().lower()
+            planner_state = params.get("planner_state_json") if isinstance(params.get("planner_state_json"), dict) else {}
+            requirement_summary_md = str(params.get("requirement_summary_md") or "").strip()
             base_url = str(
                 params.get("base_url")
                 or bot_cfg.CLAUDE_OLLAMA_BASE_URL
@@ -3365,13 +2853,15 @@ class SSHTunnelExecutor:
                     "stdout": "",
                     "stderr": "timeout_seconds must be an integer between 30 and 3600.",
                 }
-            if agent == "qwen" and task_mode not in QWEN_TASK_MODES:
-                allowed = ", ".join(sorted(QWEN_TASK_MODES))
-                return {
-                    "returncode": 1,
-                    "stdout": "",
-                    "stderr": f"Unsupported qwen task_mode '{task_mode}'. Allowed: {allowed}",
-                }
+            if agent == "qwen":
+                try:
+                    task_mode = normalize_qwen_task_mode(task_mode)
+                except ValueError as exc:
+                    return {
+                        "returncode": 1,
+                        "stdout": "",
+                        "stderr": str(exc),
+                    }
 
             resolved_backend, backend_error = self._resolve_backend(
                 agent=agent,
@@ -3403,6 +2893,9 @@ class SSHTunnelExecutor:
                 model=model,
                 task_mode=task_mode,
                 qwen_context_text=qwen_context_text,
+                reply_contract=reply_contract,
+                planner_state=planner_state,
+                requirement_summary_md=requirement_summary_md,
             )
             if worker_id:
                 run["worker_id"] = worker_id
@@ -4229,28 +3722,6 @@ _SSH_EXECUTOR: SSHTunnelExecutor | None = None
 
 
 def get_ssh_executor() -> SSHTunnelExecutor:
-    """
-    Get ssh executor.
-    
-    Purpose:
-    - Implement `get_ssh_executor` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - None.
-    
-    Returns:
-    - Return value typed as `SSHTunnelExecutor` when available; otherwise side effects only.
-    """
-
     global _SSH_EXECUTOR
     if _SSH_EXECUTOR is None:
         _SSH_EXECUTOR = SSHTunnelExecutor()

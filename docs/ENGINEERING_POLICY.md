@@ -2,6 +2,14 @@
 
 Repository policy for documentation quality, testing evidence, and tracing evidence.
 
+## Code Quality Requirements
+
+- `docs/CODE_QUALITY_STANDARDS.md` is the repo standard for module structure and refactor quality.
+- Runtime refactors must remove local branching/duplication where possible, not just wrap existing spaghetti in more helpers.
+- Template-generated docstrings are policy failures in touched runtime code. Replace them with real short docstrings or remove them.
+- `scripts/ci/check_engineering_policy.py` enforces a template-docstring ratchet for the cleaned module set; only files in the explicit temporary allowlist may still contain those markers.
+- When splitting a large module, keep orchestration in the entry module and move normalization/policy/state helpers into focused modules with targeted tests.
+
 ## Documentation Requirements
 
 Documentation updates are mandatory when a change affects:
@@ -44,7 +52,7 @@ Default required suites for platform changes:
 - control-plane curated tests
 - gateway test suite
 - agent test suite
-- CI guards (`check_stale_paths`, `check_control_plane_boundary`, `check_settings_policy`, `check_engineering_policy`)
+- CI guards (`check_stale_paths`, `check_control_plane_boundary`, `check_settings_policy`, `check_repo_hygiene`, `check_engineering_policy`)
 
 ## Tracing Requirements
 
@@ -109,5 +117,5 @@ Copy/paste for handoff entries:
 - [ ] For live `telegram_real` failures, followed `DEBUG_PLAYBOOK` loop with mitigation plan + failed/pass trace evidence.
 - [ ] For live `telegram_real` failures, commit and push succeeded before rerunning live E2E.
 - [ ] `NoTestJustification` provided if tests were not run.
-- [ ] Guard scripts executed (`check_stale_paths`, `check_control_plane_boundary`, `check_settings_policy`, `check_engineering_policy`).
+- [ ] Guard scripts executed (`check_stale_paths`, `check_control_plane_boundary`, `check_settings_policy`, `check_repo_hygiene`, `check_engineering_policy`).
 ```

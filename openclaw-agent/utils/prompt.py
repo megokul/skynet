@@ -60,28 +60,6 @@ def _blocking_input(prompt_text: str) -> str:
 
 
 def _indent(text: str, spaces: int) -> str:
-    """
-    Indent.
-    
-    Purpose:
-    - Implement `_indent` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `text`: input used by this function to compute or route work.
-    - `spaces`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `str` when available; otherwise side effects only.
-    """
 
     pad = " " * spaces
     return "\n".join(pad + line for line in text.splitlines())

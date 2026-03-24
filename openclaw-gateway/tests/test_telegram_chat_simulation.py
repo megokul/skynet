@@ -57,6 +57,7 @@ async def test_chat_flow_preflight_reports_missing_codex():
 
         with (
             patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=fake_send_action)),
+            patch("bot.handlers.coding.cfg.CODING_FALLBACK_CHAIN", "codex"),
             patch("bot.handlers.coding.cfg.CODING_FORCE_PRIMARY_FOR_ALL", False),
             patch("bot.handlers.coding.cfg.CONTROL_LOOP_FORCE_FOR_ALL", False),
         ):

@@ -76,6 +76,12 @@ TRACE_MARKER_PATTERN = re.compile(
     r"request_id|task_id|claim_token|audit\.jsonl|skynet\.trace\.log|/v1/events",
     re.IGNORECASE,
 )
+TEMPLATE_DOCSTRING_BLOCK_PATTERN = re.compile(r'(?ms)^[ \t]*"""\n.*?^[ \t]*"""[ \t]*$')
+TEMPLATE_DOCSTRING_MARKERS = ("Purpose:", "How it works:", "Why this exists:")
+TEMPLATE_DOCSTRING_ALLOWLIST = {
+    "openclaw-gateway/logging_setup.py",
+    "openclaw-gateway/ssh_tunnel_executor.py",
+}
 
 
 def _read_text(path: Path) -> str:
@@ -121,6 +127,31 @@ def _missing_doc_headings(repo_root: Path) -> list[str]:
     return violations
 
 
+def _template_docstring_violations(repo_root: Path) -> list[str]:
+    violations: list[str] = []
+    for prefix in CODE_PATH_PREFIXES:
+        root = repo_root / prefix
+        if not root.exists():
+            continue
+        for path in root.rglob("*.py"):
+            rel_path = path.relative_to(repo_root).as_posix()
+            if "/tests/" in f"/{rel_path}/":
+                continue
+            if rel_path in TEMPLATE_DOCSTRING_ALLOWLIST:
+                continue
+            text = _read_text(path)
+            has_template_docstring = any(
+                any(marker in block.group(0) for marker in TEMPLATE_DOCSTRING_MARKERS)
+                for block in TEMPLATE_DOCSTRING_BLOCK_PATTERN.finditer(text)
+            )
+            if has_template_docstring:
+                violations.append(
+                    f"{rel_path}: contains template-generated docstring markers "
+                    "(Purpose/How it works/Why this exists)."
+                )
+    return violations
+
+
 def evaluate_policy(
     repo_root: Path,
     changed_files: Sequence[str],
@@ -128,6 +159,7 @@ def evaluate_policy(
     strict: bool = True,
 ) -> list[str]:
     violations = _missing_doc_headings(repo_root)
+    violations.extend(_template_docstring_violations(repo_root))
 
     changed = [p.replace("\\", "/").strip() for p in changed_files if p.strip()]
     code_paths_changed = any(_is_code_path(path) for path in changed)

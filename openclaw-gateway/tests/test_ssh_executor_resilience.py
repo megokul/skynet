@@ -249,6 +249,9 @@ def test_run_coding_agent_passes_qwen_context_text_to_native(
             "timeout_seconds": 120,
             "task_mode": "planner_chat",
             "qwen_context_text": "Planner chat behavior for Qwen Code",
+            "reply_contract": "ask_next_question",
+            "planner_state_json": {"plan_ready": False, "missing_slots": ["storage"]},
+            "requirement_summary_md": "- Project Kind: local terminal utility script",
         },
     )
 
@@ -256,6 +259,47 @@ def test_run_coding_agent_passes_qwen_context_text_to_native(
     assert seen["agent"] == "qwen"
     assert seen["task_mode"] == "planner_chat"
     assert seen["qwen_context_text"] == "Planner chat behavior for Qwen Code"
+    assert seen["reply_contract"] == "ask_next_question"
+    assert seen["planner_state"] == {"plan_ready": False, "missing_slots": ["storage"]}
+    assert seen["requirement_summary_md"] == "- Project Kind: local terminal utility script"
+
+
+def test_run_coding_agent_native_qwen_uses_contract_aware_normalization(
+    ssh_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor = SSHTunnelExecutor()
+    executor.remote_os = "linux"
+    monkeypatch.setattr(executor, "_snapshot_working_tree", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        executor,
+        "_run_command",
+        lambda *_args, **_kwargs: {
+            "returncode": 0,
+            "stdout": (
+                '[{"type":"result","subtype":"success",'
+                '"result":"I need one more clarification before I can continue."}]'
+            ),
+            "stderr": "",
+        },
+    )
+
+    run = executor._run_coding_agent_native(
+        client=MagicMock(),
+        agent="qwen",
+        prompt="reply exactly with the ready sentence",
+        cwd="/tmp/qwen-project",
+        timeout=120,
+        model="",
+        task_mode="planner_chat",
+        reply_contract="emit_ready_sentence",
+        planner_state={"plan_ready": True, "missing_slots": []},
+        requirement_summary_md="- Project Kind: local terminal utility script",
+    )
+
+    assert run["returncode"] == 1
+    assert run["output_contract"] == "planner_ready_sentence_mismatch"
+    assert "QWEN_CONTRACT_VIOLATION" in run["stderr"]
 
 
 def test_managed_remote_qwen_context_file_restores_previous_text(
@@ -526,5 +570,9 @@ def test_windows_prompt_file_runner_supports_stdin_prompt_delivery(
     assert result["returncode"] == 0
     encoded = fake_client.command.split("-EncodedCommand ", 1)[1].strip()
     script = base64.b64decode(encoded).decode("utf-16le")
-    assert "$__stdinArg = '-'" in script
-    assert "$__prompt | & $__cmd @__rest $__stdinArg" in script
+    # ProcessStartInfo approach pipes stdin properly, bypassing cmd.exe
+    # batch-file stdin consumption that corrupts piped prompt text.
+    assert "ProcessStartInfo" in script
+    assert "$psi.RedirectStandardInput = $true" in script
+    assert "$proc.StandardInput.Write($__prompt)" in script
+    assert "$proc.StandardInput.Close()" in script

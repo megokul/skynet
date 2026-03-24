@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -30,6 +32,7 @@ bootstrap_gateway_runtime()
 from live_diagnostics import (
     LiveContainerDiagnostics,
     container_log_error_summary,
+    fetch_remote_gateway_status,
     make_live_trace_logger,
     run_live_e2e_preflight,
 )
@@ -110,7 +113,11 @@ def _strict_stage_policy_violation_text(text: str, *, allowed_stages: set[str]) 
     )
     if fallback_match:
         next_stage = str(fallback_match.group(2) or "").strip().lower()
-        if next_stage and next_stage not in allowed_stages:
+        if (
+            next_stage
+            and next_stage not in allowed_stages
+            and _looks_like_agent_stage(next_stage, allowed_stages=allowed_stages)
+        ):
             return raw
     for pattern in (
         r"\brunning stage ([a-z0-9_]+)\b",
@@ -120,7 +127,11 @@ def _strict_stage_policy_violation_text(text: str, *, allowed_stages: set[str]) 
         if not match:
             continue
         stage = str(match.group(1) or "").strip().lower()
-        if stage and stage not in allowed_stages:
+        if (
+            stage
+            and stage not in allowed_stages
+            and _looks_like_agent_stage(stage, allowed_stages=allowed_stages)
+        ):
             return raw
     return ""
 
@@ -143,6 +154,23 @@ def _terminal_bot_failure_text(text: str) -> str:
 
 class _TerminalBotFailure(AssertionError):
     pass
+
+
+_KNOWN_AGENT_STAGE_NAMES = {
+    "claude",
+    "cline",
+    "codex",
+    "ollama",
+    "qwen",
+    "router",
+}
+
+
+def _looks_like_agent_stage(stage: str, *, allowed_stages: set[str]) -> bool:
+    normalized = str(stage or "").strip().lower()
+    if not normalized:
+        return False
+    return normalized in allowed_stages or normalized in _KNOWN_AGENT_STAGE_NAMES
 
 
 class _RuntimeTraceProgress:
@@ -606,6 +634,105 @@ def _validate_generated_project_artifacts(*, project_slug: str, trace_fn: Callab
         raise AssertionError("Missing/invalid skynet_run.json")
 
 
+async def _bootstrap_worker_agent(
+    *,
+    trace_fn: Callable[..., None],
+    policy: dict[str, Any],
+) -> subprocess.Popen | None:
+    """Start worker agent with SSH tunnel if not already connected to EC2 gateway."""
+    bootstrap_cfg = dict(policy.get("worker_bootstrap") or {})
+    if not bool(bootstrap_cfg.get("enabled", True)):
+        trace_fn("worker.bootstrap.skip", reason="disabled")
+        return None
+
+    diagnostics_profile = str(policy.get("diagnostics_profile") or "")
+    remote_container = str(policy.get("remote_gateway_container") or "openclaw-gateway")
+    remote_status_url = str(policy.get("remote_status_url") or "http://localhost:8766/status")
+
+    # Check if agent is already connected
+    try:
+        status = await fetch_remote_gateway_status(
+            container_name=remote_container,
+            status_url=remote_status_url,
+            diagnostics_profile=diagnostics_profile,
+        )
+        agent_ok = bool(status.get("agent_connected", False))
+        transport_ok = str(status.get("primary_transport_mode") or "") == "websocket_primary"
+        trace_fn(
+            "worker.bootstrap.status",
+            status="ready" if (agent_ok and transport_ok) else "pending",
+            agent_connected=agent_ok,
+            primary_transport_mode=str(status.get("primary_transport_mode") or ""),
+        )
+        if agent_ok and transport_ok:
+            trace_fn("worker.bootstrap.skip", reason="already_ready")
+            return None
+    except Exception as exc:
+        trace_fn("worker.bootstrap.status", status="retry", error=f"{type(exc).__name__}: {exc}")
+
+    # Resolve bootstrap script and env file
+    repo_root = Path(__file__).resolve().parents[2]
+    script = Path(str(bootstrap_cfg.get("script") or "scripts/run_worker_agent.ps1").strip())
+    env_file = Path(str(bootstrap_cfg.get("env_file") or ".env.worker-agent").strip())
+    if not script.is_absolute():
+        script = repo_root / script
+    if not env_file.is_absolute():
+        env_file = repo_root / env_file
+
+    if not script.exists():
+        raise AssertionError(f"WORKER_BOOTSTRAP: script not found ({script})")
+    if not env_file.exists():
+        raise AssertionError(f"WORKER_BOOTSTRAP: env file not found ({env_file})")
+
+    python_path = str(bootstrap_cfg.get("python_path") or "").strip() or sys.executable
+    if script.suffix.lower() == ".ps1":
+        shell = "powershell" if sys.platform == "win32" else "pwsh"
+        cmd = [
+            shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+            "-RepoRoot", str(repo_root), "-EnvFile", str(env_file), "-PythonPath", python_path,
+        ]
+    else:
+        cmd = [str(script), str(repo_root), str(env_file), python_path]
+
+    proc = subprocess.Popen(
+        cmd, cwd=str(repo_root), env=dict(os.environ),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True,
+    )
+    trace_fn("worker.bootstrap.start", pid=proc.pid, script=str(script), env_file=str(env_file))
+
+    # Poll until agent connects
+    wait_seconds = max(10, int(bootstrap_cfg.get("wait_seconds") or 60))
+    poll_seconds = max(1, int(bootstrap_cfg.get("poll_seconds") or 3))
+    deadline = time.monotonic() + wait_seconds
+
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise AssertionError(f"WORKER_BOOTSTRAP: launcher exited early (exit={proc.returncode})")
+        try:
+            status = await fetch_remote_gateway_status(
+                container_name=remote_container,
+                status_url=remote_status_url,
+                diagnostics_profile=diagnostics_profile,
+            )
+            agent_ok = bool(status.get("agent_connected", False))
+            transport_ok = str(status.get("primary_transport_mode") or "") == "websocket_primary"
+            trace_fn(
+                "worker.bootstrap.poll",
+                agent_connected=agent_ok,
+                primary_transport_mode=str(status.get("primary_transport_mode") or ""),
+            )
+            if agent_ok and transport_ok:
+                trace_fn("worker.bootstrap.ready", pid=proc.pid)
+                return proc
+        except Exception as exc:
+            trace_fn("worker.bootstrap.poll_error", error=f"{type(exc).__name__}: {exc}")
+        await asyncio.sleep(poll_seconds)
+
+    # Timed out
+    proc.terminate()
+    raise AssertionError(f"WORKER_BOOTSTRAP: agent did not connect within {wait_seconds}s")
+
+
 @pytest.mark.e2e
 @pytest.mark.live
 @pytest.mark.asyncio
@@ -675,6 +802,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
     trace("test.input", project_slug=project_slug, requirement_preview=requirement[:220])
     trace("test.requirement.payload", payload=requirement)
 
+    worker_proc: subprocess.Popen | None = None
     try:
         async with TelegramClient(StringSession(session), api_id, api_hash) as client:
             trace("telegram.client.connected")
@@ -688,6 +816,10 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 bundle_status = "fail"
                 bundle_reason = "container_stream_unavailable"
                 raise
+            worker_proc = await _bootstrap_worker_agent(
+                trace_fn=trace,
+                policy=policy,
+            )
             await run_live_e2e_preflight(
                 trace_fn=trace,
                 flow="telegram_real",
@@ -1287,3 +1419,10 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 flow="telegram_real",
             )
         await container_diagnostics.stop()
+        if worker_proc is not None:
+            worker_proc.terminate()
+            try:
+                worker_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                worker_proc.kill()
+            trace("worker.bootstrap.stopped", pid=worker_proc.pid)

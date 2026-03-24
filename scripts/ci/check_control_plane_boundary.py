@@ -11,27 +11,6 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _read(rel_path: str) -> str:
-    """
-    Read.
-    
-    Purpose:
-    - Implement `_read` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `rel_path`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `str` when available; otherwise side effects only.
-    """
 
     path = ROOT / rel_path
     if not path.exists():
@@ -40,28 +19,6 @@ def _read(rel_path: str) -> str:
 
 
 def _line_for(content: str, pattern: str) -> int:
-    """
-    Line for.
-    
-    Purpose:
-    - Implement `_line_for` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `content`: input used by this function to compute or route work.
-    - `pattern`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `int` when available; otherwise side effects only.
-    """
 
     match = re.search(pattern, content, flags=re.MULTILINE)
     if not match:
@@ -70,27 +27,6 @@ def _line_for(content: str, pattern: str) -> int:
 
 
 def main() -> int:
-    """
-    Main.
-    
-    Purpose:
-    - Implement `main` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - None.
-    
-    Returns:
-    - Return value typed as `int` when available; otherwise side effects only.
-    """
 
     violations: list[tuple[str, int, str]] = []
 

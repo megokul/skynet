@@ -23,7 +23,7 @@ WS_PING_TIMEOUT_SECONDS: 10
 WORKER_ID: worker-primary
 AGENT_HEARTBEAT_SECONDS: 15
 AGENT_RESULT_CACHE_TTL_SECONDS: 900
-AGENT_LOG_MIRROR_DIR: logs
+AGENT_LOG_MIRROR_DIR: logs/openclaw-agent
 
 # ---------------------------------------------------------------------------
 # Allowed Action Tiers
@@ -98,7 +98,7 @@ RATE_LIMIT_PER_MINUTE: 120
 # Logging
 # ---------------------------------------------------------------------------
 LOG_LEVEL: INFO
-AUDIT_LOG_DIR: logs
+AUDIT_LOG_DIR: openclaw-agent/logs
 AUDIT_LOG_FILE: audit.jsonl
 
 # ---------------------------------------------------------------------------

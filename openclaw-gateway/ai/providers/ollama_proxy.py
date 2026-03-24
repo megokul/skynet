@@ -33,53 +33,11 @@ class OllamaProxyProvider(BaseProvider):
 
     def __init__(self, model: str = "qwen2.5-coder:32b-instruct-q4_K_M"):
         # Still initialize BaseProvider internals (cooldown/error tracking).
-        """
-        Initialize runtime dependencies and object state.
-        
-        Purpose:
-        - Implement `__init__` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `model`: input used by this function to compute or route work.
-        
-        Returns:
-        - Function-specific value or side effects consumed by upstream callers.
-        """
 
         super().__init__(api_key="", model=model)
 
     @property
     def default_model(self) -> str:
-        """
-        Default model.
-        
-        Purpose:
-        - Implement `default_model` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `str` when available; otherwise side effects only.
-        """
 
         return "qwen2.5-coder:32b-instruct-q4_K_M"
 
@@ -163,27 +121,6 @@ class OllamaProxyProvider(BaseProvider):
         return is_agent_connected()
 
     def remaining_quota(self) -> QuotaInfo:
-        """
-        Remaining quota.
-        
-        Purpose:
-        - Implement `remaining_quota` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `QuotaInfo` when available; otherwise side effects only.
-        """
 
         return QuotaInfo(
             daily_limit=None,

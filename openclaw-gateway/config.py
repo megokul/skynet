@@ -21,6 +21,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from skynet.settings.loader import get_component_settings  # noqa: E402
 from skynet.qwen_cli import load_qwen_execution_policy  # noqa: E402
+from skynet.utils import resolve_repo_path  # noqa: E402
 
 # Initialize global settings loader
 _settings_loader = get_component_settings("gateway")
@@ -129,11 +130,11 @@ HTTP_HOST: str = _s("SKYNET_HTTP_HOST") or _s("OPENCLAW_HTTP_HOST", "127.0.0.1")
 HTTP_PORT: int = _i("SKYNET_HTTP_PORT", _i("OPENCLAW_HTTP_PORT", 8766))
 
 # Database
-DB_PATH: str = _s("SKYNET_DB_PATH", "data/skynet.db")
+DB_PATH: str = resolve_repo_path(_REPO_ROOT, _s("SKYNET_DB_PATH"), default="data/skynet.db")
 
 # Logging
 LOG_LEVEL: str = _s("SKYNET_LOG_LEVEL") or _s("OPENCLAW_LOG_LEVEL", "INFO")
-LOG_DIR: str = _s("SKYNET_LOG_DIR", "logs")
+LOG_DIR: str = resolve_repo_path(_REPO_ROOT, _s("SKYNET_LOG_DIR"), default="logs")
 
 LOG_ENABLE_SSH_MIRROR: bool = _b(
     "SKYNET_LOG_ENABLE_SSH_MIRROR",
@@ -157,11 +158,12 @@ LOG_ENABLE_LOCAL_FILES: bool = _b(
 )
 LOG_MAX_BYTES: int = _i("SKYNET_LOG_MAX_BYTES", 10_485_760)
 LOG_BACKUP_COUNT: int = _i("SKYNET_LOG_BACKUP_COUNT", 5)
-TRACE_MIRROR_LOG_DIR: str = _s("SKYNET_TRACE_MIRROR_LOG_DIR", "logs")
+TRACE_MIRROR_LOG_DIR: str = resolve_repo_path(_REPO_ROOT, _s("SKYNET_TRACE_MIRROR_LOG_DIR"), default="logs")
 RUNTIME_TRACE_ENABLED: bool = _b("SKYNET_RUNTIME_TRACE_ENABLED", True)
-RUNTIME_TRACE_LIVE_FILE: str = _s(
-    "SKYNET_RUNTIME_TRACE_LIVE_FILE",
-    "logs/skynet.trace.log",
+RUNTIME_TRACE_LIVE_FILE: str = resolve_repo_path(
+    _REPO_ROOT,
+    _s("SKYNET_RUNTIME_TRACE_LIVE_FILE"),
+    default="logs/skynet.trace.log",
 )
 RUNTIME_TRACE_LEVEL: str = _s("SKYNET_RUNTIME_TRACE_LEVEL", "info").strip().lower()
 RUNTIME_TRACE_DETAIL_PROFILE: str = _s(
@@ -871,14 +873,14 @@ def get_live_e2e_policy(flow: str | None = None) -> dict[str, Any]:
     if is_control_loop_active():
         planner_agents.extend(
             [
-                getattr(sys.modules[__name__], "CONTROL_LOOP_PLANNER_AGENT", ""),
-                getattr(sys.modules[__name__], "CONTROL_LOOP_CRITIC_AGENT", ""),
+                CONTROL_LOOP_PLANNER_AGENT,
+                CONTROL_LOOP_CRITIC_AGENT,
             ]
         )
     else:
-        planner_agents.append(getattr(sys.modules[__name__], "PLANNER_PRIMARY_AGENT", ""))
+        planner_agents.append(PLANNER_PRIMARY_AGENT)
         if planner_router_fallback_enabled:
-            planner_agents.extend(list(getattr(sys.modules[__name__], "PLANNER_WORKER_AGENTS", ())))
+            planner_agents.extend(list(PLANNER_WORKER_AGENTS))
 
     required_coding_agents = _dedupe_agents(coding_agents)
     required_planner_agents = _dedupe_agents(planner_agents)
@@ -938,6 +940,7 @@ def get_live_e2e_policy(flow: str | None = None) -> dict[str, Any]:
         ).strip() or "http://localhost:8766/status",
         "gateway_id": GATEWAY_ID or "openclaw",
         "orchestrator_url": ORCHESTRATOR_URL,
+        "tunnel_http_port": get_int("SKYNET_AGENT_TUNNEL_LOCAL_HTTP_PORT", 0),
     }
 
 

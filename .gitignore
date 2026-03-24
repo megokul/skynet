@@ -13,6 +13,9 @@ __pycache__/
 data/
 certs/
 logs/
+!openclaw-agent/logs/
+openclaw-agent/logs/*
+!openclaw-agent/logs/.gitkeep
 *.jsonl
 *.log
 
@@ -30,6 +33,8 @@ build/
 
 # Testing
 .pytest_cache/
+.pytest-qwen-probe/
+.pytest-tmp/
 .coverage
 htmlcov/
 
@@ -48,6 +53,12 @@ htmlcov/
 nul
 *.tmp
 *.temp
+.tmp/
+tmp-probe-dir*/
+
+# Runtime artifacts
+openclaw-agent/MyProjectsskynetlogs/
+openclaw-gateway/tests/.artifacts/
 
 # Node (if needed)
 node_modules/

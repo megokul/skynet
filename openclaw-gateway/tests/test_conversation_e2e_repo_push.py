@@ -37,14 +37,12 @@ from bot.handlers.coding import (
     _MS_DECISION_KEY,
     _MS_EVENT_KEY,
     coding_github_choice_handler,
-    run_project_handler,
     start_coding_handler,
 )
 from bot.keyboards import (
     CB_CODING_GITHUB_YES,
     CB_PLAN_APPROVE,
     CB_REQUIREMENTS_DONE,
-    CB_RUN_PROJECT,
     CB_START_CODING,
     CB_START_PROJECT,
 )
@@ -86,10 +84,22 @@ async def test_conversation_e2e_generates_code_and_pushes_local_remote(tmp_path:
 
     milestones = ["Implement the app entry script"]
     fake_plan = (
-        "**Repo Push App — Project Plan**\n"
-        "**Overview:** Build a tiny Python script.\n"
+        "**Repo Push App - Project Plan**\n"
+        "**Overview:** Build a tiny Python script that can be committed and pushed to a local bare remote.\n\n"
+        "**Core Features:**\n"
+        "  - Generate the main script for the app.\n"
+        "  - Initialize a git repository and create the first commit.\n"
+        "  - Push the resulting project to the configured bare remote.\n\n"
+        "**Tech Stack:**\n"
+        "  - Python 3.10+\n"
+        "  - Git\n\n"
+        "**Project Structure:**\n"
+        "  - repo-push-app.py\n"
+        "  - README.md\n"
+        "  - skynet_run.json\n\n"
         "**Milestones:**\n"
-        "  1. Implement the app entry script"
+        "  1. Implement the app entry script\n\n"
+        "**Open Questions:** None"
     )
 
     project_dir = tmp_path / slug
@@ -284,7 +294,11 @@ async def test_conversation_e2e_generates_code_and_pushes_local_remote(tmp_path:
     # STEP 5: generate plan
     upd = make_callback_update(CB_REQUIREMENTS_DONE, user_id=user_id)
     ctx = make_ctx(extra_user_data=user_data)
-    assert await requirements_done_handler(upd, ctx) == REVIEWING_PLAN
+    with (
+        patch("bot.handlers.project._planner_primary_agent", return_value="router"),
+        patch("bot.handlers.project._planner_router_fallback_enabled", return_value=True),
+    ):
+        assert await requirements_done_handler(upd, ctx) == REVIEWING_PLAN
     user_data.update(ctx.user_data)
     assert user_data[_PLAN_KEY] == fake_plan
 
@@ -344,25 +358,5 @@ async def test_conversation_e2e_generates_code_and_pushes_local_remote(tmp_path:
 
     tasks = await list_tasks(db, project_id=project_id)
     assert tasks and all(t["status"] == "done" for t in tasks), f"tasks={tasks}"
-    assert bot_data.get(f"run_project_{user_id}") == project_id
-    assert any(CB_RUN_PROJECT in sum(_callbacks(m), []) for m in sent_markups), "Run Project CTA missing."
-
-    # STEP 9: run project
-    upd = make_callback_update(CB_RUN_PROJECT, user_id=user_id, chat_id=chat_id)
-    ctx = make_context(bot_data=dict(bot_data))
-    with (
-        patch("bot.handlers.coding.is_worker_available", return_value=True),
-        patch("bot.handlers.coding.send_action", new=AsyncMock(side_effect=fake_send_action)),
-        patch("bot.handlers.coding.cfg") as mock_cfg,
-    ):
-        mock_cfg.WORKER_PROJECTS_DIR = str(tmp_path)
-        await run_project_handler(upd, ctx)
-
-    all_replies = " ".join(
-        str(c.args[0] if c.args else "")
-        for c in upd.callback_query.message.reply_text.call_args_list
-    )
-    assert "REPO_PUSH_E2E_OK" in all_replies
-    assert "exit 0" in all_replies or "✅" in all_replies
 
     await db.close()

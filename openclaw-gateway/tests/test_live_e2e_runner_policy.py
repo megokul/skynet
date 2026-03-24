@@ -86,6 +86,21 @@ def test_strict_stage_policy_violation_detects_tracker_stage_switch() -> None:
     )
 
 
+def test_strict_stage_policy_violation_ignores_orchestration_loop_stage() -> None:
+    text = (
+        "Coding Progress [####----------------] 20%\n"
+        "Phase: Director - Building director contract\n"
+        "Pipeline: stage=loop_v2 | runtime=worker_agent | graph=30 | transport=websocket_primary"
+    )
+    assert (
+        telegram_real_live._strict_stage_policy_violation_text(
+            text,
+            allowed_stages={"qwen"},
+        )
+        == ""
+    )
+
+
 def test_terminal_bot_failure_text_detects_ai_unavailable() -> None:
     text = "AI is unavailable right now. Please try again."
     assert telegram_real_live._terminal_bot_failure_text(text) == text

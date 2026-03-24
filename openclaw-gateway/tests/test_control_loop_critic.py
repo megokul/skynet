@@ -23,7 +23,7 @@ def test_parse_critic_response_json_block():
 
 def test_parse_critic_response_invalid_json_raises():
     with pytest.raises(ValueError):
-        parse_critic_response("not json")
+        parse_critic_response("the code needs significant rework in several areas")
 
 
 def test_is_blocking_respects_threshold():

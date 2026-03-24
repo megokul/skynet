@@ -136,3 +136,60 @@ async def test_route_survives_audit_write_failure(monkeypatch: pytest.MonkeyPatc
 
     assert result["status"] == "success"
     assert result["action"] == "check_coding_agents"
+
+
+@pytest.mark.asyncio
+async def test_route_replays_cached_idempotent_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    async def _fake_executor(_params: dict[str, object]) -> dict[str, object]:
+        calls["count"] += 1
+        return {"returncode": 0, "stdout": "cached-ok", "stderr": ""}
+
+    async def _fake_log_event(**_kwargs) -> None:
+        return None
+
+    async def _fake_rate_limit() -> None:
+        return None
+
+    async def _fake_acquire_lock(_action: str, _params: dict[str, object]):
+        return object()
+
+    def _fake_release_lock(_lock) -> None:
+        return None
+
+    monkeypatch.setitem(action_router.ACTION_REGISTRY, "check_coding_agents", _fake_executor)
+    monkeypatch.setattr(action_router, "log_event", _fake_log_event)
+    monkeypatch.setattr(action_router._rate_limiter, "acquire", _fake_rate_limit)
+    monkeypatch.setattr(action_router, "acquire_lock", _fake_acquire_lock)
+    monkeypatch.setattr(action_router, "release_lock", _fake_release_lock)
+
+    action_router._idempotency_cache.clear()
+    action_router._inflight_idempotency.clear()
+
+    first = await action_router.route(
+        {
+            "request_id": "req-1",
+            "transport_id": "transport-1",
+            "idempotency_key": "idem-1",
+            "action": "check_coding_agents",
+            "params": {},
+            "confirmed": True,
+        }
+    )
+    second = await action_router.route(
+        {
+            "request_id": "req-2",
+            "transport_id": "transport-1",
+            "idempotency_key": "idem-1",
+            "action": "check_coding_agents",
+            "params": {},
+            "confirmed": True,
+        }
+    )
+
+    assert calls["count"] == 1
+    assert first["status"] == "success"
+    assert second["status"] == "success"
+    assert second["request_id"] == "req-2"
+    assert second["idempotent_replay"] is True

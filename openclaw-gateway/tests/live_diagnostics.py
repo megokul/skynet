@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import importlib
 import json
@@ -17,17 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import aiohttp
-from bot.project_templates import get_template
-from skynet.project_specialist import (
-    build_planner_state,
-    build_qwen_plan_generation_context,
-    build_qwen_planner_context,
-    build_qwen_planner_prompt,
-    build_requirement_summary_markdown,
-    build_project_specialist_opening,
-    build_project_specialist_system_prompt,
-    ready_sentence,
-)
+from live_qwen_probe import qwen_probe_requests, validate_qwen_probe_result
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GATEWAY_ROOT = REPO_ROOT / "openclaw-gateway"
@@ -42,10 +33,23 @@ _KEY_VALUE_SECRET_PATTERN = re.compile(
     r"(?i)\b(token|password|secret|session|api[_-]?key|private[_-]?key)\b\s*[:=]\s*([^\s,;]+)"
 )
 _TELEGRAM_BOT_TOKEN_PATTERN = re.compile(r"(?i)bot\d+:[A-Za-z0-9_-]{20,}")
+_LOCAL_HTTP_RETRY_ATTEMPTS = 3
+_LOCAL_HTTP_RETRY_DELAY_SECONDS = 0.75
 
 
 def _get_config_module() -> Any:
-    return importlib.import_module("config")
+    import importlib.util as _ilu
+
+    cached = sys.modules.get("config")
+    if cached is not None and hasattr(cached, "get_live_e2e_policy"):
+        return cached
+    spec = _ilu.spec_from_file_location("config", str(GATEWAY_ROOT / "config.py"))
+    if spec is None or spec.loader is None:
+        return importlib.import_module("config")
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    sys.modules["config"] = mod
+    return mod
 
 
 def _status_to_action_url(status_url: str) -> str:
@@ -586,12 +590,12 @@ class LiveRunCleanupManager:
 
 
 async def fetch_local_gateway_status(*, url: str, timeout_seconds: int = 10) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=max(1, int(timeout_seconds)))
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url) as resp:
-            resp.raise_for_status()
-            payload = await resp.json()
-            return dict(payload) if isinstance(payload, dict) else {}
+    return await _request_local_http_json(
+        method="GET",
+        url=url,
+        timeout_seconds=max(1, int(timeout_seconds)),
+        error_prefix="PREFLIGHT_STATUS_UNAVAILABLE",
+    )
 
 
 async def fetch_remote_gateway_status(
@@ -624,35 +628,13 @@ async def fetch_remote_gateway_status(
     return dict(payload) if isinstance(payload, dict) else {}
 
 
-async def _post_local_gateway_action(
-    *,
-    action_url: str,
-    action: str,
-    params: dict[str, Any],
-    timeout_seconds: int = 20,
-) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=max(5, int(timeout_seconds)))
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(
-            action_url,
-            json={"action": action, "params": params, "confirmed": True},
-        ) as resp:
-            text = await resp.text()
-            if resp.status >= 400:
-                raise AssertionError(
-                    f"PREFLIGHT_QWEN_ACTION_FAILED: action={action} status={resp.status} detail={text[:240]}"
-                )
-            payload = json.loads(text)
-            return dict(payload) if isinstance(payload, dict) else {}
-
-
 async def _post_remote_gateway_action(
     *,
     container_name: str,
     action_url: str,
-    diagnostics_profile: str,
     action: str,
     params: dict[str, Any],
+    diagnostics_profile: str,
     timeout_seconds: int = 25,
 ) -> dict[str, Any]:
     ssh = resolve_container_log_stream_ssh(diagnostics_profile)
@@ -664,11 +646,16 @@ async def _post_remote_gateway_action(
             "PREFLIGHT_QWEN_ACTION_FAILED: SSH key path does not exist "
             f"({key_path})"
         )
-    request_body = json.dumps({"action": action, "params": params, "confirmed": True}, ensure_ascii=True)
+    body = {
+        "action": action,
+        "params": params,
+        "confirmed": True,
+    }
+    payload_b64 = base64.b64encode(json.dumps(body).encode("utf-8")).decode("ascii")
     script = (
-        "import json,sys,urllib.request;"
-        f"body={request_body!r}.encode('utf-8');"
-        f"req=urllib.request.Request({_status_to_action_url(action_url)!r}, data=body, headers={{'Content-Type':'application/json'}}, method='POST');"
+        "import base64,json,sys,urllib.request;"
+        f"data=base64.b64decode({payload_b64!r});"
+        f"req=urllib.request.Request({action_url!r}, data=data, headers={{'Content-Type':'application/json'}}, method='POST');"
         "sys.stdout.write(urllib.request.urlopen(req, timeout=20).read().decode('utf-8'))"
     )
     remote_cmd = f"docker exec {shlex.quote(container_name)} python -c {shlex.quote(script)}"
@@ -681,73 +668,86 @@ async def _post_remote_gateway_action(
     return dict(payload) if isinstance(payload, dict) else {}
 
 
-def _qwen_probe_inputs() -> tuple[str, list[dict[str, str]], dict[str, Any]]:
-    template = get_template("Python App")
-    system = build_project_specialist_system_prompt("preflight-qwen", "Python App", template)
-    conversation = [
-        {
-            "role": "assistant",
-            "content": build_project_specialist_opening("preflight-qwen", "Python App", template),
-        },
-        {
-            "role": "user",
-            "content": (
-                "I'm building a small Windows Python script that runs from the terminal. "
-                "When executed, it should show a popup saying \"hi\" and play a short beep sound. "
-                "Use only Python standard library, include tests, and add a valid skynet_run.json."
-            ),
-        },
-    ]
-    planner_state = build_planner_state(
-        project_name="preflight-qwen",
-        project_type_label="Python App",
-        messages=conversation,
+async def _post_local_gateway_action(
+    *,
+    action_url: str,
+    action: str,
+    params: dict[str, Any],
+    timeout_seconds: int = 20,
+) -> dict[str, Any]:
+    return await _request_local_http_json(
+        method="POST",
+        url=action_url,
+        json_body={"action": action, "params": params, "confirmed": True},
+        timeout_seconds=max(5, int(timeout_seconds)),
+        error_prefix=f"PREFLIGHT_QWEN_ACTION_FAILED: action={action}",
     )
-    return system, conversation, planner_state
 
 
-def _qwen_ready_probe_request() -> dict[str, Any]:
-    system, conversation, planner_state = _qwen_probe_inputs()
-    requirement_summary_md = build_requirement_summary_markdown(planner_state)
-    return {
-        "probe_kind": "planner_ready",
-        "task_mode": "planner_chat",
-        "reply_contract": "emit_ready_sentence",
-        "prompt": build_qwen_planner_prompt(
-            conversation,
-            planner_state=planner_state,
-            reply_contract="emit_ready_sentence",
-        ),
-        "qwen_context_text": build_qwen_planner_context(
-            system,
-            planner_state,
-            reply_contract="emit_ready_sentence",
-        ),
-        "planner_state_json": planner_state,
-        "requirement_summary_md": requirement_summary_md,
-        "expected_text": ready_sentence(),
-    }
+async def _post_tunnel_gateway_action(
+    *,
+    tunnel_http_port: int,
+    action: str,
+    params: dict[str, Any],
+    timeout_seconds: int = 25,
+) -> dict[str, Any]:
+    """POST to gateway /action via the local SSH tunnel (localhost:tunnel_http_port).
+
+    This avoids all shell-quoting issues with docker exec by going through the
+    HTTP API tunnel that run_worker_agent.ps1 establishes alongside the WS tunnel.
+    """
+    url = f"http://127.0.0.1:{tunnel_http_port}/action"
+    return await _request_local_http_json(
+        method="POST",
+        url=url,
+        json_body={"action": action, "params": params, "confirmed": True},
+        timeout_seconds=max(5, int(timeout_seconds)),
+        error_prefix=f"PREFLIGHT_QWEN_ACTION_FAILED: action={action}",
+    )
 
 
-def _qwen_plan_generation_probe_request() -> dict[str, Any]:
-    system, conversation, planner_state = _qwen_probe_inputs()
-    requirement_summary_md = build_requirement_summary_markdown(planner_state)
-    plan_messages = list(conversation) + [
-        {"role": "user", "content": "Generate the full project plan now based on everything we discussed."}
-    ]
-    return {
-        "probe_kind": "plan_generation",
-        "task_mode": "plan_generation",
-        "reply_contract": "emit_plan",
-        "prompt": build_qwen_planner_prompt(
-            plan_messages,
-            planner_state=planner_state,
-            reply_contract="emit_plan",
-        ),
-        "qwen_context_text": build_qwen_plan_generation_context(system, planner_state),
-        "planner_state_json": planner_state,
-        "requirement_summary_md": requirement_summary_md,
-    }
+def _is_retryable_local_http_error(exc: BaseException) -> bool:
+    if isinstance(exc, AssertionError):
+        return False
+    if isinstance(exc, aiohttp.ClientResponseError):
+        return False
+    if isinstance(exc, aiohttp.ClientError):
+        return True
+    if isinstance(exc, (asyncio.TimeoutError, ConnectionResetError)):
+        return True
+    if isinstance(exc, OSError):
+        return getattr(exc, "winerror", None) in {64, 10054}
+    return False
+
+
+async def _request_local_http_json(
+    *,
+    method: str,
+    url: str,
+    timeout_seconds: int,
+    error_prefix: str,
+    json_body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    last_error: BaseException | None = None
+    timeout = aiohttp.ClientTimeout(total=max(1, int(timeout_seconds)))
+    for attempt in range(1, _LOCAL_HTTP_RETRY_ATTEMPTS + 1):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.request(method, url, json=json_body) as resp:
+                    text = await resp.text()
+                    if resp.status >= 400:
+                        detail = text.strip() or f"status={resp.status}"
+                        raise AssertionError(f"{error_prefix}: status={resp.status} detail={detail[:240]}")
+                    payload = json.loads(text)
+                    return dict(payload) if isinstance(payload, dict) else {}
+        except Exception as exc:
+            last_error = exc
+            if attempt >= _LOCAL_HTTP_RETRY_ATTEMPTS or not _is_retryable_local_http_error(exc):
+                raise
+            await asyncio.sleep(_LOCAL_HTTP_RETRY_DELAY_SECONDS * attempt)
+    if last_error is not None:
+        raise last_error
+    raise AssertionError(f"{error_prefix}: unknown local HTTP failure")
 
 
 async def run_qwen_preflight_smoke_probe(
@@ -769,6 +769,7 @@ async def run_qwen_preflight_smoke_probe(
     worker_id = str(getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary")
     session_key = uuid.uuid4().hex
     action_url = str(local_status_url or f"http://127.0.0.1:{int(getattr(cfg, 'HTTP_PORT', 8766) or 8766)}/status")
+    remote_action_url = _status_to_action_url(str(policy.get("remote_status_url") or "http://localhost:8766/status"))
     trace_fn(
         "preflight.qwen_smoke.start",
         flow=flow,
@@ -776,14 +777,32 @@ async def run_qwen_preflight_smoke_probe(
         status_probe_mode=str(policy.get("status_probe_mode") or ""),
     )
 
+    tunnel_http_port = int(policy.get("tunnel_http_port") or 0)
+
     async def _dispatch(action: str, params: dict[str, Any]) -> dict[str, Any]:
         if str(policy.get("status_probe_mode") or "") == "remote_container_http":
+            if tunnel_http_port > 0:
+                try:
+                    return await _post_tunnel_gateway_action(
+                        tunnel_http_port=tunnel_http_port,
+                        action=action,
+                        params=params,
+                        timeout_seconds=timeout_seconds,
+                    )
+                except Exception as exc:
+                    if not _is_retryable_local_http_error(exc):
+                        raise
+                    trace_fn(
+                        "preflight.qwen_action.tunnel_fallback",
+                        action=action,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
             return await _post_remote_gateway_action(
                 container_name=str(policy.get("remote_gateway_container") or "openclaw-gateway"),
-                action_url=str(policy.get("remote_status_url") or "http://localhost:8766/status"),
-                diagnostics_profile=diagnostics_profile,
+                action_url=remote_action_url,
                 action=action,
                 params=params,
+                diagnostics_profile=diagnostics_profile,
                 timeout_seconds=timeout_seconds,
             )
         return await _post_local_gateway_action(
@@ -794,8 +813,7 @@ async def run_qwen_preflight_smoke_probe(
         )
 
     try:
-        probe_requests = [_qwen_ready_probe_request(), _qwen_plan_generation_probe_request()]
-        for probe in probe_requests:
+        for probe in qwen_probe_requests():
             probe_kind = str(probe.get("probe_kind") or "unknown")
             trace_fn(
                 "preflight.qwen_probe.start",
@@ -806,7 +824,6 @@ async def run_qwen_preflight_smoke_probe(
             probe_session_key = uuid.uuid4().hex
             planner_state_json = dict(probe.get("planner_state_json") or {})
             requirement_summary_md = str(probe.get("requirement_summary_md") or "")
-            expected_text = str(probe.get("expected_text") or "").strip()
             result = await _dispatch(
                 "run_coding_agent",
                 {
@@ -829,35 +846,12 @@ async def run_qwen_preflight_smoke_probe(
                 raise AssertionError(
                     f"PREFLIGHT_QWEN_PROVIDER_CAPABILITY_FAILED: probe={probe_kind} detail={str(result.get('error') or 'run_coding_agent failed')[:220]}"
                 )
-            inner = result.get("result", result)
-            returncode = int(inner.get("returncode", inner.get("exit_code", 0)) or 0)
-            assistant_text = str(inner.get("assistant_text") or inner.get("stdout") or "").strip()
-            output_contract = str(inner.get("output_contract") or "").strip()
+            probe_result = validate_qwen_probe_result(probe=probe, result=result)
             trace_fn(
                 "preflight.qwen_probe.result",
                 flow=flow,
-                probe_kind=probe_kind,
-                returncode=returncode,
-                output_contract=output_contract,
-                assistant_preview=assistant_text[:200],
-                model=str(inner.get("model") or ""),
-                session_id=str(inner.get("session_id") or ""),
-                context_files=list(inner.get("qwen_context_files") or []),
+                **probe_result,
             )
-            if expected_text and assistant_text != expected_text:
-                raise AssertionError(
-                    f"PREFLIGHT_QWEN_PROVIDER_CAPABILITY_FAILED: probe={probe_kind} detail=unexpected_text:{assistant_text[:180]}"
-                )
-            if returncode != 0 or output_contract != "ok" or not assistant_text:
-                detail = str(
-                    inner.get("stderr")
-                    or assistant_text
-                    or inner.get("raw_result_tail")
-                    or "empty qwen probe response"
-                )
-                raise AssertionError(
-                    f"PREFLIGHT_QWEN_PROVIDER_CAPABILITY_FAILED: probe={probe_kind} detail={detail[:220]}"
-                )
     finally:
         pass
 
@@ -871,6 +865,10 @@ def _preflight_missing_agents(status_payload: dict[str, Any], required_agents: l
         if agent and agent not in available:
             missing.append(agent)
     return missing
+
+
+def _status_missing_fields(status_payload: dict[str, Any], required_fields: list[str]) -> list[str]:
+    return [field for field in required_fields if field not in status_payload]
 
 
 def _build_revision_matches(expected: str, actual: str) -> bool:
@@ -904,20 +902,47 @@ async def run_live_e2e_preflight(
 
     container_log_cfg = dict(policy.get("container_log") or {})
     diagnostics_profile = str(policy.get("diagnostics_profile") or container_log_cfg.get("ssh_profile") or "")
+    needs_ssh = str(policy.get("status_probe_mode") or "") == "remote_container_http"
+    has_tunnel = int(policy.get("tunnel_http_port") or 0) > 0
     ssh = resolve_container_log_stream_ssh(diagnostics_profile)
-    if not ssh:
+    if not ssh and needs_ssh and not has_tunnel:
         raise AssertionError(
             "PREFLIGHT_DIAGNOSTICS_CONFIG_ERROR: missing SSH credentials for diagnostics profile "
             f"'{diagnostics_profile or 'auto'}'"
         )
-    key_path = Path(str(ssh.get("key") or "").strip())
-    if not key_path.exists():
-        raise AssertionError(
-            "PREFLIGHT_DIAGNOSTICS_CONFIG_ERROR: SSH key path does not exist "
-            f"({key_path})"
+    if ssh:
+        key_path = Path(str(ssh.get("key") or "").strip())
+        if not key_path.exists() and needs_ssh:
+            raise AssertionError(
+                "PREFLIGHT_DIAGNOSTICS_CONFIG_ERROR: SSH key path does not exist "
+                f"({key_path})"
+            )
+    if not ssh:
+        trace_fn(
+            "preflight.ssh_unavailable",
+            status="degraded",
+            diagnostics_profile=diagnostics_profile or "auto",
         )
 
-    if str(policy.get("status_probe_mode") or "") == "remote_container_http":
+    tunnel_http_port = int(policy.get("tunnel_http_port") or 0)
+    if needs_ssh and tunnel_http_port > 0:
+        tunnel_status_url = f"http://127.0.0.1:{tunnel_http_port}/status"
+        try:
+            status_payload = await fetch_local_gateway_status(url=tunnel_status_url)
+        except Exception as exc:
+            if not _is_retryable_local_http_error(exc):
+                raise
+            trace_fn(
+                "preflight.status.tunnel_fallback",
+                url=tunnel_status_url,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            status_payload = await fetch_remote_gateway_status(
+                container_name=str(policy.get("remote_gateway_container") or "openclaw-gateway"),
+                status_url=str(policy.get("remote_status_url") or "http://localhost:8766/status"),
+                diagnostics_profile=diagnostics_profile,
+            )
+    elif needs_ssh:
         status_payload = await fetch_remote_gateway_status(
             container_name=str(policy.get("remote_gateway_container") or "openclaw-gateway"),
             status_url=str(policy.get("remote_status_url") or "http://localhost:8766/status"),
@@ -942,10 +967,26 @@ async def run_live_e2e_preflight(
         live_e2e_effective_coding_stage_chain=list(
             status_payload.get("live_e2e_effective_coding_stage_chain") or []
         ),
+        live_e2e_active_present="live_e2e_active" in status_payload,
+        telegram_poller_state_present="telegram_poller_state" in status_payload,
         coding_agents=sorted(dict(status_payload.get("coding_agents") or {}).keys()),
     )
 
-    if not bool(status_payload.get("live_e2e_active", False)):
+    missing_contract_fields = _status_missing_fields(
+        status_payload,
+        [
+            "live_e2e_active",
+            "live_e2e_flow",
+            "live_e2e_effective_coding_stage_chain",
+        ],
+    )
+    if missing_contract_fields:
+        trace_fn(
+            "preflight.status.legacy_contract",
+            flow=flow,
+            missing_fields=missing_contract_fields,
+        )
+    elif not bool(status_payload.get("live_e2e_active", False)):
         raise AssertionError("PREFLIGHT_LIVE_POLICY_INACTIVE: gateway is not enforcing live E2E policy")
 
     expected_build_revision = str(policy.get("expected_remote_build_revision") or "").strip()
@@ -992,13 +1033,24 @@ async def run_live_e2e_preflight(
     )
 
     if bool(policy.get("require_telegram_poller", False)):
-        poller_state = str(status_payload.get("telegram_poller_state") or "").strip().lower()
-        if poller_state != "running":
-            raise AssertionError(
-                f"PREFLIGHT_TELEGRAM_POLLER_STATE: expected=running actual={poller_state or 'missing'}"
+        missing_poller_fields = _status_missing_fields(
+            status_payload,
+            ["telegram_poller_state", "telegram_poller_lock_healthy"],
+        )
+        if missing_poller_fields:
+            trace_fn(
+                "preflight.telegram_poller.legacy_contract",
+                flow=flow,
+                missing_fields=missing_poller_fields,
             )
-        if not bool(status_payload.get("telegram_poller_lock_healthy", False)):
-            raise AssertionError("PREFLIGHT_TELEGRAM_POLLER_LOCK: poller lease is not healthy")
+        else:
+            poller_state = str(status_payload.get("telegram_poller_state") or "").strip().lower()
+            if poller_state != "running":
+                raise AssertionError(
+                    f"PREFLIGHT_TELEGRAM_POLLER_STATE: expected=running actual={poller_state or 'missing'}"
+                )
+            if not bool(status_payload.get("telegram_poller_lock_healthy", False)):
+                raise AssertionError("PREFLIGHT_TELEGRAM_POLLER_LOCK: poller lease is not healthy")
 
     trace_fn("preflight.ok", flow=flow)
     return status_payload
@@ -1041,16 +1093,30 @@ class ContainerLogStreamer:
     async def start(self) -> None:
         self._ssh = resolve_container_log_stream_ssh(self._ssh_profile)
         if not self._ssh:
-            raise AssertionError(
-                "CONTAINER_LOG_STREAM_UNAVAILABLE: missing SSH credentials "
-                "(set SKYNET_E2E_CONTAINER_LOG_SSH_* or OPENCLAW_TUNNEL_EC2_HOST/USER/SSH_KEY)"
+            self._record_error(
+                container="__all__",
+                message="missing SSH credentials "
+                "(set SKYNET_E2E_CONTAINER_LOG_SSH_* or OPENCLAW_TUNNEL_EC2_HOST/USER/SSH_KEY)",
             )
+            self._trace(
+                "container.log.stream.ssh_unavailable",
+                status="degraded",
+                reason="no_ssh_credentials",
+            )
+            return
         key_path = Path(str(self._ssh.get("key") or "").strip())
         if not key_path.exists():
-            raise AssertionError(
-                "CONTAINER_LOG_STREAM_UNAVAILABLE: SSH key path does not exist "
-                f"({key_path})"
+            self._record_error(
+                container="__all__",
+                message=f"SSH key path does not exist ({key_path})",
             )
+            self._trace(
+                "container.log.stream.ssh_unavailable",
+                status="degraded",
+                reason="key_not_found",
+                key_path=str(key_path),
+            )
+            return
         self._trace(
             "container.log.stream.start",
             status="start",

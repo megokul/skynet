@@ -14,7 +14,7 @@ This skill creates a full SKYNET-compatible project template and keeps documenta
 - Policy enforcement: POLICY.yaml plus enforcement plus audit
 
 2) Integrates with SKYNET control plane:
-- POST /v1/tasks/enqueue
+- POST /v1/tasks/enqueue (only for tasks that define queue-compatible action metadata in `control/TASK_GRAPH.yaml`)
 - POST /v1/tasks/claim
 - POST /v1/tasks/{id}/complete
 - POST /v1/tasks/{id}/release
@@ -34,6 +34,6 @@ This skill creates a full SKYNET-compatible project template and keeps documenta
 ## Key rules enforced
 
 - No execution until plan is FINALIZED (policy gate)
-- Tasks must be enqueued and claimed via control plane
+- Tasks can be enqueued only when `TASK_GRAPH.yaml` defines control-plane `action` metadata; otherwise the skill finalizes the plan and leaves queueing to a later manual mapping pass
 - File ownership conflicts are prevented via control plane registry
 - Progress must be synced and written after state changes

@@ -185,7 +185,7 @@ High-risk files:
 Control-plane focused:
 
 ```bash
-python -m pytest tests/test_api_lifespan.py tests/test_api_provider_config.py tests/test_api_control_plane.py tests/test_job_locking.py tests/test_worker_registry.py -q
+python -m pytest tests/test_api_lifespan.py tests/test_api_provider_config.py tests/test_api_control_plane.py tests/test_job_locking.py tests/test_task_queue_control_plane.py tests/test_worker_registry.py tests/test_ci_engineering_policy.py tests/test_prompt_references.py -q
 ```
 
 Gateway focused:
@@ -206,6 +206,7 @@ Policy and guardrails:
 python scripts/ci/check_stale_paths.py
 python scripts/ci/check_control_plane_boundary.py
 python scripts/ci/check_settings_policy.py
+python scripts/ci/check_repo_hygiene.py
 python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
 ```
 

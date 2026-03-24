@@ -38,6 +38,11 @@ from live_diagnostics import (
     fetch_local_gateway_status,
     fetch_remote_gateway_status,
 )
+from live_pytest_flow import (
+    PytestLiveFlowSpec,
+    run_pytest_live_flow,
+    summarize_telegram_tracker_output,
+)
 
 
 PROMPT = (
@@ -54,7 +59,20 @@ cfg: Any | None = None
 def _get_cfg(*, reload_module: bool = False) -> Any:
     global cfg
     if cfg is None:
-        cfg = importlib.import_module("config")
+        cached = sys.modules.get("config")
+        if cached is not None and hasattr(cached, "get_live_e2e_policy"):
+            cfg = cached
+        else:
+            import importlib.util as _ilu
+
+            spec = _ilu.spec_from_file_location("config", str(GATEWAY_ROOT / "config.py"))
+            if spec is not None and spec.loader is not None:
+                mod = _ilu.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                sys.modules["config"] = mod
+                cfg = mod
+            else:
+                cfg = importlib.import_module("config")
     elif reload_module:
         cfg = importlib.reload(cfg)
     return cfg
@@ -249,7 +267,7 @@ def _worker_status_ready(policy: dict[str, Any], status_payload: dict[str, Any])
         status_payload,
         list(policy.get("required_worker_agents") or []),
     )
-    if not bool(status_payload.get("live_e2e_active", False)):
+    if "live_e2e_active" in status_payload and not bool(status_payload.get("live_e2e_active", False)):
         return False, missing_agents
     if required_transport and actual_transport != required_transport:
         return False, missing_agents
@@ -299,6 +317,8 @@ async def _maybe_bootstrap_worker(
             primary_transport_mode=str(status_payload.get("primary_transport_mode") or ""),
             agent_connected=bool(status_payload.get("agent_connected", False)),
             websocket_health_ok=bool(status_payload.get("websocket_health_ok", False)),
+            live_e2e_active_present="live_e2e_active" in status_payload,
+            live_e2e_active=bool(status_payload.get("live_e2e_active", False)),
             missing_agents=missing_agents,
             coding_agents=sorted(dict(status_payload.get("coding_agents") or {}).keys()),
         )
@@ -379,6 +399,8 @@ async def _maybe_bootstrap_worker(
             primary_transport_mode=str(status_payload.get("primary_transport_mode") or ""),
             agent_connected=bool(status_payload.get("agent_connected", False)),
             websocket_health_ok=bool(status_payload.get("websocket_health_ok", False)),
+            live_e2e_active_present="live_e2e_active" in status_payload,
+            live_e2e_active=bool(status_payload.get("live_e2e_active", False)),
             missing_agents=missing_agents,
             coding_agents=sorted(dict(status_payload.get("coding_agents") or {}).keys()),
         )
@@ -428,157 +450,60 @@ def _run_subprocess_with_cleanup(
 
 
 def _run_conversation_flow(trace: LiveTrace, cleanup: LiveRunCleanupManager) -> None:
-    target = (
-        "openclaw-gateway/tests/test_e2e_conversation_live.py::"
-        "test_live_conversation_real_planner_codegen_no_github_push"
-    )
-    cmd = [sys.executable, "-m", "pytest", target, "-q", "-s"]
-    env = build_gateway_runtime_env(dict(os.environ))
-    env["SKYNET_E2E_LIVE"] = os.environ.get("SKYNET_E2E_LIVE", "1")
-    env["SKYNET_LIVE_TRACE_FILE"] = str(trace.path)
-    env = _apply_live_policy_env(env, "conversation")
-
-    trace.log("e2e.step.start", step="conversation_flow", status="start")
-    trace.log(
-        "conversation.invoke",
-        repo_root=str(REPO_ROOT),
-        cmd=" ".join(cmd),
-    )
-    completed = _run_subprocess_with_cleanup(
-        cmd=cmd,
-        env=env,
+    run_pytest_live_flow(
+        trace=trace,
         cleanup=cleanup,
-        label="conversation_pytest",
-    )
-    if completed.stdout:
-        print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
-    if completed.stderr:
-        print(completed.stderr, file=sys.stderr, end="" if completed.stderr.endswith("\n") else "\n")
-
-    output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
-    match_passed = re.search(r"(\d+)\s+passed", output, flags=re.IGNORECASE)
-    match_skipped = re.search(r"(\d+)\s+skipped", output, flags=re.IGNORECASE)
-    passed = int(match_passed.group(1)) if match_passed else 0
-    skipped = int(match_skipped.group(1)) if match_skipped else 0
-    infra_category = _infer_infra_category(output)
-    trace.log(
-        "conversation.exit",
-        returncode=completed.returncode,
-        pytest_passed=passed,
-        pytest_skipped=skipped,
-        infra_category=infra_category,
-    )
-    strict = _bool_env("SKYNET_E2E_FAIL_ON_SKIP", True)
-    if completed.returncode == 0 and skipped > 0 and strict:
-        if infra_category:
-            print(f"[INFRA] Live E2E skip category: {infra_category}")
-            trace.log(
-                "e2e.step.fail",
-                step="conversation_flow",
-                status="fail",
-                error_message="Conversation live E2E was skipped under strict mode.",
-            )
-            _fail(
-                trace,
-                "Conversation live E2E was skipped under strict mode.",
-                detail=f"pytest skipped={skipped}",
-            )
-    if completed.returncode != 0:
-        if infra_category:
-            print(f"[INFRA] Conversation live E2E infra category: {infra_category}")
-        trace.log(
-            "e2e.step.fail",
+        spec=PytestLiveFlowSpec(
+            flow="conversation",
+            target=(
+                "openclaw-gateway/tests/test_e2e_conversation_live.py::"
+                "test_live_conversation_real_planner_codegen_no_github_push"
+            ),
             step="conversation_flow",
-            status="fail",
-            error_message=f"Conversation live E2E failed (exit={completed.returncode}).",
-        )
-        _fail(
-            trace,
-            "Conversation live E2E failed.",
-            detail=f"pytest exit code: {completed.returncode}",
-        )
-    trace.log("e2e.step.end", step="conversation_flow", status="ok")
-    trace.log("run.success", flow="conversation")
-    print("[OK] Conversation live E2E passed.")
-    print(f"[TRACE] {trace.path}")
+            invoke_event="conversation.invoke",
+            exit_event="conversation.exit",
+            subprocess_label="conversation_pytest",
+            success_banner="[OK] Conversation live E2E passed.",
+            failure_message="Conversation live E2E failed.",
+            strict_skip_message="Conversation live E2E was skipped under strict mode.",
+            infer_infra_category=True,
+        ),
+        repo_root=str(REPO_ROOT),
+        build_env=build_gateway_runtime_env,
+        apply_policy_env=_apply_live_policy_env,
+        run_subprocess_with_cleanup=_run_subprocess_with_cleanup,
+        fail_fn=_fail,
+        strict_skip=_bool_env("SKYNET_E2E_FAIL_ON_SKIP", True),
+        infer_infra_category_fn=_infer_infra_category,
+    )
 
 
 def _run_telegram_real_flow(trace: LiveTrace, cleanup: LiveRunCleanupManager) -> None:
-    target = (
-        "openclaw-gateway/tests/test_e2e_telegram_real_live.py::"
-        "test_real_telegram_chat_flow_no_github_repo_creation"
-    )
-    cmd = [sys.executable, "-m", "pytest", target, "-q", "-s"]
-    env = build_gateway_runtime_env(dict(os.environ))
-    env["SKYNET_E2E_LIVE"] = os.environ.get("SKYNET_E2E_LIVE", "1")
-    env["SKYNET_LIVE_TRACE_FILE"] = str(trace.path)
-    env = _apply_live_policy_env(env, "telegram_real")
-
-    trace.log("e2e.step.start", step="telegram_real_flow", status="start")
-    trace.log(
-        "telegram_real.invoke",
-        repo_root=str(REPO_ROOT),
-        cmd=" ".join(cmd),
-    )
-    completed = _run_subprocess_with_cleanup(
-        cmd=cmd,
-        env=env,
+    run_pytest_live_flow(
+        trace=trace,
         cleanup=cleanup,
-        label="telegram_real_pytest",
-    )
-    if completed.stdout:
-        print(completed.stdout, end="" if completed.stdout.endswith("\n") else "\n")
-    if completed.stderr:
-        print(completed.stderr, file=sys.stderr, end="" if completed.stderr.endswith("\n") else "\n")
-
-    output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
-    tracker_detected = len(re.findall(r"\"event\"\\s*:\\s*\"tracker\\.message\\.detected\"", output))
-    tracker_edited = len(re.findall(r"\"event\"\\s*:\\s*\"tracker\\.message\\.edited\"", output))
-    if tracker_detected or tracker_edited:
-        trace.log(
-            "telegram_real.tracker.summary",
-            tracker_detected=tracker_detected,
-            tracker_edited=tracker_edited,
-        )
-    match_passed = re.search(r"(\d+)\s+passed", output, flags=re.IGNORECASE)
-    match_skipped = re.search(r"(\d+)\s+skipped", output, flags=re.IGNORECASE)
-    passed = int(match_passed.group(1)) if match_passed else 0
-    skipped = int(match_skipped.group(1)) if match_skipped else 0
-    trace.log(
-        "telegram_real.exit",
-        returncode=completed.returncode,
-        pytest_passed=passed,
-        pytest_skipped=skipped,
-    )
-    strict = _bool_env("SKYNET_E2E_FAIL_ON_SKIP", True)
-    if completed.returncode == 0 and skipped > 0 and strict:
-        trace.log(
-            "e2e.step.fail",
+        spec=PytestLiveFlowSpec(
+            flow="telegram_real",
+            target=(
+                "openclaw-gateway/tests/test_e2e_telegram_real_live.py::"
+                "test_real_telegram_chat_flow_no_github_repo_creation"
+            ),
             step="telegram_real_flow",
-            status="fail",
-            error_message="Telegram-real live E2E was skipped under strict mode.",
-        )
-        _fail(
-            trace,
-            "Telegram-real live E2E was skipped under strict mode.",
-            detail=f"pytest skipped={skipped}",
-        )
-    if completed.returncode != 0:
-        trace.log(
-            "e2e.step.fail",
-            step="telegram_real_flow",
-            status="fail",
-            error_message=f"Telegram-real live E2E failed (exit={completed.returncode}).",
-        )
-        _fail(
-            trace,
-            "Telegram-real live E2E failed.",
-            detail=f"pytest exit code: {completed.returncode}",
-        )
-    trace.log("e2e.step.end", step="telegram_real_flow", status="ok")
-    trace.log("run.success", flow="telegram_real")
-    print("[OK] Telegram-real live E2E passed.")
-    print(f"[TRACE] {trace.path}")
+            invoke_event="telegram_real.invoke",
+            exit_event="telegram_real.exit",
+            subprocess_label="telegram_real_pytest",
+            success_banner="[OK] Telegram-real live E2E passed.",
+            failure_message="Telegram-real live E2E failed.",
+            strict_skip_message="Telegram-real live E2E was skipped under strict mode.",
+        ),
+        repo_root=str(REPO_ROOT),
+        build_env=build_gateway_runtime_env,
+        apply_policy_env=_apply_live_policy_env,
+        run_subprocess_with_cleanup=_run_subprocess_with_cleanup,
+        fail_fn=_fail,
+        strict_skip=_bool_env("SKYNET_E2E_FAIL_ON_SKIP", True),
+        output_observer=summarize_telegram_tracker_output,
+    )
 
 
 async def _execute_action_with_trace(

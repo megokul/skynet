@@ -36,6 +36,9 @@ jobs:
       - name: Check settings policy
         run: python scripts/ci/check_settings_policy.py
 
+      - name: Check repo hygiene
+        run: python scripts/ci/check_repo_hygiene.py
+
       - name: Check engineering policy
         run: python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
 

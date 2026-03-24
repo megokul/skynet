@@ -1,10 +1,206 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-10 15:31
+Last updated (UTC): 2026-03-18 10:24
 
 ## Current Goal
 
-WebSocket-primary worker execution with Qwen-first planner/coding behavior, while preserving strict quality gates, deterministic live-E2E failure handling, and a single settings-driven runtime contract.
+WebSocket-primary worker execution with the checked-in settings as the source of truth: `legacy` orchestration by default, `loop_v2` enabled, Codex as planner primary, `qwen,codex` coding fallback, and SSH fallback disabled unless explicitly enabled.
+
+### 2026-03-18 Continuation Validation Pass
+
+- Picked up the existing uncommitted structural-cleanup/refactor worktree and validated it before extending the change set further.
+- Sanity-checked the live E2E sandbox artifact referenced from the editor:
+  - `E:\SKYNET-SANDBOX\Projects\live-e2e-1773822739\live-e2e-1773822739.py`
+  - `E:\SKYNET-SANDBOX\Projects\live-e2e-1773822739\test_live_e2e.py`
+  - result: generated CLI/test pair is internally consistent and does not appear to be the unfinished part of the current repo work.
+- Local validation completed successfully against the current repo worktree:
+  - `.\venv\Scripts\python.exe -m py_compile openclaw-agent\executor\actions.py openclaw-agent\executor\action_support.py openclaw-agent\executor\runtime_sessions.py openclaw-agent\executor\action_fs.py openclaw-agent\executor\action_search.py openclaw-agent\executor\action_process.py openclaw-agent\executor\qwen_runner.py openclaw-gateway\api.py openclaw-gateway\api_action_routes.py openclaw-gateway\api_profile_routes.py openclaw-gateway\api_shared.py openclaw-gateway\api_status_routes.py openclaw-gateway\bot\handlers\coding.py openclaw-gateway\bot\handlers\coding_stage_execution.py openclaw-gateway\bot\handlers\coding_stage_policy.py openclaw-gateway\bot\handlers\coding_terminal.py openclaw-gateway\bot\handlers\coding_tracker_state.py openclaw-gateway\bot\handlers\coding_transport.py openclaw-gateway\bot\handlers\project_session.py openclaw-gateway\ssh_tunnel_executor.py openclaw-gateway\ssh_tunnel_config.py skynet\utils.py`
+    - pass
+  - `.\venv\Scripts\python.exe scripts\ci\check_stale_paths.py`
+    - pass
+  - `.\venv\Scripts\python.exe scripts\ci\check_control_plane_boundary.py`
+    - pass
+  - `.\venv\Scripts\python.exe -m pytest tests -q`
+    - `35 passed`
+  - `.\venv\Scripts\python.exe -m pytest openclaw-agent\tests -q`
+    - `55 passed, 2 skipped`
+  - `.\venv\Scripts\python.exe -m pytest openclaw-gateway\tests -q`
+    - `219 passed, 3 skipped`
+- Current status after continuation:
+  - no local worker/gateway/control-plane integration failures were reproduced
+  - skipped coverage remains limited to opt-in real-Qwen and live Telegram E2E cases
+  - the safest next continuation step is either:
+    - run the live E2E flows with the required env flags/tokens
+    - review/commit the current refactor worktree as a coherent pass
+
+### 2026-03-12 Structural Cleanup Pass
+
+- Aligned root/operator docs to the live settings contract instead of stale handoff defaults.
+- Corrected the repo-local project-documentation skill so it no longer sends unsupported `project_id` query parameters to control-plane task and file-ownership reads.
+- Finalize/enqueue now only emits schema-compatible queue payloads and preserves queue metadata stored in `control/TASK_GRAPH.yaml`.
+- Added an engineering-policy ratchet for template-generated docstrings with an explicit temporary allowlist for deferred files.
+- Removed template-generated docstrings from the low-risk control-plane and worker runtime modules touched in this pass.
+- Added targeted regression coverage for:
+  - documentation-skill control-plane compatibility
+  - gateway action-route idempotent replay
+  - worker action-router idempotent replay
+
+### 2026-03-11 Code Quality Standards Pass + SSH Executor Decomposition
+
+- Added explicit repo code-quality guidance:
+  - `docs/CODE_QUALITY_STANDARDS.md`
+  - `docs/CODE_QUALITY_AUDIT.md`
+  - linked from:
+    - `docs/INDEX.md`
+    - `docs/ENGINEERING_POLICY.md`
+    - `README.md`
+- Documented current structural hotspots rather than treating cleanup as style-only work:
+  - `openclaw-gateway/ssh_tunnel_executor.py`
+  - `openclaw-agent/executor/actions.py`
+  - `openclaw-gateway/bot/handlers/coding.py`
+  - `openclaw-gateway/api.py`
+- Refactored the SSH fallback runtime so the executor no longer owns low-level helper concerns inline:
+  - added `openclaw-gateway/ssh_tunnel_support.py`
+    - remote path normalization / allowlist checks
+    - PowerShell/Linux command builders
+    - PowerShell output sanitization
+  - added `openclaw-gateway/ssh_tunnel_config.py`
+    - `SSHExecutorConfig`
+    - `load_ssh_executor_config()`
+  - `openclaw-gateway/ssh_tunnel_executor.py` now:
+    - imports helper functions instead of defining them inline
+    - loads grouped runtime settings from `SSHExecutorConfig`
+    - keeps the executor class focused on SSH orchestration and remote action handling
+    - removes touched template-generated docstrings from the constructor / singleton accessor path
+- Added targeted regression coverage:
+  - `openclaw-gateway/tests/test_ssh_tunnel_config.py`
+- This pass does not change transport behavior or user-visible contracts; it reduces structural drift and makes the SSH runtime path easier to test and extend safely.
+
+### 2026-03-11 Worker Executor Facade Refactor
+
+- Refactored `openclaw-agent/executor/actions.py` into a thinner public dispatch surface while keeping backward-compatible monkeypatch seams used by the current executor tests.
+- Added focused helper modules:
+  - `openclaw-agent/executor/action_support.py`
+    - fixed-argv subprocess runner
+    - required-param extraction
+    - Python module-missing detection
+  - `openclaw-agent/executor/runtime_sessions.py`
+    - tracked subprocess wrapper
+    - active runtime session registry
+    - artifact snapshots / working-tree diffs
+    - markdown code-block persistence fallback
+    - probe payload generation
+  - `openclaw-agent/executor/action_fs.py`
+    - file read/write
+    - directory listing / create / delete
+    - zip archive generation
+  - `openclaw-agent/executor/action_search.py`
+    - Brave + DDG worker web search path
+  - `openclaw-agent/executor/action_process.py`
+    - git/build/test/lint/dev-server/install/docker/app-close/project command actions
+- `openclaw-agent/executor/actions.py` now owns:
+  - settings-backed coding binary resolution
+  - coding-agent dispatch
+  - runtime probe / cancel endpoints
+  - public action registry wiring
+- Preserved compatibility-critical names in `executor.actions`:
+  - `_run`
+  - `_require_param`
+  - `_python_module_missing`
+  - `_resolve_coding_binary`
+  - `_run_tracked_coding_subprocess`
+  - runtime probe/session helper aliases
+  - this keeps current `test_executor.py` monkeypatches valid while reducing module size and overlap
+- Validation:
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m py_compile openclaw-agent\executor\actions.py openclaw-agent\executor\action_support.py openclaw-agent\executor\runtime_sessions.py openclaw-agent\executor\action_fs.py openclaw-agent\executor\action_search.py openclaw-agent\executor\action_process.py` -> pass
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m pytest openclaw-agent\tests\test_executor.py -q` -> `32 passed, 2 skipped`
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m pytest openclaw-agent\tests\test_ws_roundtrip.py openclaw-agent\tests\test_validator.py openclaw-agent\tests\test_agent_config_paths.py -q` -> `15 passed`
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m pytest openclaw-agent\tests -q` -> `54 passed, 2 skipped`
+
+### 2026-03-11 Full Repo Cleanup And Hygiene Enforcement
+
+- Repo-cleanup pass completed without changing the intended control-plane / gateway / agent architecture:
+  - `Makefile` now reflects the actual repo shape with:
+    - `install-agent`
+    - `install-all`
+    - `test-control-plane`
+    - `test-gateway`
+    - `test-agent`
+    - `test-policy`
+    - `check-hygiene`
+  - `test-all` now runs the curated matrix instead of a broad `pytest tests/` sweep
+  - `scripts/dev/smoke.py` now matches the same curated matrix and includes the new hygiene guard
+- Repo hygiene enforcement added:
+  - new guard: `scripts/ci/check_repo_hygiene.py`
+  - wired into:
+    - `Makefile smoke`
+    - `scripts/dev/smoke.py`
+    - `.github/workflows/deploy-ec2-skynet.yml` guard job
+  - guard scope:
+    - tracked runtime artifacts/logs
+    - missing ignore patterns for repo scratch dirs
+    - stale references to deleted legacy root tests in operational docs/tooling
+    - divergence between authoritative test docs and current make/script surface
+- Generated-state cleanup:
+  - stopped tracking `openclaw-agent/logs/audit.jsonl`
+  - added placeholder `openclaw-agent/logs/.gitkeep`
+  - expanded `.gitignore` for:
+    - `.pytest-qwen-probe/`
+    - `.pytest-tmp/`
+    - `.tmp/`
+    - `tmp-probe-dir*/`
+    - `openclaw-agent/MyProjectsskynetlogs/`
+    - `openclaw-gateway/tests/.artifacts/`
+- Path normalization cleanup:
+  - `openclaw-agent/config.py` now resolves `AGENT_LOG_MIRROR_DIR` and `AUDIT_LOG_DIR` from settings/env against the repo root
+  - `openclaw-gateway/config.py` now resolves `DB_PATH`, `LOG_DIR`, `TRACE_MIRROR_LOG_DIR`, and `SKYNET_RUNTIME_TRACE_LIVE_FILE` against the repo root when configured as relative paths
+  - canonical defaults updated in `openclaw-agent/settings/defaults.yaml`
+  - this removes the cwd-dependent log sprawl that previously produced directories like `openclaw-agent/MyProjectsskynetlogs`
+- Docs/tooling drift cleanup:
+  - updated:
+    - `README.md`
+    - `docs/INDEX.md`
+    - `docs/IMPLEMENTATION_GUIDE.md`
+    - `docs/KNOWN_DRIFT_AND_TEST_MATRIX.md`
+    - `docs/ENGINEERING_POLICY.md`
+  - `openclaw-gateway/settings/settings.example.yaml` is now a minimal operator overlay example instead of a second authoritative defaults file
+- Regression coverage added:
+  - `tests/test_ci_repo_hygiene.py`
+  - `openclaw-agent/tests/test_agent_config_paths.py`
+  - `openclaw-gateway/tests/test_gateway_config_paths.py`
+- Second cleanup/restructuring pass:
+  - moved repo-path normalization into shared `skynet/utils.py` as `resolve_repo_path(...)`
+  - `openclaw-agent/config.py` and `openclaw-gateway/config.py` now consume the shared helper instead of duplicating local path-resolution logic
+  - `pytest.ini` now codifies the intended repo shape:
+    - component-only default discovery
+    - explicit `norecursedirs` for repo scratch/log/artifact trees
+  - added `tests/README.md` as the local contract for the curated root suite
+  - `scripts/ci/check_repo_hygiene.py` now also enforces:
+    - required `pytest.ini` snippets for discovery/exclusions
+    - presence/content of `tests/README.md`
+    - absence of legacy root tests on disk
+- Cleanup-aligned gateway test fixes:
+  - `openclaw-gateway/tests/test_telegram_chat_simulation.py` now pins a codex-only fallback chain explicitly instead of inheriting the repo-wide qwen-first chain
+  - `openclaw-gateway/tests/test_conversation_e2e_repo_push.py` now uses a valid structured fake plan and focuses on deterministic codegen + git push outcomes instead of stale CTA/message assumptions
+- Test results:
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe scripts\ci\check_repo_hygiene.py` -> pass
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m pytest tests\test_ci_repo_hygiene.py openclaw-agent\tests\test_agent_config_paths.py openclaw-gateway\tests\test_gateway_config_paths.py -q` -> `5 passed`
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m pytest tests\test_api_lifespan.py tests\test_api_provider_config.py tests\test_api_control_plane.py tests\test_job_locking.py tests\test_task_queue_control_plane.py tests\test_worker_registry.py tests\test_ci_engineering_policy.py tests\test_prompt_references.py tests\test_ci_repo_hygiene.py -q` -> `29 passed`
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m pytest openclaw-agent\tests -q` -> `54 passed, 2 skipped`
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m pytest openclaw-gateway\tests -q` -> `204 passed, 3 skipped`
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe scripts\ci\check_stale_paths.py` -> pass
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe scripts\ci\check_control_plane_boundary.py` -> pass
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe scripts\ci\check_settings_policy.py` -> pass
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m py_compile scripts\ci\check_repo_hygiene.py scripts\dev\smoke.py openclaw-agent\config.py openclaw-gateway\config.py` -> pass
+- Second-pass validation:
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m pytest tests\test_ci_repo_hygiene.py openclaw-agent\tests\test_agent_config_paths.py openclaw-gateway\tests\test_gateway_config_paths.py -q` -> `6 passed`
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m py_compile skynet\utils.py openclaw-agent\config.py openclaw-gateway\config.py scripts\ci\check_repo_hygiene.py` -> pass
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m pytest tests\test_api_lifespan.py tests\test_api_provider_config.py tests\test_api_control_plane.py tests\test_job_locking.py tests\test_task_queue_control_plane.py tests\test_worker_registry.py tests\test_ci_engineering_policy.py tests\test_prompt_references.py tests\test_ci_repo_hygiene.py -q` -> `30 passed`
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m pytest openclaw-agent\tests -q` -> `54 passed, 2 skipped`
+  - `E:\MyProjects\skynet\venv\Scripts\python.exe -m pytest openclaw-gateway\tests -q` -> `204 passed, 3 skipped`
+- Trace evidence / artifact note:
+  - runtime evidence paths affected by this cleanup are `openclaw-agent/logs/audit.jsonl` and repo-level `logs/skynet.trace.log`
+  - this pass was repo hygiene/tooling cleanup, not a live-runtime debug cycle, so no new request/task trace was required beyond those artifact-path updates
 
 ### 2026-03-10 Qwen Planner Contract Tightening + Validator Pass-Through
 
@@ -1033,8 +1229,18 @@ WebSocket-primary worker execution with Qwen-first planner/coding behavior, whil
 ## Current Repo State
 
 - Branch: `main`
-- Multi-provider coding: router tries Gemini/Groq/Claude first, falls back to Ollama SSH
-- Ollama `num_ctx` configurable via `OLLAMA_NUM_CTX` env var (default 8192, was 4096)
+- Default provider priority: `claude,gemini,openai,deepseek,openrouter,groq,ollama`
+- Default orchestration/runtime profile:
+  - `SKYNET_ORCHESTRATION_MODE=legacy`
+  - `SKYNET_CONTROL_LOOP_ENABLED=true`
+  - `SKYNET_CONTROL_LOOP_DEFAULT_PROFILE=loop_v2`
+  - `OPENCLAW_EXECUTION_MODE=agent_preferred`
+  - `SKYNET_CODING_TRANSPORT=websocket_primary`
+  - `OPENCLAW_SSH_FALLBACK_ENABLED=false`
+  - `SKYNET_WEBSOCKET_FALLBACK_TO_SSH=false`
+- Planner/coding defaults:
+  - `SKYNET_PLANNER_PRIMARY_AGENT=codex`
+  - `SKYNET_CODING_FALLBACK_CHAIN=qwen,codex`
 - GitHub Actions self-hosted runner on EC2 handles build + deploy via `docker compose`
 
 ## What Was Completed
@@ -1060,6 +1266,14 @@ WebSocket-primary worker execution with Qwen-first planner/coding behavior, whil
 
 ## Test Results
 
+- `python scripts/ci/check_stale_paths.py` -> pass
+- `python scripts/ci/check_control_plane_boundary.py` -> pass
+- `python scripts/ci/check_settings_policy.py` -> pass
+- `python scripts/ci/check_repo_hygiene.py` -> pass
+- `python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD` -> pass
+- `python -m pytest tests/test_api_lifespan.py tests/test_api_provider_config.py tests/test_api_control_plane.py tests/test_job_locking.py tests/test_task_queue_control_plane.py tests/test_worker_registry.py tests/test_ci_engineering_policy.py tests/test_project_documentation_skill.py tests/test_prompt_references.py -q` -> `31 passed`
+- `python -m pytest openclaw-gateway/tests/test_gateway_websocket_primary.py openclaw-gateway/tests/test_gateway_ssh_mode.py openclaw-gateway/tests/test_api_status_diagnostics.py openclaw-gateway/tests/test_api_action_routes.py -q` -> `10 passed` (Paramiko deprecation warnings only)
+- `python -m pytest openclaw-agent/tests/test_ws_roundtrip.py openclaw-agent/tests/test_validator.py openclaw-agent/tests/test_action_accept_and_replay.py -q` -> `22 passed`
 - `python -m pytest tests/ -q` — `22 passed` (0 failed, 0 errors after orphaned test cleanup)
 - `python scripts/ci/check_settings_policy.py` — pass (e2e_live.py violation fixed)
 - `python scripts/ci/check_stale_paths.py` — pass
@@ -1187,6 +1401,9 @@ WebSocket-primary worker execution with Qwen-first planner/coding behavior, whil
 
 ## Trace Evidence
 
+- `request_id=repo-structural-cleanup-20260312`
+- `task_id=doc-truth-alignment-and-template-docstring-ratchet`
+- control-plane compatibility validated against `/v1/tasks` and `/v1/files/ownership` via `tests/test_project_documentation_skill.py`
 - request_id=e2e-live-validation-orphan-cleanup-20260310
 - task_id=orphaned-test-cleanup-settings-policy-fix
 - audit.jsonl — openclaw-agent/logs/audit.jsonl (worker agent connected during E2E)
@@ -1240,6 +1457,10 @@ WebSocket-primary worker execution with Qwen-first planner/coding behavior, whil
 
 ## Documentation Updates
 
+- `docs/CODE_QUALITY_AUDIT.md`
+- `docs/KNOWN_DRIFT_AND_TEST_MATRIX.md`
+- `skills/skynet-project-documentation/README.md`
+- `skills/skynet-project-documentation/skill.yaml`
 - `CONTRIBUTING.md`
 - `README.md`
 - `docs/INDEX.md`

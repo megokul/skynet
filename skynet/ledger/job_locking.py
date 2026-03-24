@@ -15,27 +15,6 @@ from skynet.utils import utc_now as _utc_now
 
 
 def _iso(dt: datetime) -> str:
-    """
-    Iso.
-    
-    Purpose:
-    - Implement `_iso` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `dt`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `str` when available; otherwise side effects only.
-    """
 
     return dt.isoformat()
 
@@ -44,28 +23,6 @@ class JobLockManager:
     """Atomic job lock operations with expiration support."""
 
     def __init__(self, db: aiosqlite.Connection, lock_timeout_seconds: int = 300) -> None:
-        """
-        Initialize runtime dependencies and object state.
-        
-        Purpose:
-        - Implement `__init__` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `db`: input used by this function to compute or route work.
-        - `lock_timeout_seconds`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `None` when available; otherwise side effects only.
-        """
 
         self.db = db
         self.lock_timeout_seconds = lock_timeout_seconds

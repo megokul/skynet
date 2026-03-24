@@ -20,27 +20,6 @@ class WebSearcher:
     """Web search with Brave API primary and DuckDuckGo fallback."""
 
     def __init__(self, brave_api_key: str = ""):
-        """
-        Initialize runtime dependencies and object state.
-        
-        Purpose:
-        - Implement `__init__` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `brave_api_key`: input used by this function to compute or route work.
-        
-        Returns:
-        - Function-specific value or side effects consumed by upstream callers.
-        """
 
         self.brave_api_key = brave_api_key
 
@@ -60,28 +39,6 @@ class WebSearcher:
         return await self._ddg_search(query, num_results)
 
     async def _brave_search(self, query: str, num_results: int) -> str:
-        """
-        Brave search.
-        
-        Purpose:
-        - Implement `_brave_search` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `query`: input used by this function to compute or route work.
-        - `num_results`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `str` when available; otherwise side effects only.
-        """
 
         async with httpx.AsyncClient() as client:
             resp = await client.get(

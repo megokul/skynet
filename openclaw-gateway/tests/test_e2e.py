@@ -44,6 +44,7 @@ from bot.handlers.project import (
     _NAME_KEY,
     _TYPE_KEY,
     _PLAN_KEY,
+    _PLANNER_STATE_KEY,
     _REQS_HISTORY,
     AWAITING_PROJECT_NAME,
     AWAITING_PROJECT_TYPE,
@@ -277,6 +278,7 @@ class TestProjectCreationFlow:
         assert _NAME_KEY     not in context.user_data
         assert _TYPE_KEY     not in context.user_data
         assert _PLAN_KEY     not in context.user_data
+        assert _PLANNER_STATE_KEY not in context.user_data
         assert _REQS_HISTORY not in context.user_data
 
     @pytest.mark.asyncio

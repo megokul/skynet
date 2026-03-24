@@ -52,6 +52,27 @@ function Test-TcpPort {
     }
 }
 
+function Test-PythonRuntime {
+    param([string]$Candidate)
+    if (-not $Candidate) { return $false }
+    try {
+        $output = & $Candidate -c "import importlib.util,sys; missing=[name for name in ('yaml','websockets') if importlib.util.find_spec(name) is None]; print(','.join(missing)); sys.exit(0 if not missing else 1)" 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            return $true
+        }
+        $missing = ($output | Out-String).Trim()
+        if ($missing) {
+            Write-Warning "Skipping Python runtime '$Candidate' because modules are missing: $missing"
+        } else {
+            Write-Warning "Skipping Python runtime '$Candidate' because runtime validation failed."
+        }
+        return $false
+    } catch {
+        Write-Warning "Skipping Python runtime '$Candidate' because validation failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 Import-EnvFile -Path $EnvFile
 Write-Host "worker_agent.env_file=$EnvFile"
 Write-Host "worker_agent.gateway_url=$($env:SKYNET_GATEWAY_URL)"
@@ -75,6 +96,17 @@ if ($tunnelEnabled) {
     [void][int]::TryParse($remoteWsPortRaw, [ref]$remoteWsPort)
     if ($remoteWsPort -le 0) { $remoteWsPort = 8765 }
 
+    # HTTP API tunnel (port 8766) — allows direct POST to gateway /action via tunnel
+    $localHttpPort = 0
+    $localHttpPortRaw = if ($env:SKYNET_AGENT_TUNNEL_LOCAL_HTTP_PORT) { $env:SKYNET_AGENT_TUNNEL_LOCAL_HTTP_PORT } else { '18766' }
+    [void][int]::TryParse($localHttpPortRaw, [ref]$localHttpPort)
+    if ($localHttpPort -le 0) { $localHttpPort = 18766 }
+    $remoteHttpHost = if ($env:SKYNET_AGENT_TUNNEL_REMOTE_HTTP_HOST) { $env:SKYNET_AGENT_TUNNEL_REMOTE_HTTP_HOST } else { '127.0.0.1' }
+    $remoteHttpPort = 0
+    $remoteHttpPortRaw = if ($env:SKYNET_AGENT_TUNNEL_REMOTE_HTTP_PORT) { $env:SKYNET_AGENT_TUNNEL_REMOTE_HTTP_PORT } else { '8766' }
+    [void][int]::TryParse($remoteHttpPortRaw, [ref]$remoteHttpPort)
+    if ($remoteHttpPort -le 0) { $remoteHttpPort = 8766 }
+
     if (-not $tunnelHost -or -not $tunnelUser -or -not $tunnelKey) {
         throw "SKYNET_AGENT_TUNNEL_ENABLED=1 requires tunnel host/user/key."
     }
@@ -84,7 +116,7 @@ if ($tunnelEnabled) {
     if (-not $env:SKYNET_GATEWAY_URL) {
         $env:SKYNET_GATEWAY_URL = "ws://127.0.0.1:$localWsPort/agent/ws"
     }
-    Write-Host "worker_agent.tunnel_target=${tunnelUser}@${tunnelHost} 127.0.0.1:${localWsPort}->${remoteWsHost}:${remoteWsPort}"
+    Write-Host "worker_agent.tunnel_target=${tunnelUser}@${tunnelHost} ws=127.0.0.1:${localWsPort}->${remoteWsHost}:${remoteWsPort} http=127.0.0.1:${localHttpPort}->${remoteHttpHost}:${remoteHttpPort}"
 
     if (-not (Test-TcpPort -TargetHost '127.0.0.1' -Port $localWsPort -TimeoutMs 800)) {
         $argList = @(
@@ -96,6 +128,7 @@ if ($tunnelEnabled) {
             '-o', 'ServerAliveCountMax=3',
             '-N',
             '-L', "127.0.0.1:${localWsPort}:${remoteWsHost}:${remoteWsPort}",
+            '-L', "127.0.0.1:${localHttpPort}:${remoteHttpHost}:${remoteHttpPort}",
             "${tunnelUser}@${tunnelHost}"
         )
         $tunnelProcess = Start-Process ssh -ArgumentList $argList -WindowStyle Hidden -PassThru
@@ -119,16 +152,25 @@ if ($tunnelEnabled) {
 
 if (-not $PythonPath) {
     $candidates = @(
-        (Join-Path $RepoRoot 'venv-agent\Scripts\python.exe'),
+        $env:SKYNET_AGENT_PYTHON_PATH,
         (Join-Path $RepoRoot 'venv\Scripts\python.exe'),
+        (Join-Path $RepoRoot 'venv-agent\Scripts\python.exe'),
         'python'
     )
     foreach ($candidate in $candidates) {
+        if (-not $candidate) { continue }
         if ($candidate -eq 'python' -or (Test-Path $candidate)) {
+            if (-not (Test-PythonRuntime -Candidate $candidate)) {
+                continue
+            }
             $PythonPath = $candidate
             break
         }
     }
+}
+
+if (-not $PythonPath) {
+    throw "No usable Python runtime found for worker agent."
 }
 
 try {

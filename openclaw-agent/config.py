@@ -19,6 +19,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from skynet.settings.loader import get_component_settings  # noqa: E402
+from skynet.utils import resolve_repo_path  # noqa: E402
 
 
 _settings_loader = get_component_settings("agent")
@@ -63,10 +64,12 @@ WS_PING_TIMEOUT_SECONDS: int = _i("WS_PING_TIMEOUT_SECONDS", 10)
 WORKER_ID: str = _s("SKYNET_WORKER_ID", "worker-primary").strip() or "worker-primary"
 AGENT_HEARTBEAT_SECONDS: int = _i("AGENT_HEARTBEAT_SECONDS", 15)
 AGENT_RESULT_CACHE_TTL_SECONDS: int = _i("AGENT_RESULT_CACHE_TTL_SECONDS", 900)
-AGENT_LOG_MIRROR_DIR: str = (
+AGENT_LOG_MIRROR_DIR: str = resolve_repo_path(
+    _REPO_ROOT,
     _s("SKYNET_AGENT_LOG_MIRROR_DIR")
-    or _s("SKYNET_TRACE_MIRROR_LOG_DIR")
-    or os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    or _s("AGENT_LOG_MIRROR_DIR")
+    or _s("SKYNET_TRACE_MIRROR_LOG_DIR"),
+    default="logs/openclaw-agent",
 )
 
 
@@ -74,21 +77,6 @@ AGENT_LOG_MIRROR_DIR: str = (
 # Risk Tiers
 # ---------------------------------------------------------------------------
 class Tier(str, Enum):
-    """
-    Tier.
-    
-    Purpose:
-    - Represent a cohesive runtime concept for this subsystem.
-    - Group related state and methods behind a single abstraction boundary.
-    
-    How it works:
-    - Holds domain-specific fields and exposes operations that enforce local invariants.
-    - Shields calling code from low-level implementation details.
-    
-    Why this exists:
-    - Improves readability by giving the concept an explicit named type.
-    - Reduces coupling by centralizing behavior inside `Tier`.
-    """
 
     AUTO = "AUTO"         # Execute immediately, no confirmation.
     CONFIRM = "CONFIRM"   # Prompt operator in terminal before executing.
@@ -180,9 +168,10 @@ EMERGENCY_STOP: bool = False
 # ---------------------------------------------------------------------------
 # Logging / Audit
 # ---------------------------------------------------------------------------
-AUDIT_LOG_DIR: str = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "logs",
+AUDIT_LOG_DIR: str = resolve_repo_path(
+    _REPO_ROOT,
+    _s("AUDIT_LOG_DIR"),
+    default="openclaw-agent/logs",
 )
-AUDIT_LOG_FILE: str = "audit.jsonl"
+AUDIT_LOG_FILE: str = _s("AUDIT_LOG_FILE", "audit.jsonl")
 LOG_LEVEL: str = _s("SKYNET_LOG_LEVEL") or _s("OPENCLAW_LOG_LEVEL", "INFO")

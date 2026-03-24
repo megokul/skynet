@@ -24,27 +24,6 @@ logger = logging.getLogger("skynet.ai.openai_compat")
 
 
 def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """
-    Convert tools.
-    
-    Purpose:
-    - Implement `_convert_tools` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `tools`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
-    """
 
     return [
         {
@@ -63,28 +42,6 @@ def _convert_messages(
     messages: list[dict[str, Any]],
     system: str | None = None,
 ) -> list[dict[str, Any]]:
-    """
-    Convert messages.
-    
-    Purpose:
-    - Implement `_convert_messages` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - `messages`: input used by this function to compute or route work.
-    - `system`: input used by this function to compute or route work.
-    
-    Returns:
-    - Return value typed as `list[dict[str, Any]]` when available; otherwise side effects only.
-    """
 
     result = []
     if system:
@@ -133,35 +90,6 @@ class OpenAICompatProvider(BaseProvider):
         context_limit_override: int | None = None,
         cost_rank_override: int | None = None,
     ):
-        """
-        Initialize runtime dependencies and object state.
-        
-        Purpose:
-        - Implement `__init__` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `api_key`: input used by this function to compute or route work.
-        - `model`: input used by this function to compute or route work.
-        - `model_candidates`: input used by this function to compute or route work.
-        - `base_url`: input used by this function to compute or route work.
-        - `provider_name`: input used by this function to compute or route work.
-        - `daily_limit_override`: input used by this function to compute or route work.
-        - `rpm_limit_override`: input used by this function to compute or route work.
-        - `context_limit_override`: input used by this function to compute or route work.
-        - `cost_rank_override`: input used by this function to compute or route work.
-        
-        Returns:
-        - Function-specific value or side effects consumed by upstream callers.
-        """
 
         self.name = provider_name
         if daily_limit_override is not None:
@@ -184,27 +112,6 @@ class OpenAICompatProvider(BaseProvider):
 
     @property
     def default_model(self) -> str:
-        """
-        Default model.
-        
-        Purpose:
-        - Implement `default_model` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `str` when available; otherwise side effects only.
-        """
 
         return "gpt-4o-mini"
 
@@ -216,30 +123,6 @@ class OpenAICompatProvider(BaseProvider):
         system: str | None = None,
         max_tokens: int = 4096,
     ) -> ProviderResponse:
-        """
-        Chat.
-        
-        Purpose:
-        - Implement `chat` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `messages`: input used by this function to compute or route work.
-        - `tools`: input used by this function to compute or route work.
-        - `system`: input used by this function to compute or route work.
-        - `max_tokens`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `ProviderResponse` when available; otherwise side effects only.
-        """
 
         oai_messages = _convert_messages(messages, system)
         models_to_try = self._ordered_models_to_try()
@@ -319,27 +202,6 @@ class OpenAICompatProvider(BaseProvider):
 
     @staticmethod
     def _is_model_not_found_error(exc: Exception) -> bool:
-        """
-        Is model not found error.
-        
-        Purpose:
-        - Implement `_is_model_not_found_error` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `exc`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `bool` when available; otherwise side effects only.
-        """
 
         text = str(exc).lower()
         return (
@@ -351,27 +213,6 @@ class OpenAICompatProvider(BaseProvider):
 
     @staticmethod
     def _is_rate_limited_error(exc: Exception) -> bool:
-        """
-        Is rate limited error.
-        
-        Purpose:
-        - Implement `_is_rate_limited_error` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `exc`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `bool` when available; otherwise side effects only.
-        """
 
         text = str(exc).lower()
         return (
@@ -384,27 +225,6 @@ class OpenAICompatProvider(BaseProvider):
 
     @staticmethod
     def _is_quota_exhausted_error(exc: Exception) -> bool:
-        """
-        Is quota exhausted error.
-        
-        Purpose:
-        - Implement `_is_quota_exhausted_error` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `exc`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `bool` when available; otherwise side effects only.
-        """
 
         text = str(exc).lower()
         return (
@@ -417,27 +237,6 @@ class OpenAICompatProvider(BaseProvider):
         )
 
     def _ordered_models_to_try(self) -> list[str]:
-        """
-        Ordered models to try.
-        
-        Purpose:
-        - Implement `_ordered_models_to_try` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `list[str]` when available; otherwise side effects only.
-        """
 
         models: list[str] = [self.model_name]
         for candidate in self._model_candidates:
@@ -461,29 +260,6 @@ class OpenAICompatProvider(BaseProvider):
         return models
 
     def _enter_model_cooldown(self, model_name: str, *, seconds: int, reason: str) -> None:
-        """
-        Enter model cooldown.
-        
-        Purpose:
-        - Implement `_enter_model_cooldown` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `model_name`: input used by this function to compute or route work.
-        - `seconds`: input used by this function to compute or route work.
-        - `reason`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `None` when available; otherwise side effects only.
-        """
 
         self._model_cooldown_until[model_name] = time.monotonic() + max(seconds, 1)
         logger.warning(

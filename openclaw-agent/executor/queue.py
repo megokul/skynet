@@ -29,27 +29,6 @@ class ProjectQueue:
     """Sequential action queue for a single project."""
 
     def __init__(self, project_id: str):
-        """
-        Initialize runtime dependencies and object state.
-        
-        Purpose:
-        - Implement `__init__` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `project_id`: input used by this function to compute or route work.
-        
-        Returns:
-        - Function-specific value or side effects consumed by upstream callers.
-        """
 
         self.project_id = project_id
         self._queue: asyncio.Queue[_QueueItem] = asyncio.Queue()
@@ -132,29 +111,6 @@ class _QueueItem:
         params: dict[str, Any],
         executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
     ):
-        """
-        Initialize runtime dependencies and object state.
-        
-        Purpose:
-        - Implement `__init__` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `action`: input used by this function to compute or route work.
-        - `params`: input used by this function to compute or route work.
-        - `executor`: input used by this function to compute or route work.
-        
-        Returns:
-        - Function-specific value or side effects consumed by upstream callers.
-        """
 
         self.action = action
         self.params = params
@@ -166,27 +122,6 @@ class ActionQueueManager:
     """Manages per-project action queues."""
 
     def __init__(self):
-        """
-        Initialize runtime dependencies and object state.
-        
-        Purpose:
-        - Implement `__init__` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Function-specific value or side effects consumed by upstream callers.
-        """
 
         self._queues: dict[str, ProjectQueue] = {}
 

@@ -32,16 +32,17 @@
       dockerfile: Dockerfile
     container_name: openclaw-gateway
     ports:
-      - "8765:8765"  # WebSocket
-    expose:
-      - "8766"       # HTTP API (internal to docker network only)
+      - "8765:8765"             # WebSocket
+      - "127.0.0.1:8766:8766"  # HTTP API (loopback only — reachable via SSH tunnel)
     environment:
       - SKYNET_API_KEY
       - SKYNET_AUTH_TOKEN
       - SKYNET_BUILD_REVISION
+      - SKYNET_E2E_LIVE
+      - SKYNET_LIVE_E2E_FLOW
       - SKYNET_ORCHESTRATOR_URL=http://skynet-api:8000
       - OPENCLAW_GATEWAY_URL=http://openclaw-gateway:8766
-      - OPENCLAW_HTTP_HOST
+      - OPENCLAW_HTTP_HOST=0.0.0.0
       - OPENCLAW_HTTP_PORT
       - TELEGRAM_BOT_TOKEN
       - TELEGRAM_ALLOWED_USER_ID
