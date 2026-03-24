@@ -6,6 +6,16 @@ Last updated (UTC): 2026-03-18 10:24
 
 WebSocket-primary worker execution with the checked-in settings as the source of truth: `legacy` orchestration by default, `loop_v2` enabled, Codex as planner primary, `qwen,codex` coding fallback, and SSH fallback disabled unless explicitly enabled.
 
+### 2026-03-24 Stale Critic Findings Fix (gate_final CONTRACT_FAILED)
+
+- Fixed `CONTRACT_FAILED: "Blocking critic findings remain: 1"` after successful repair.
+- Root cause: old critic findings from pre-repair runs were never deleted from `critic_findings` table. `gate_final` counted ALL findings across all runs.
+- Added `delete_critic_findings_for_node()` in `db/store.py`, called before re-queuing critic after repair.
+- Defense-in-depth: `gate_final` query now filters `AND tn.status = 'done'` — re-queued critics' old findings excluded.
+- Repair prompt now includes `milestone_text` so the coding agent knows WHAT the code should do, not just what failed.
+- Regression test added in `test_control_loop_critic.py`.
+- Test results: 263 passed, 3 skipped, 0 failures.
+
 ### 2026-03-24 Gate Failure → Critic Repair Flow
 
 - Fixed `DEADLOCK_DETECTED` when a work node fails its quality gates.
