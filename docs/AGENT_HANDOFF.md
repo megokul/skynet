@@ -6,6 +6,24 @@ Last updated (UTC): 2026-03-18 10:24
 
 WebSocket-primary worker execution with the checked-in settings as the source of truth: `legacy` orchestration by default, `loop_v2` enabled, Codex as planner primary, `qwen,codex` coding fallback, and SSH fallback disabled unless explicitly enabled.
 
+### 2026-03-24 Gate Failure → Critic Repair Flow
+
+- Fixed `DEADLOCK_DETECTED` when a work node fails its quality gates.
+- Root cause: `_work_executor` returned `{ok: False}` on gate failure → work node marked terminal → critic never runs → repair never triggers → deadlock after 3 idle ticks.
+- Gate-failed work nodes now return `ok: True` with `gate_failed: True` and populate `work_context` so the critic can inspect gate failures.
+- Critic injects a `critical` severity `GATE_FAILURE` finding when its work node had gate failures, ensuring the existing repair mechanism triggers.
+- Infra failures (non-code) still propagate as hard fails; dependent non-gate nodes are auto-skipped via `_skip_blocked_dependents()`.
+- `runnable_nodes()` now treats `"skipped"` dependencies as satisfied (alongside `"done"`).
+- `_gate_executor` accepts `"skipped"` critics (not just `"done"`).
+- `max_repairs` default increased from 1 to 3 to support multi-milestone repair.
+- Final graph status supports partial completion: `"completed"` when all nodes resolved and gates passed.
+- Files changed:
+  - `openclaw-gateway/bot/handlers/coding.py` — gate failure returns `ok: True`, critic gate-failure finding injection, gate executor accepts skipped
+  - `openclaw-gateway/orchestration/graph.py` — `runnable_nodes` accepts `"skipped"` deps
+  - `openclaw-gateway/orchestration/loop_controller.py` — `_skip_blocked_dependents`, `max_repairs=3`, partial completion status
+- Test results: 262 passed, 3 skipped (live-only), 0 failures.
+- Trace evidence: critic timeout advisory (commit `da41a69`) verified in graph 48; this commit fixes the remaining deadlock path.
+
 ### 2026-03-18 Continuation Validation Pass
 
 - Picked up the existing uncommitted structural-cleanup/refactor worktree and validated it before extending the change set further.
