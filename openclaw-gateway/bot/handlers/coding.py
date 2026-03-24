@@ -4762,6 +4762,7 @@ async def _run_control_loop_v1(
                     failed_gate_names=[str(name) for name in failed_names],
                     error_message=error_message,
                 )
+                is_infra = bool(gate_result.get("infra_failure"))
                 await update_task_status(
                     db,
                     task_rec["id"],
@@ -4777,10 +4778,28 @@ async def _run_control_loop_v1(
                 )
                 if node.node_type == "work":
                     failed_milestones += 1
+                if is_infra:
+                    # True infra failure — no code to repair, propagate as hard fail
+                    return {
+                        "ok": False,
+                        "error": error_message,
+                        "infra_failed": True,
+                        "failure_type": failure_type,
+                    }
+                # Gate failure (code quality) — let critic run so repair can fix it
+                work_context[node.node_key] = {
+                    "task_id": int(task_rec["id"]),
+                    "milestone_text": milestone_text,
+                    "files_written": written,
+                    "summary": summary,
+                    "gate_failed": True,
+                    "gate_error": error_message,
+                }
                 return {
-                    "ok": False,
-                    "error": error_message,
-                    "infra_failed": bool(gate_result.get("infra_failure")),
+                    "ok": True,
+                    "summary": summary,
+                    "gate_failed": True,
+                    "gate_error": error_message,
                     "failure_type": failure_type,
                 }
             run_contract = gate_result.get("run_contract")
@@ -4887,6 +4906,21 @@ async def _run_control_loop_v1(
                 "critic_name": "review",
             }
         findings = parsed.get("findings", [])
+        # If the work node's gates failed, ensure critic surfaces blocking findings
+        # so the repair mechanism triggers even if the LLM critic says "looks fine"
+        work_data = work_context.get(work_key, {})
+        if work_data.get("gate_failed"):
+            gate_error = str(work_data.get("gate_error") or "gates failed")
+            gate_finding = {
+                "severity": "critical",
+                "code": "GATE_FAILURE",
+                "message": gate_error,
+                "files": files_written,
+                "suggested_fix": "Fix the code so all quality gates pass.",
+            }
+            if not isinstance(findings, list):
+                findings = []
+            findings.append(gate_finding)
         if bool(getattr(cfg, "CONTROL_LOOP_ARCH_CRITIC_ENABLED", True)):
             arch_rules_path = str(getattr(cfg, "CONTROL_LOOP_ARCH_RULES_FILE", "") or "").strip()
             refs: list[dict[str, Any]] = []
@@ -4956,7 +4990,7 @@ async def _run_control_loop_v1(
     async def _gate_executor(node: LoopNode) -> dict[str, Any]:
         rows = await list_graph_nodes(db, graph_id=int(graph_id))
         for row in rows:
-            if str(row.get("node_type") or "") == "critic" and str(row.get("status") or "") != "done":
+            if str(row.get("node_type") or "") == "critic" and str(row.get("status") or "") not in ("done", "skipped"):
                 return {"ok": False, "summary": "Not all critic nodes passed", "failure_type": FAIL_STRICT_GATE}
         blocking_count = 0
         async with db.execute(

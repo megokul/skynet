@@ -52,7 +52,7 @@ class ClosedLoopController:
         memory_enabled: bool = True,
         max_iterations: int = 40,
         max_runtime_seconds: int = 3600,
-        max_repairs: int = 1,
+        max_repairs: int = 3,
         max_tokens: int = 250000,
         deadlock_idle_ticks: int = 3,
         success_contract: dict[str, Any] | None = None,
@@ -454,9 +454,16 @@ class ClosedLoopController:
                 await _emit(node, "failed", {"reason": "unknown_node_type", "failure_type": FAIL_ENVIRONMENT})
 
         final_nodes = [self._row_to_node(row) for row in await list_graph_nodes(self._db, graph_id=int(self._graph_id or 0))]
-        all_done = all(node.status == "done" for node in final_nodes)
         any_stopped = any(node.status == "stopped" for node in final_nodes)
-        graph_status = "completed" if all_done else ("stopped" if any_stopped else "failed")
+        all_resolved = all(node.status in ("done", "skipped") for node in final_nodes)
+        gate_nodes = [n for n in final_nodes if n.node_type == "gate"]
+        gates_passed = all(n.status == "done" for n in gate_nodes) if gate_nodes else True
+        if any_stopped:
+            graph_status = "stopped"
+        elif all_resolved and gates_passed:
+            graph_status = "completed"
+        else:
+            graph_status = "failed"
         await update_task_graph_status(
             self._db,
             graph_id=int(self._graph_id or 0),
@@ -530,6 +537,35 @@ class ClosedLoopController:
             failed_status,
             {"summary": summary, "error": error, "failure_type": failure_type},
         )
+        # Auto-skip dependent non-gate nodes so infra failures don't deadlock
+        if failed_status in ("failed", "failed_infra"):
+            await self._skip_blocked_dependents(node, emit)
+
+    async def _skip_blocked_dependents(
+        self,
+        failed_node: LoopNode,
+        emit: NodeEventHook,
+    ) -> None:
+        """Skip queued nodes that depend on *failed_node* (non-gate only)."""
+        rows = await list_graph_nodes(self._db, graph_id=int(self._graph_id or 0))
+        all_nodes = [self._row_to_node(r) for r in rows]
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        for dep_node in all_nodes:
+            if dep_node.status != "queued":
+                continue
+            if dep_node.node_type == "gate":
+                continue
+            if failed_node.node_key in dep_node.deps:
+                reason = f"skipped: dependency {failed_node.node_key} failed"
+                await update_task_node_status(
+                    self._db,
+                    node_id=dep_node.node_id,
+                    status="skipped",
+                    result_summary=reason,
+                    finished_at=now,
+                )
+                dep_node.status = "skipped"
+                await emit(dep_node, "skipped", {"summary": reason})
 
     async def _handle_critic_result(
         self,

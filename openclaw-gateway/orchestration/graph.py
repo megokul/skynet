@@ -68,7 +68,7 @@ def runnable_nodes(nodes: list[LoopNode]) -> list[LoopNode]:
             dep_node = node_map.get(dep)
             if dep_node is None:
                 continue
-            if dep_node.status != "done":
+            if dep_node.status not in ("done", "skipped"):
                 deps_ready = False
                 break
         if deps_ready:
