@@ -17,14 +17,29 @@ from skynet.settings.loader import SettingsLoader  # noqa: E402
 
 
 def auto_detect_env_file() -> None:
-    """Set SKYNET_ENV_FILE to .env.local-e2e on Windows when unset."""
+    """Load base .env then layer .env.local-e2e on top (Windows, when unset)."""
     if sys.platform == "win32" and not os.environ.get("SKYNET_ENV_FILE"):
+        # Load base .env first so TELEGRAM_BOT_TOKEN etc. are available
+        base_env = ROOT / ".env"
+        if base_env.exists():
+            for raw_line in base_env.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key, value = key.strip(), value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                    value = value[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = value
+        # Then point the loader at .env.local-e2e for E2E-specific overrides
         candidate = ROOT / ".env.local-e2e"
         if candidate.exists():
             os.environ["SKYNET_ENV_FILE"] = str(candidate)
 
 
 def bootstrap_gateway_runtime(*, override: bool = False) -> tuple[SettingsLoader, int]:
+    auto_detect_env_file()
     loader = SettingsLoader(component="gateway", settings_dir=GATEWAY_ROOT / "settings")
     hydrated = loader.load_into_environ(override=override)
     return loader, hydrated
