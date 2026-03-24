@@ -1266,6 +1266,14 @@ WebSocket-primary worker execution with the checked-in settings as the source of
 
 ## Test Results
 
+### 2026-03-24 Critic Timeout Resilience
+
+- `python -m pytest openclaw-gateway/tests/ tests/ -q` -> `262 passed, 3 skipped`
+- Changes: `openclaw-gateway/bot/handlers/coding.py`, `openclaw-gateway/orchestration/loop_controller.py`
+- Critic timeout no longer kills the task graph; timed-out critics are marked advisory ("done" with warning)
+
+### Previous Test Results
+
 - `python scripts/ci/check_stale_paths.py` -> pass
 - `python scripts/ci/check_control_plane_boundary.py` -> pass
 - `python scripts/ci/check_settings_policy.py` -> pass
@@ -1401,6 +1409,9 @@ WebSocket-primary worker execution with the checked-in settings as the source of
 
 ## Trace Evidence
 
+- request_id=critic-timeout-advisory-20260324
+- task_id=critic-timeout-resilience
+- skynet.trace.log — critic timeout now emits advisory "done" event instead of graph-fatal failure
 - `request_id=repo-structural-cleanup-20260312`
 - `task_id=doc-truth-alignment-and-template-docstring-ratchet`
 - control-plane compatibility validated against `/v1/tasks` and `/v1/files/ownership` via `tests/test_project_documentation_skill.py`
