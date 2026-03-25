@@ -6,13 +6,15 @@ Last updated (UTC): 2026-03-18 10:24
 
 WebSocket-primary worker execution with the checked-in settings as the source of truth: `legacy` orchestration by default, `loop_v2` enabled, Codex as planner primary, `qwen,codex` coding fallback, and SSH fallback disabled unless explicitly enabled.
 
-### 2026-03-25 Smoke Gate Server-Aware Startup Probe
+### 2026-03-25 Smoke Gate Server-Aware Timeout Handling
 
 - Fixed: HTML page project ("Philipinte pari") failed because smoke gate ran `python philipinte_pari.py` which starts `httpd.serve_forever()` — hangs 120s → killed → "process timed out" → misclassified as infra failure → repair never triggered → graph failed (complete=0, failed=2).
-- Root cause: `_is_infra_error()` matches "timed out" broadly (coding.py:1365), and smoke exception handler unconditionally set `infra_failure = True` (line 2997).
-- Fix 1: Smoke timeout exception handler now excludes "process timed out" from infra classification — smoke timeouts route through gate-failure → critic → repair flow.
-- Fix 2: Smoke gate now uses a startup-probe wrapper: runs the entrypoint in background, waits 15s, if still alive (server) → success. Timeout reduced from 120s to 30s.
-- Fix 3: Repair prompt detects timeout findings and adds specific guidance for fixing blocking server entrypoints.
+- Root cause 1: `_is_infra_error()` matches "timed out" broadly, and smoke exception handler unconditionally set `infra_failure = True`.
+- Root cause 2: Worker's `exec_command` validates interpreter as first token — subshell wrappers like `(python ...)` get rejected as `Interpreter '(python' is not allowed`.
+- Fix 1: Smoke timeout reduced from 120s to 15s. Process timeout now treated as **success** (entrypoint started without crashing — expected for servers).
+- Fix 2: Non-timeout smoke exceptions still classified correctly; infra errors flagged, code errors go through repair.
+- Fix 3: Work prompt now explicitly forbids blocking servers, `webbrowser.open()`, GUI popups in entrypoints. Servers must exit cleanly or use a `--serve` flag.
+- Fix 4: Repair prompt detects timeout findings and adds specific guidance for fixing blocking entrypoints.
 - Regression tests added for smoke timeout classification.
 - Test results: 266 passed, 3 skipped, 0 failures.
 

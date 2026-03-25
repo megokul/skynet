@@ -2960,12 +2960,9 @@ async def _run_strict_quality_gates(
                             )
 
             smoke_cmd = str(last_contract.get("command") or "").strip()
-            # Wrap with startup-probe: run for up to 15s, treat still-alive as
-            # success (server apps) and clean exit as success.
-            smoke_probe_cmd = (
-                f"({smoke_cmd}) & PID=$!; sleep 15; "
-                f"if kill -0 $PID 2>/dev/null; then kill $PID 2>/dev/null; exit 0; else wait $PID; fi"
-            )
+            # Use a short timeout (15s).  If the process is still alive when
+            # the timeout fires, the worker kills it — we treat that timeout
+            # as success (the entrypoint started without crashing).
             with contextlib.suppress(Exception):
                 await _emit_gate_event(
                     "smoke",
@@ -2977,36 +2974,55 @@ async def _run_strict_quality_gates(
                 smoke_result = await _run_gate_action(
                     gate_name="smoke",
                     action="exec_command",
-                    params={"command": smoke_probe_cmd, "working_dir": working_dir},
-                    timeout_seconds=30,
+                    params={"command": smoke_cmd, "working_dir": working_dir},
+                    timeout_seconds=15,
                     command=smoke_cmd,
                     label="quality gate smoke",
                 )
             except Exception as exc:
                 smoke_summary = f"{type(exc).__name__}: {exc}"
-                await _record_gate_result(
-                    db=db,
-                    task_id=task_id,
-                    attempt=attempt,
-                    gate_name="smoke",
-                    status="failed",
-                    command=smoke_cmd,
-                    summary=smoke_summary,
-                )
-                with contextlib.suppress(Exception):
-                    await _emit_gate_event(
-                        "smoke",
-                        "failed",
-                        summary=smoke_summary,
+                is_process_timeout = "process timed out" in smoke_summary.lower()
+                if is_process_timeout:
+                    # Process still alive after 15s = server app that started OK.
+                    # Treat as passed — the entrypoint didn't crash.
+                    await _record_gate_result(
+                        db=db,
+                        task_id=task_id,
+                        attempt=attempt,
+                        gate_name="smoke",
+                        status="passed",
                         command=smoke_cmd,
+                        summary="entrypoint started OK (killed after 15s timeout)",
                     )
-                # Process timeout = code quality issue (e.g. server runs forever),
-                # not infra.  Only flag as infra if the error is truly transport-level.
-                if _is_infra_error(smoke_summary) and "process timed out" not in smoke_summary.lower():
-                    infra_failure = True
-                failed_gates.append(
-                    {"gate_name": "smoke", "command": smoke_cmd, "summary": smoke_summary}
-                )
+                    with contextlib.suppress(Exception):
+                        await _emit_gate_event(
+                            "smoke",
+                            "passed",
+                            summary="entrypoint started OK (killed after 15s timeout)",
+                            command=smoke_cmd,
+                        )
+                else:
+                    await _record_gate_result(
+                        db=db,
+                        task_id=task_id,
+                        attempt=attempt,
+                        gate_name="smoke",
+                        status="failed",
+                        command=smoke_cmd,
+                        summary=smoke_summary,
+                    )
+                    with contextlib.suppress(Exception):
+                        await _emit_gate_event(
+                            "smoke",
+                            "failed",
+                            summary=smoke_summary,
+                            command=smoke_cmd,
+                        )
+                    if _is_infra_error(smoke_summary):
+                        infra_failure = True
+                    failed_gates.append(
+                        {"gate_name": "smoke", "command": smoke_cmd, "summary": smoke_summary}
+                    )
             else:
                 smoke_failed = (
                     smoke_result.get("status") == "error"
@@ -4026,6 +4042,11 @@ def _control_loop_work_prompt(
         f"- Prefer entrypoint file `{preferred_entrypoint}` unless an existing entrypoint already exists.\n"
         "- Create or update tests needed to validate behavior.\n"
         "- Write complete files and ensure they run.\n"
+        "- The entrypoint MUST exit cleanly within a few seconds (exit code 0). "
+        "Do NOT start long-running servers, event loops, or blocking calls in the entrypoint. "
+        "Do NOT call webbrowser.open(), os.startfile(), or launch any GUI/popup. "
+        "For server apps, the entrypoint should print a status message and exit. "
+        "Put the actual server behind a --serve flag or in a separate script.\n"
         "- Do not ask clarifying questions.\n"
         "- Do NOT return architecture plans, checklists, or mermaid diagrams."
     )
