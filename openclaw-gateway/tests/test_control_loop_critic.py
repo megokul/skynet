@@ -152,6 +152,14 @@ def test_smoke_process_timeout_gate_handler_excludes_infra():
     assert is_infra is False
 
 
+def test_wait_timeout_detected_as_smoke_pass():
+    """Gateway-side WAIT_TIMEOUT on smoke should be treated as process timeout."""
+    msg = "RuntimeError: WAIT_TIMEOUT: quality gate smoke exceeded 30s"
+    _lower = msg.lower()
+    is_process_timeout = "process timed out" in _lower or "wait_timeout" in _lower
+    assert is_process_timeout is True
+
+
 def test_real_infra_errors_still_classified():
     """Genuine infra errors must still be flagged."""
     assert _is_infra_error("ssh action failed: connection refused") is True

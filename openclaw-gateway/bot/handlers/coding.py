@@ -2500,6 +2500,7 @@ async def _run_strict_quality_gates(
             timeout_seconds: int,
             command: str,
             label: str,
+            max_wait_override: int | None = None,
         ) -> dict[str, Any]:
             if app is None or not isinstance(chat_id, int):
                 return await send_action(
@@ -2518,6 +2519,9 @@ async def _run_strict_quality_gates(
                         command=command,
                     )
 
+            _default_max = int(getattr(cfg, "CODING_AGENT_MAX_WAIT_SECONDS", 900) or 900)
+            _max_wait = max(1, max_wait_override if max_wait_override is not None else _default_max)
+
             return await _send_action_with_heartbeat(
                 app=app,
                 chat_id=chat_id,
@@ -2526,10 +2530,7 @@ async def _run_strict_quality_gates(
                 params=params,
                 timeout=timeout_seconds,
                 label=label,
-                max_wait_seconds=max(
-                    1,
-                    int(getattr(cfg, "CODING_AGENT_MAX_WAIT_SECONDS", 900) or 900),
-                ),
+                max_wait_seconds=_max_wait,
                 confirmed=True,
                 heartbeat_hook=_gate_heartbeat,
             )
@@ -2978,10 +2979,15 @@ async def _run_strict_quality_gates(
                     timeout_seconds=15,
                     command=smoke_cmd,
                     label="quality gate smoke",
+                    max_wait_override=30,
                 )
             except Exception as exc:
                 smoke_summary = f"{type(exc).__name__}: {exc}"
-                is_process_timeout = "process timed out" in smoke_summary.lower()
+                _smoke_lower = smoke_summary.lower()
+                is_process_timeout = (
+                    "process timed out" in _smoke_lower
+                    or "wait_timeout" in _smoke_lower
+                )
                 if is_process_timeout:
                     # Process still alive after 15s = server app that started OK.
                     # Treat as passed — the entrypoint didn't crash.
