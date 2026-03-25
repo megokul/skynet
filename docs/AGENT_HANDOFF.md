@@ -6,6 +6,12 @@ Last updated (UTC): 2026-03-18 10:24
 
 WebSocket-primary worker execution with the checked-in settings as the source of truth: `legacy` orchestration by default, `loop_v2` enabled, Codex as planner primary, `qwen,codex` coding fallback, and SSH fallback disabled unless explicitly enabled.
 
+### 2026-03-25 Worker Kills Entire Process Tree on Timeout
+
+- Fixed: `webbrowser.open()` and other child processes survived after smoke gate timeout because `proc.kill()` only kills the parent process.
+- Fix: `run_subprocess` now uses `start_new_session=True` and kills the entire process tree on timeout (`taskkill /F /T /PID` on Windows, `os.killpg` on Linux).
+- This ensures browser popups, GUI windows, and any spawned child processes are cleaned up when a subprocess is killed.
+
 ### 2026-03-25 Failed Critics No Longer Deadlock gate_final
 
 - Graph 53: all 5 work nodes completed but `critic_4` failed (CRITIC_PARSE_ERROR after Qwen quota exhaustion during repair). `gate_final` never ran → DEADLOCK_DETECTED.

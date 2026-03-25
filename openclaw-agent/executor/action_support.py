@@ -2,11 +2,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
+import sys
 from typing import Any
 
 
 logger = logging.getLogger("chathan.executor")
 SUBPROCESS_TIMEOUT = 120
+
+
+def _kill_tree(pid: int) -> None:
+    """Kill a process and all its children (best-effort)."""
+    if sys.platform == "win32":
+        # taskkill /T kills the entire process tree
+        os.system(f"taskkill /F /T /PID {pid} >nul 2>&1")
+    else:
+        # Send SIGKILL to the process group
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
 
 
 async def run_subprocess(
@@ -19,6 +38,7 @@ async def run_subprocess(
 ) -> dict[str, Any]:
     """Run a fixed argument list and capture bounded stdout/stderr."""
     logger.debug("exec: %s  (cwd=%s)", args, cwd)
+    # start_new_session so we can kill the entire process group on timeout
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdin=asyncio.subprocess.PIPE if stdin_data else None,
@@ -26,6 +46,7 @@ async def run_subprocess(
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
         env=env,
+        start_new_session=True,
     )
     try:
         input_bytes = stdin_data.encode("utf-8") if stdin_data else None
@@ -33,8 +54,11 @@ async def run_subprocess(
             proc.communicate(input=input_bytes), timeout=timeout
         )
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
+        _kill_tree(proc.pid)
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=5)
+        except (asyncio.TimeoutError, ProcessLookupError):
+            pass
         return {
             "returncode": -1,
             "stdout": "",
