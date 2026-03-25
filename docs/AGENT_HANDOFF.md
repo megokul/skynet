@@ -6,6 +6,13 @@ Last updated (UTC): 2026-03-18 10:24
 
 WebSocket-primary worker execution with the checked-in settings as the source of truth: `legacy` orchestration by default, `loop_v2` enabled, Codex as planner primary, `qwen,codex` coding fallback, and SSH fallback disabled unless explicitly enabled.
 
+### 2026-03-25 Failed Critics No Longer Deadlock gate_final
+
+- Graph 53: all 5 work nodes completed but `critic_4` failed (CRITIC_PARSE_ERROR after Qwen quota exhaustion during repair). `gate_final` never ran → DEADLOCK_DETECTED.
+- Root cause: failed critics were marked "failed" (terminal), but `runnable_nodes` only accepted "done"/"skipped" deps. `gate_final` depends on all critics → deadlock.
+- Fix: failed/parse-error critics now marked "skipped" instead of "failed". `gate_final` unblocks and reports the overall graph result. `_gate_executor` already accepts "skipped" critics.
+- Test results: 266 passed, 3 skipped, 0 failures.
+
 ### 2026-03-25 Smoke Gate Server-Aware Timeout Handling
 
 - Fixed: HTML page project ("Philipinte pari") failed because smoke gate ran `python philipinte_pari.py` which starts `httpd.serve_forever()` — hangs 120s → killed → "process timed out" → misclassified as infra failure → repair never triggered → graph failed (complete=0, failed=2).

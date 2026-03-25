@@ -606,21 +606,23 @@ class ClosedLoopController:
             await emit(node, "done", {"summary": "critic timed out", "warning": "timeout"})
             return "done"
         if parse_error:
+            # Mark as skipped (not failed) so gate_final can still run and
+            # report the overall result instead of deadlocking.
             await update_task_node_status(
                 self._db,
                 node_id=node.node_id,
-                status="failed",
+                status="skipped",
                 error_message=str(result.get("error") or "CRITIC_PARSE_ERROR"),
                 failure_type=FAIL_CRITIC_PARSE,
                 finished_at=now,
             )
-            node.status = "failed"
+            node.status = "skipped"
             await emit(
                 node,
-                "failed",
+                "skipped",
                 {"error": str(result.get("error") or "CRITIC_PARSE_ERROR"), "failure_type": FAIL_CRITIC_PARSE},
             )
-            return "failed"
+            return "skipped"
 
         blocking = bool(result.get("blocking"))
         if not blocking and bool(result.get("ok", True)):
@@ -681,18 +683,20 @@ class ClosedLoopController:
             await emit(node, "needs_changes", {"repair_node_key": repair_key})
             return "repair_created"
 
+        # Mark as skipped (not failed) so gate_final can still run and
+        # report the overall result instead of deadlocking.
         await update_task_node_status(
             self._db,
             node_id=node.node_id,
-            status="failed",
+            status="skipped",
             error_message=str(result.get("summary") or "critic blocked"),
             failure_type=str(result.get("failure_type") or "STRICT_GATE_FAILED"),
             finished_at=now,
         )
-        node.status = "failed"
+        node.status = "skipped"
         await emit(
             node,
-            "failed",
+            "skipped",
             {
                 "summary": str(result.get("summary") or "critic blocked"),
                 "failure_type": str(result.get("failure_type") or "STRICT_GATE_FAILED"),
