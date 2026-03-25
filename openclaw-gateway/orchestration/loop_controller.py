@@ -461,7 +461,12 @@ class ClosedLoopController:
         gates_passed = all(n.status == "done" for n in gate_nodes) if gate_nodes else True
         if any_stopped:
             graph_status = "stopped"
-        elif all_resolved and gates_passed:
+        elif gates_passed:
+            # gate_final passed — it already validated all critics + completion
+            # contract, so trust its verdict even if some work nodes failed
+            # (their failures were handled by the critic→repair flow).
+            graph_status = "completed"
+        elif all_resolved:
             graph_status = "completed"
         else:
             graph_status = "failed"

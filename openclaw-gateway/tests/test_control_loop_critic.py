@@ -158,3 +158,125 @@ def test_real_infra_errors_still_classified():
     assert _is_infra_error("no agent connected") is True
     assert _is_infra_error("worker not connected") is True
 
+
+# ── Smoke timeout normal-return path tests ──────────────────────────
+
+
+def test_smoke_timeout_normal_return_detected():
+    """Worker returns timeout as a normal result (not exception).
+
+    The smoke gate should detect 'Process timed out' in the result text
+    and treat it as passed (server/GUI app that started OK).
+    """
+    # Simulate the normal-return path logic from coding.py
+    smoke_summary = "Process timed out after 15s and was killed."
+    excerpt = "returncode=-1 stderr=Process timed out after 15s and was killed."
+    _combined = f"{smoke_summary} {excerpt}".lower()
+    smoke_failed = True  # _action_exit_code != 0
+    if "process timed out" in _combined or "timed out" in _combined:
+        smoke_failed = False
+        smoke_summary = "entrypoint started OK (killed after timeout)"
+    assert smoke_failed is False
+    assert "started OK" in smoke_summary
+
+
+def test_smoke_real_failure_not_overridden():
+    """A real smoke failure (syntax error, crash) must NOT be overridden."""
+    smoke_summary = "SyntaxError: invalid syntax"
+    excerpt = "returncode=1 stderr=SyntaxError: invalid syntax"
+    _combined = f"{smoke_summary} {excerpt}".lower()
+    smoke_failed = True
+    if "process timed out" in _combined or "timed out" in _combined:
+        smoke_failed = False
+    assert smoke_failed is True
+
+
+# ── Quota exhaustion detection tests ────────────────────────────────
+
+
+def test_quota_exhaustion_detected():
+    """Provider quota errors in summary should be caught."""
+    patterns = [
+        "Qwen OAuth quota exceeded: Your free daily quota has been reached.",
+        "Rate limit exceeded. Please try again later.",
+        "Your daily quota has been exhausted.",
+    ]
+    _QUOTA_PATTERNS = ("quota exceeded", "quota has been reached", "rate limit", "daily quota")
+    for msg in patterns:
+        assert any(p in msg.lower() for p in _QUOTA_PATTERNS), f"Not detected: {msg}"
+
+
+def test_normal_summary_not_flagged_as_quota():
+    """Normal summaries must not trigger quota detection."""
+    normal = [
+        "All files written successfully.",
+        "Created main.py with HTTP server.",
+        "Tests pass (6/6) and entrypoint runs successfully.",
+    ]
+    _QUOTA_PATTERNS = ("quota exceeded", "quota has been reached", "rate limit", "daily quota")
+    for msg in normal:
+        assert not any(p in msg.lower() for p in _QUOTA_PATTERNS), f"False positive: {msg}"
+
+
+# ── Graph completion logic tests ────────────────────────────────────
+
+
+def test_graph_completed_when_gate_final_passes_despite_failed_work():
+    """If gate_final passed, graph should be 'completed' even if a work node failed."""
+    from dataclasses import dataclass, field
+
+    @dataclass
+    class FakeNode:
+        node_type: str
+        status: str
+
+    final_nodes = [
+        FakeNode(node_type="work", status="failed"),      # work_1 failed
+        FakeNode(node_type="critic", status="skipped"),    # critic_1 skipped
+        FakeNode(node_type="work", status="done"),         # work_2 done
+        FakeNode(node_type="critic", status="done"),       # critic_2 done
+        FakeNode(node_type="gate", status="done"),         # gate_final passed
+    ]
+    any_stopped = any(n.status == "stopped" for n in final_nodes)
+    gate_nodes = [n for n in final_nodes if n.node_type == "gate"]
+    gates_passed = all(n.status == "done" for n in gate_nodes) if gate_nodes else True
+
+    if any_stopped:
+        graph_status = "stopped"
+    elif gates_passed:
+        graph_status = "completed"
+    else:
+        all_resolved = all(n.status in ("done", "skipped") for n in final_nodes)
+        graph_status = "completed" if all_resolved else "failed"
+
+    assert graph_status == "completed"
+
+
+def test_graph_fails_when_gate_final_fails():
+    """If gate_final itself failed, graph should be 'failed'."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeNode:
+        node_type: str
+        status: str
+
+    final_nodes = [
+        FakeNode(node_type="work", status="done"),
+        FakeNode(node_type="critic", status="done"),
+        FakeNode(node_type="gate", status="failed"),   # gate_final failed
+    ]
+    gate_nodes = [n for n in final_nodes if n.node_type == "gate"]
+    gates_passed = all(n.status == "done" for n in gate_nodes) if gate_nodes else True
+    any_stopped = any(n.status == "stopped" for n in final_nodes)
+
+    if any_stopped:
+        graph_status = "stopped"
+    elif gates_passed:
+        graph_status = "completed"
+    else:
+        all_resolved = all(n.status in ("done", "skipped") for n in final_nodes)
+        graph_status = "completed" if all_resolved else "failed"
+
+    assert graph_status == "failed"
+

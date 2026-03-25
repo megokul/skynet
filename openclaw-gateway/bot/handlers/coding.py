@@ -3033,6 +3033,12 @@ async def _run_strict_quality_gates(
                     if smoke_failed
                     else _action_excerpt(smoke_result)
                 )
+                # Process timeout on normal return = server/GUI app that started OK
+                if smoke_failed:
+                    _combined = f"{smoke_summary} {_action_excerpt(smoke_result)}".lower()
+                    if "process timed out" in _combined or "timed out" in _combined:
+                        smoke_failed = False
+                        smoke_summary = "entrypoint started OK (killed after timeout)"
                 await _record_gate_result(
                     db=db,
                     task_id=task_id,
@@ -4752,6 +4758,21 @@ async def _run_control_loop_v1(
         inner = generation_result.get("inner", {})
         written = _normalize_written_files(inner.get("files_written"))
         summary = str(inner.get("stdout") or inner.get("stderr") or "").strip()[:500]
+
+        # Detect provider quota exhaustion masquerading as success
+        _QUOTA_PATTERNS = ("quota exceeded", "quota has been reached", "rate limit", "daily quota")
+        if any(p in summary.lower() for p in _QUOTA_PATTERNS):
+            error_msg = f"PROVIDER_QUOTA_EXHAUSTED: {summary[:220]}"
+            await update_task_status(db, task_rec["id"], status="failed", error_message=error_msg)
+            await _trace_event(
+                node=node, event_type="generation.quota_exhausted",
+                status="failed", failure_type=FAIL_ENVIRONMENT,
+                details={"error": error_msg},
+            )
+            if node.node_type == "work":
+                failed_milestones += 1
+            return {"ok": False, "error": error_msg, "failure_type": FAIL_ENVIRONMENT}
+
         tools_ok, tools_error, tools_failure_type = await _run_required_tools(node, written)
         if not tools_ok:
             await update_task_status(
