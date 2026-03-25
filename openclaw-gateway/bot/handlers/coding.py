@@ -4048,11 +4048,11 @@ def _control_loop_work_prompt(
         f"- Prefer entrypoint file `{preferred_entrypoint}` unless an existing entrypoint already exists.\n"
         "- Create or update tests needed to validate behavior.\n"
         "- Write complete files and ensure they run.\n"
-        "- The entrypoint MUST exit cleanly within a few seconds (exit code 0). "
-        "Do NOT start long-running servers, event loops, or blocking calls in the entrypoint. "
-        "Do NOT call webbrowser.open(), os.startfile(), or launch any GUI/popup. "
-        "For server apps, the entrypoint should print a status message and exit. "
-        "Put the actual server behind a --serve flag or in a separate script.\n"
+        "- The entrypoint in skynet_run.json MUST be the main script that "
+        "demonstrates the project's core functionality. Do NOT create a stub "
+        "entrypoint that just prints a message — the entrypoint IS what the "
+        "user runs. For GUI/popup apps, the entrypoint should show the GUI. "
+        "For server apps, the entrypoint should start the server.\n"
         "- Do not ask clarifying questions.\n"
         "- Do NOT return architecture plans, checklists, or mermaid diagrams."
     )
@@ -4087,11 +4087,9 @@ def _control_loop_repair_prompt(
         if "timed out" in msg or "timeout" in msg:
             timeout_hint = (
                 "\nIMPORTANT: The smoke gate timed out because the entrypoint runs a "
-                "long-lived process (e.g. HTTP server with serve_forever()). The entrypoint "
-                "must exit cleanly within 15 seconds. For servers, make the entrypoint print "
-                "a status message and exit 0 (e.g. verify imports work, print 'Server ready'), "
-                "and put the actual server code in a separate function or behind "
-                "if __name__ == '__main__': with a --serve flag.\n"
+                "long-lived process. This is OK for servers and GUI apps — the smoke "
+                "gate treats timeouts as success (app started without crashing). "
+                "Make sure the entrypoint IS the real application, not a stub.\n"
             )
             break
     return (
