@@ -40,6 +40,7 @@ from bot.keyboards import (
     tracker_session_controls,
 )
 from bot.handlers import (
+    coding_planning,
     coding_stage_execution,
     coding_stage_policy,
     coding_terminal,
@@ -7478,175 +7479,31 @@ async def _extract_milestones_codex_then_router(
     project: dict[str, Any],
     working_dir: str,
 ) -> list[str]:
-    def _deterministic_fallback() -> list[str]:
-        plan_text = str(project.get("description") or "").strip()
-        from_numbered = _parse_milestones_fallback(plan_text)
-        if from_numbered:
-            return from_numbered
-
-        bullets: list[str] = []
-        for line in plan_text.splitlines():
-            match = re.match(r"^\s*[-*]\s+(.+?)\s*$", line)
-            if not match:
-                continue
-            item = match.group(1).strip()
-            if not item:
-                continue
-            lowered = item.lower()
-            if lowered in {"none", "n/a"}:
-                continue
-            if lowered.startswith("original user requirements"):
-                continue
-            bullets.append(item)
-        if bullets:
-            deduped: list[str] = []
-            seen: set[str] = set()
-            for item in bullets:
-                key = item.lower()
-                if key in seen:
-                    continue
-                seen.add(key)
-                deduped.append(item)
-            return deduped[:4]
-
-        project_name = str(project.get("name") or "project").strip() or "project"
-        return [
-            f"Implement core functionality for {project_name} from approved requirements",
-            "Add tests plus skynet_run.json and verify successful run output",
-        ]
-
-    def _reset_loop_graph_hints() -> None:
-        project["_loop_success_contract"] = {}
-        project["_loop_execution_strategy"] = {}
-        project["_loop_parallel_lanes"] = []
-        project["_loop_risk_assessment"] = []
-        project["_loop_node_specs"] = []
-
-    planner_agent = _planner_primary_agent()
-    allow_router_fallback = _control_loop_router_fallback_enabled()
-    if planner_agent not in _planner_worker_agents():
-        if _live_e2e_runtime_policy():
-            raise RuntimeError(
-                "Milestone planner fallback is disabled and the primary agent "
-                f"'{planner_agent}' is not eligible."
-            )
-        if allow_router_fallback:
-            return await _extract_milestones_router(router, project)
-        fallback = _deterministic_fallback()
-        _reset_loop_graph_hints()
-        return fallback
-
-    plan = project.get("description", "")
-    if not plan:
-        return []
-
-    # Prefer explicit milestones already present in the approved plan text.
-    # This avoids planner-side DAG drift and keeps coding steps requirement-grounded.
-    direct_milestones = _parse_milestones_fallback(str(plan))
-    if direct_milestones:
-        _reset_loop_graph_hints()
-        return direct_milestones
-
-    prompt = (
-        "You are a project planner. Build an execution DAG for coding milestones.\n"
-        "Return ONLY valid JSON, no markdown.\n"
-        "Preferred schema:\n"
-        "{\"nodes\":[{\"node_key\":\"work_1\",\"title\":\"...\",\"node_type\":\"work\",\"owner\":\"codex\","
-        "\"deps\":[],\"priority\":200,\"tools_required\":[\"code\",\"test\"],\"acceptance\":[],\"risk\":{\"level\":\"medium\"}}],"
-        "\"success_contract\":{\"required_nodes\":[\"work_1\"],\"required_artifacts\":[\"skynet_run.json\"]},"
-        "\"execution_strategy\":{\"mode\":\"adaptive_parallel_x2\"}}\n"
-        "Fallback schema: JSON array of milestone strings.\n\n"
-        f"Project: {project['name']}\n"
-        f"Plan:\n{plan}\n"
+    return await coding_planning.extract_milestones_codex_then_router(
+        deps=coding_planning.MilestoneExtractionDeps(
+            cfg=cfg,
+            logger=logger,
+            send_action=send_action,
+            get_openclaw_runner=get_openclaw_runner,
+            use_acp_orchestration=_use_acp_orchestration,
+            planner_primary_agent=_planner_primary_agent,
+            planner_worker_agents=_planner_worker_agents,
+            planner_acp_agents=_planner_acp_agents,
+            control_loop_router_fallback_enabled=_control_loop_router_fallback_enabled,
+            live_e2e_runtime_policy=_live_e2e_runtime_policy,
+            planner_agent_payload=_planner_agent_payload,
+            action_error_text=_action_error_text,
+            action_exit_code=_action_exit_code,
+            action_inner_result=_action_inner_result,
+            action_excerpt=_action_excerpt,
+            parse_milestones_fallback=_parse_milestones_fallback,
+            parse_planner_task_graph_payload=_parse_planner_task_graph_payload,
+            parse_json_string_list=_parse_json_string_list,
+        ),
+        router=router,
+        project=project,
+        working_dir=working_dir,
     )
-    timeout = max(30, int(getattr(cfg, "MILESTONE_CODEX_TIMEOUT_SECONDS", 120) or 120))
-
-    try:
-        if _use_acp_orchestration() and planner_agent in _planner_acp_agents():
-            runner = get_openclaw_runner()
-            session = await runner.start_session(
-                phase="milestone_extraction",
-                project_id=str(project.get("id") or ""),
-                task_id=None,
-                stage=planner_agent,
-                runtime=str(getattr(cfg, "OPENCLAW_RUNTIME", "acp") or "acp"),
-                queue_mode="soft",
-            )
-            run_result = await runner.run_prompt(
-                session_id=str(session.get("session_id") or ""),
-                prompt=prompt,
-                timeout_seconds=timeout,
-                stage=planner_agent,
-                backend="native",
-            )
-            if int(run_result.get("returncode", 1) or 1) != 0:
-                raise RuntimeError(
-                    str(run_result.get("stderr") or run_result.get("stdout") or f"{planner_agent} failed")
-                )
-            output = str(run_result.get("stdout") or "").strip()
-        else:
-            await send_action(
-                "create_directory",
-                {"directory": working_dir},
-                timeout=20,
-                confirmed=True,
-            )
-            result = await send_action(
-                "run_coding_agent",
-                _planner_agent_payload(
-                    agent=planner_agent,
-                    prompt=prompt,
-                    working_dir=working_dir,
-                    timeout_seconds=timeout,
-                ),
-                timeout=timeout,
-                confirmed=True,
-            )
-            if result.get("status") == "error":
-                raise RuntimeError(_action_error_text(result, "run_coding_agent"))
-            if _action_exit_code(result) != 0:
-                raise RuntimeError(_action_excerpt(result))
-            output = str(_action_inner_result(result).get("stdout") or "").strip()
-
-        parsed_graph = _parse_planner_task_graph_payload(output)
-        if parsed_graph:
-            project["_loop_success_contract"] = parsed_graph.get("success_contract") or {}
-            project["_loop_execution_strategy"] = parsed_graph.get("execution_strategy") or {}
-            project["_loop_parallel_lanes"] = parsed_graph.get("parallel_lanes") or []
-            project["_loop_risk_assessment"] = parsed_graph.get("risk_assessment") or []
-            project["_loop_node_specs"] = parsed_graph.get("nodes") or []
-            return [str(item).strip() for item in (parsed_graph.get("milestones") or []) if str(item).strip()]
-        parsed_list = _parse_json_string_list(output)
-        if parsed_list:
-            _reset_loop_graph_hints()
-            return parsed_list
-        fallback = _deterministic_fallback()
-        _reset_loop_graph_hints()
-        logger.warning(
-            "milestone.primary.codex_invalid_json project_id=%s fallback_count=%s",
-            project.get("id"),
-            len(fallback),
-        )
-        return fallback
-    except Exception as exc:
-        logger.warning(
-            "milestone.primary.failover project_id=%s stage=%s error=%s",
-            project.get("id"),
-            planner_agent,
-            str(exc)[:220],
-        )
-        fallback = _deterministic_fallback()
-        if fallback:
-            _reset_loop_graph_hints()
-            logger.warning(
-                "milestone.primary.local_fallback project_id=%s fallback_count=%s",
-                project.get("id"),
-                len(fallback),
-            )
-            return fallback
-        if allow_router_fallback:
-            return await _extract_milestones_router(router, project)
-        raise
 
 
 async def _extract_milestones(
@@ -7666,6 +7523,13 @@ async def _extract_milestones(
 
 
 async def _extract_milestones_router(router, project: dict) -> list[str]:
+    return await coding_planning.extract_milestones_router(
+        logger=logger,
+        router=router,
+        project=project,
+        parse_milestones_fallback=_parse_milestones_fallback,
+    )
+
     """
     Ask the LLM to extract an ordered list of coding milestones from the plan.
     Returns a list of milestone description strings.
@@ -7754,6 +7618,18 @@ async def _extract_milestones_with_heartbeat(
     stop_request_cache_key: str,
     heartbeat_hook: Callable[[int], Awaitable[None]] | None = None,
 ) -> list[str]:
+    return await coding_planning.extract_milestones_with_heartbeat(
+        cfg=cfg,
+        extract_milestones=_extract_milestones,
+        router=router,
+        project=project,
+        working_dir=working_dir,
+        app=app,
+        chat_id=chat_id,
+        stop_request_cache_key=stop_request_cache_key,
+        heartbeat_hook=heartbeat_hook,
+    )
+
     heartbeat = max(
         1,
         int(getattr(cfg, "MILESTONE_EXTRACTION_HEARTBEAT_SECONDS", 20) or 20),

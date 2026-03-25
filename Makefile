@@ -1,4 +1,4 @@
-.PHONY: help install install-agent install-all test test-all test-unit test-control-plane test-gateway test-agent test-policy test-gateway-e2e test-live-conversation clean clean-data run-api run-bot dev-setup manual-check-api manual-check-e2e manual-check-delegate check-stale-paths check-control-boundary check-settings-policy check-hygiene check-policy smoke format lint check
+.PHONY: help install install-control-plane install-gateway install-agent install-dev install-runtime install-all test test-all test-unit test-control-plane test-gateway test-agent test-policy test-policy-strict test-gateway-e2e test-live-conversation clean clean-data run-api run-bot dev-setup manual-check-api manual-check-e2e manual-check-delegate check-stale-paths check-control-boundary check-settings-policy check-gateway-warnings check-hygiene check-policy check-policy-strict smoke format lint check
 
 # Default target
 help:
@@ -6,9 +6,13 @@ help:
 	@echo "============================"
 	@echo ""
 	@echo "Setup:"
-	@echo "  make install      - Install control-plane and shared dependencies"
+	@echo "  make install      - Install control-plane, gateway, and dev dependencies"
+	@echo "  make install-control-plane - Install control-plane runtime dependencies"
+	@echo "  make install-gateway - Install gateway runtime dependencies"
 	@echo "  make install-agent - Install worker-agent dependencies"
-	@echo "  make install-all  - Install both shared and worker-agent dependencies"
+	@echo "  make install-dev  - Install test/format/lint dependencies"
+	@echo "  make install-runtime - Install control-plane and gateway runtime dependencies"
+	@echo "  make install-all  - Install runtime, worker-agent, and dev dependencies"
 	@echo "  make dev-setup    - Complete development setup"
 	@echo ""
 	@echo "Testing:"
@@ -41,18 +45,30 @@ help:
 	@echo "  make check-stale-paths - Fail on stale root path references"
 	@echo "  make check-control-boundary - Enforce SKYNET control-plane boundaries"
 	@echo "  make check-settings-policy - Enforce shared settings source-of-truth policy"
+	@echo "  make check-gateway-warnings - Triage known Paramiko/Cryptography gateway warnings"
 	@echo "  make check-hygiene - Enforce repo hygiene and curated test topology"
-	@echo "  make check-policy - Enforce engineering policy docs/evidence rules"
+	@echo "  make check-policy - Enforce engineering policy baseline docs/rules"
+	@echo "  make check-policy-strict - Enforce strict handoff evidence for changed code paths"
 	@echo "  make smoke        - Quick repo health checks"
 	@echo "  make check        - Run all checks"
 
-install:
+install: install-runtime install-dev
+
+install-control-plane:
 	pip install -r requirements.txt
+
+install-gateway:
+	pip install -r openclaw-gateway/requirements.txt
 
 install-agent:
 	pip install -r openclaw-agent/requirements.txt
 
-install-all: install install-agent
+install-dev:
+	pip install -r requirements-dev.txt
+
+install-runtime: install-control-plane install-gateway
+
+install-all: install-runtime install-agent install-dev
 
 dev-setup: install-all
 	@echo "Setting up development environment..."
@@ -77,7 +93,7 @@ test-unit:
 
 test-control-plane:
 	@echo "Running curated root control-plane and repo-policy tests..."
-	python -m pytest tests/test_api_lifespan.py tests/test_api_provider_config.py tests/test_api_control_plane.py tests/test_job_locking.py tests/test_task_queue_control_plane.py tests/test_worker_registry.py tests/test_ci_engineering_policy.py tests/test_prompt_references.py -q
+	python -m skynet.test_matrix --run
 
 test-gateway:
 	@echo "Running gateway tests..."
@@ -92,8 +108,13 @@ test-policy:
 	python scripts/ci/check_stale_paths.py
 	python scripts/ci/check_control_plane_boundary.py
 	python scripts/ci/check_settings_policy.py
+	python scripts/ci/check_gateway_warning_allowlist.py
 	python scripts/ci/check_repo_hygiene.py
-	python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
+	python scripts/ci/check_engineering_policy.py --mode baseline
+
+test-policy-strict:
+	@echo "Running strict engineering policy checks..."
+	python scripts/ci/check_engineering_policy.py --mode strict --base-ref HEAD~1 --head-ref HEAD
 
 test-gateway-e2e:
 	@echo "Running deterministic gateway conversation E2E tests..."
@@ -135,13 +156,21 @@ check-settings-policy:
 	@echo "Checking shared settings policy..."
 	python scripts/ci/check_settings_policy.py
 
+check-gateway-warnings:
+	@echo "Checking gateway warning allowlist..."
+	python scripts/ci/check_gateway_warning_allowlist.py
+
 check-hygiene:
 	@echo "Checking repo hygiene..."
 	python scripts/ci/check_repo_hygiene.py
 
 check-policy:
-	@echo "Checking engineering policy compliance..."
-	python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
+	@echo "Checking engineering policy baseline..."
+	python scripts/ci/check_engineering_policy.py --mode baseline
+
+check-policy-strict:
+	@echo "Checking strict engineering policy compliance..."
+	python scripts/ci/check_engineering_policy.py --mode strict --base-ref HEAD~1 --head-ref HEAD
 
 smoke: check-stale-paths check-control-boundary check-settings-policy check-hygiene check-policy
 	@echo "Running smoke checks..."
@@ -163,5 +192,5 @@ lint:
 	@echo "Running linters..."
 	flake8 skynet/ openclaw-gateway/ openclaw-agent/ tests/ scripts/ --max-line-length=100
 
-check: clean test lint
+check: clean test test-policy-strict lint
 	@echo "All checks passed!"

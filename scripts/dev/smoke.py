@@ -8,6 +8,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from skynet.test_matrix import run_root_test_matrix
 
 
 def run(cmd: list[str]) -> None:
@@ -20,7 +24,7 @@ def main() -> int:
     run([sys.executable, "scripts/ci/check_control_plane_boundary.py"])
     run([sys.executable, "scripts/ci/check_settings_policy.py"])
     run([sys.executable, "scripts/ci/check_repo_hygiene.py"])
-    run([sys.executable, "scripts/ci/check_engineering_policy.py"])
+    run([sys.executable, "scripts/ci/check_engineering_policy.py", "--mode", "baseline"])
     run(
         [
             sys.executable,
@@ -39,22 +43,8 @@ def main() -> int:
             "scripts/ci/check_repo_hygiene.py",
         ]
     )
-    run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "tests/test_api_lifespan.py",
-            "tests/test_api_provider_config.py",
-            "tests/test_api_control_plane.py",
-            "tests/test_job_locking.py",
-            "tests/test_task_queue_control_plane.py",
-            "tests/test_worker_registry.py",
-            "tests/test_ci_engineering_policy.py",
-            "tests/test_prompt_references.py",
-            "-q",
-        ]
-    )
+    print(f"$ {sys.executable} -m skynet.test_matrix --run")
+    run_root_test_matrix(cwd=ROOT)
     print("Smoke checks passed.")
     return 0
 

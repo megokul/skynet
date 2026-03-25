@@ -11,6 +11,8 @@ from typing import Sequence
 
 
 ROOT = Path(__file__).resolve().parents[2]
+POLICY_MODE_BASELINE = "baseline"
+POLICY_MODE_STRICT = "strict"
 
 REQUIRED_DOC_HEADINGS: dict[str, list[str]] = {
     "docs/INDEX.md": [
@@ -79,7 +81,6 @@ TRACE_MARKER_PATTERN = re.compile(
 TEMPLATE_DOCSTRING_BLOCK_PATTERN = re.compile(r'(?ms)^[ \t]*"""\n.*?^[ \t]*"""[ \t]*$')
 TEMPLATE_DOCSTRING_MARKERS = ("Purpose:", "How it works:", "Why this exists:")
 TEMPLATE_DOCSTRING_ALLOWLIST = {
-    "openclaw-gateway/logging_setup.py",
     "openclaw-gateway/ssh_tunnel_executor.py",
 }
 
@@ -256,33 +257,44 @@ def main() -> int:
     parser.add_argument("--base-ref", default="HEAD~1", help="Base git ref for changed-file detection.")
     parser.add_argument("--head-ref", default="HEAD", help="Head git ref for changed-file detection.")
     parser.add_argument(
-        "--strict",
-        action="store_true",
-        default=True,
-        help="Enable strict handoff evidence checks for code-path changes (default: enabled).",
+        "--mode",
+        choices=(POLICY_MODE_BASELINE, POLICY_MODE_STRICT),
+        default=POLICY_MODE_BASELINE,
+        help="baseline checks docs/docstrings only; strict also enforces handoff evidence for changed code paths.",
     )
     parser.add_argument(
-        "--no-strict",
-        action="store_false",
-        dest="strict",
-        help="Disable strict handoff evidence checks.",
+        "--strict",
+        action="store_const",
+        const=POLICY_MODE_STRICT,
+        dest="mode",
+        help="Compatibility alias for --mode strict.",
+    )
+    parser.add_argument(
+        "--baseline",
+        action="store_const",
+        const=POLICY_MODE_BASELINE,
+        dest="mode",
+        help="Compatibility alias for --mode baseline.",
     )
     args = parser.parse_args()
 
-    try:
-        changed_files = collect_changed_files(ROOT, args.base_ref, args.head_ref)
-    except RuntimeError as exc:
-        print(f"Engineering policy check failed to collect changed files: {exc}")
-        return 1
+    strict = args.mode == POLICY_MODE_STRICT
+    changed_files: list[str] = []
+    if strict:
+        try:
+            changed_files = collect_changed_files(ROOT, args.base_ref, args.head_ref)
+        except RuntimeError as exc:
+            print(f"Engineering policy check failed to collect changed files: {exc}")
+            return 1
 
-    violations = evaluate_policy(ROOT, changed_files, strict=args.strict)
+    violations = evaluate_policy(ROOT, changed_files, strict=strict)
     if violations:
         print("Engineering policy violations detected:")
         for violation in violations:
             print(f"- {violation}")
         return 1
 
-    print("Engineering policy check passed.")
+    print(f"Engineering policy check passed ({args.mode}).")
     return 0
 
 

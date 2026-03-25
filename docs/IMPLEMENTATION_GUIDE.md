@@ -46,7 +46,10 @@ Primary modules:
 - `openclaw-gateway/main.py`: bootstraps DB/router/server/bot.
 - `openclaw-gateway/live_settings.py`: shared gateway runtime/bootstrap entrypoint for live tests and tooling.
 - `openclaw-gateway/gateway.py`: WS auth + pending request map + send_action.
-- `openclaw-gateway/api.py`: `/status`, `/action`, idempotency cache, SSH fallback routing.
+- `openclaw-gateway/api.py`: app factory + route wiring.
+- `openclaw-gateway/api_action_routes.py`: `/action`, idempotency cache, emergency controls.
+- `openclaw-gateway/api_status_routes.py`: `/status` diagnostics and transport reporting.
+- `openclaw-gateway/api_profile_routes.py`: profile and memory-policy endpoints.
 - `openclaw-gateway/bot/`: Telegram handlers (`project.py`, `coding.py`, `chat.py`, `greeting.py`).
 - `openclaw-gateway/ssh_tunnel_executor.py`: allowlisted remote execution path.
 
@@ -171,7 +174,9 @@ Safe-edit hotspots:
 - `skynet/api/routes.py` route behavior and response contracts.
 - `skynet/ledger/task_queue.py` scheduling and transition logic.
 - `openclaw-gateway/bot/handlers/*.py` Telegram behavior.
-- `openclaw-gateway/api.py` dispatch/idempotency behavior.
+- `openclaw-gateway/api_action_routes.py` dispatch/idempotency behavior.
+- `openclaw-gateway/db/store.py` facade exports over gateway persistence helpers.
+- `openclaw-gateway/logging_setup.py` logging bootstrap and sink wiring.
 
 High-risk files:
 
@@ -185,7 +190,7 @@ High-risk files:
 Control-plane focused:
 
 ```bash
-python -m pytest tests/test_api_lifespan.py tests/test_api_provider_config.py tests/test_api_control_plane.py tests/test_job_locking.py tests/test_task_queue_control_plane.py tests/test_worker_registry.py tests/test_ci_engineering_policy.py tests/test_prompt_references.py -q
+python -m skynet.test_matrix --run
 ```
 
 Gateway focused:
@@ -206,8 +211,10 @@ Policy and guardrails:
 python scripts/ci/check_stale_paths.py
 python scripts/ci/check_control_plane_boundary.py
 python scripts/ci/check_settings_policy.py
+python scripts/ci/check_gateway_warning_allowlist.py
 python scripts/ci/check_repo_hygiene.py
-python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
+python scripts/ci/check_engineering_policy.py --mode baseline
+python scripts/ci/check_engineering_policy.py --mode strict --base-ref HEAD~1 --head-ref HEAD
 ```
 
 Deterministic gateway conversation E2E (CI-safe, local bare git remote push):

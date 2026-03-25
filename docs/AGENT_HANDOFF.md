@@ -1,10 +1,45 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-18 10:24
+Last updated (UTC): 2026-03-25 13:50
 
 ## Current Goal
 
 WebSocket-primary worker execution with the checked-in settings as the source of truth: `legacy` orchestration by default, `loop_v2` enabled, Codex as planner primary, `qwen,codex` coding fallback, and SSH fallback disabled unless explicitly enabled.
+
+### 2026-03-25 Live Conversation E2E Readiness Fix
+
+- Ran the real websocket-primary live conversation flow end-to-end on the local laptop profile.
+- Initial failure was not provider or transport downtime; it was a preflight race:
+  - the test waited for the socket connection event
+  - preflight queried `/status` before the worker `agent_hello` had fully populated websocket heartbeat / coding-agent state
+  - local host-side conversation runs also inherited a stale `SKYNET_LIVE_E2E_EXPECT_REMOTE_BUILD_REVISION` pin from `.env.local-e2e`, even though the local `/status` contract does not advertise `build_revision`
+- Fix in `openclaw-gateway/tests/live_diagnostics.py`:
+  - added a short local websocket readiness warmup before preflight enforces transport/agent requirements
+  - remote build revision pins are now enforced only for remote-container status probes, and traced as skipped for local host-side status checks
+- Updated `openclaw-gateway/tests/test_live_e2e_trace_logging.py` so unit coverage distinguishes remote build-pin enforcement from local-host skip behavior.
+- Result: the real live conversation flow now passes cleanly with websocket-primary transport and qwen preflight probes.
+
+### 2026-03-25 Repo Stabilization And Optimization Pass
+
+- Added one authoritative control-plane/root test entrypoint at `python -m skynet.test_matrix --run`.
+- Aligned `Makefile`, `scripts/dev/smoke.py`, repo-hygiene coverage, and docs to that shared matrix so the repo no longer hardcodes divergent root test lists.
+- Split `scripts/ci/check_engineering_policy.py` into explicit `baseline` and `strict` modes.
+  - `baseline` enforces documentation/docstring policy for local health checks.
+  - `strict` preserves handoff evidence requirements for changed code paths.
+- Added explicit install targets and requirements ownership for control-plane, gateway, agent, and dev tooling.
+- Extracted helper seams from gateway/control-plane hotspots without changing public entrypoints:
+  - `openclaw-gateway/logging_targets.py`
+  - `openclaw-gateway/logging_handlers.py`
+  - `openclaw-gateway/ssh_tunnel_health.py`
+  - `openclaw-gateway/db/store_support.py`
+  - `openclaw-gateway/db/store_memory.py`
+  - `openclaw-gateway/db/store_runtime_trace.py`
+  - `openclaw-gateway/db/store_worker_policy.py`
+  - `skynet/ledger/task_queue_support.py`
+  - `openclaw-gateway/bot/handlers/coding_planning.py`
+- `openclaw-gateway/logging_setup.py`, `openclaw-gateway/ssh_tunnel_executor.py`, `openclaw-gateway/db/store.py`, `skynet/ledger/task_queue.py`, and `openclaw-gateway/bot/handlers/coding.py` now delegate more work through those internal seams while keeping compatibility facades intact.
+- Fixed a queue regression found during verification: `TaskQueueManager.list_task_events()` now imports the shared JSON decoder helper correctly after the extraction.
+- Removed the temporary template-docstring allowlist entry for `openclaw-gateway/logging_setup.py`; only `openclaw-gateway/ssh_tunnel_executor.py` remains on the allowlist for deferred cleanup.
 
 ### 2026-03-25 Worker Kills Entire Process Tree on Timeout
 
@@ -1319,6 +1354,21 @@ WebSocket-primary worker execution with the checked-in settings as the source of
 
 ## Test Results
 
+### 2026-03-25 Live Conversation E2E Readiness Fix
+
+- `python -m pytest openclaw-gateway/tests/test_e2e_conversation_live.py -m live -q -s` -> `1 passed, 3 warnings` in `206.65s`
+- `python -m pytest openclaw-gateway/tests/test_live_e2e_trace_logging.py -q` -> `36 passed`
+- `python -m py_compile openclaw-gateway/tests/live_diagnostics.py openclaw-gateway/tests/test_live_e2e_trace_logging.py openclaw-gateway/tests/test_e2e_conversation_live.py` -> pass
+
+### 2026-03-25 Repo Stabilization And Optimization Pass
+
+- `python scripts/ci/check_repo_hygiene.py` -> pass
+- `python scripts/ci/check_engineering_policy.py --mode baseline` -> pass
+- `python scripts/ci/check_gateway_warning_allowlist.py` -> pass with only known Paramiko/Cryptography deprecation warnings
+- `python -m pytest tests/test_ci_repo_hygiene.py tests/test_ci_engineering_policy.py tests/test_task_queue_control_plane.py tests/test_api_control_plane.py -q` -> `19 passed`
+- `python -m pytest openclaw-gateway/tests/test_logging_websocket_mirror.py openclaw-gateway/tests/test_logging_targets.py openclaw-gateway/tests/test_store_support.py openclaw-gateway/tests/test_ssh_tunnel_health.py openclaw-gateway/tests/test_ssh_tunnel_config.py openclaw-gateway/tests/test_api_action_routes.py openclaw-gateway/tests/test_api_status_diagnostics.py openclaw-gateway/tests/test_planner_resilience.py -q` -> `25 passed, 3 warnings`
+- `python -m py_compile skynet/test_matrix.py scripts/dev/smoke.py scripts/ci/check_engineering_policy.py openclaw-gateway/logging_setup.py openclaw-gateway/logging_targets.py openclaw-gateway/logging_handlers.py openclaw-gateway/ssh_tunnel_executor.py openclaw-gateway/ssh_tunnel_health.py openclaw-gateway/db/store.py openclaw-gateway/db/store_support.py openclaw-gateway/db/store_memory.py openclaw-gateway/db/store_runtime_trace.py openclaw-gateway/db/store_worker_policy.py skynet/ledger/task_queue.py skynet/ledger/task_queue_support.py openclaw-gateway/bot/handlers/coding.py openclaw-gateway/bot/handlers/coding_planning.py` -> pass
+
 ### 2026-03-24 Critic Timeout Resilience
 
 - `python -m pytest openclaw-gateway/tests/ tests/ -q` -> `262 passed, 3 skipped`
@@ -1462,6 +1512,16 @@ WebSocket-primary worker execution with the checked-in settings as the source of
 
 ## Trace Evidence
 
+- request_id=live-conversation-e2e-readiness-20260325
+- task_id=websocket-preflight-warmup-and-local-build-pin-skip
+- `E:\MyProjects\skynet\logs\live-conversation-e2e-1774446287.log`
+- /status websocket-primary preflight contract validated before coding loop start
+
+- request_id=repo-stabilization-pass-20260325
+- task_id=authoritative-root-matrix-and-hotspot-extraction
+- /v1/events regression path validated through `tests/test_api_control_plane.py` and `tests/test_task_queue_control_plane.py`
+- skynet.trace.log policy remains unchanged; this pass focused on structural seams and guardrail verification rather than runtime protocol changes
+
 - request_id=critic-timeout-advisory-20260324
 - task_id=critic-timeout-resilience
 - skynet.trace.log — critic timeout now emits advisory "done" event instead of graph-fatal failure
@@ -1521,6 +1581,16 @@ WebSocket-primary worker execution with the checked-in settings as the source of
 
 ## Documentation Updates
 
+- `openclaw-gateway/tests/live_diagnostics.py`
+- `openclaw-gateway/tests/test_live_e2e_trace_logging.py`
+- `docs/AGENT_HANDOFF.md`
+- `README.md`
+- `docs/INDEX.md`
+- `docs/IMPLEMENTATION_GUIDE.md`
+- `docs/KNOWN_DRIFT_AND_TEST_MATRIX.md`
+- `docs/CODE_QUALITY_AUDIT.md`
+- `tests/README.md`
+
 - `docs/CODE_QUALITY_AUDIT.md`
 - `docs/KNOWN_DRIFT_AND_TEST_MATRIX.md`
 - `skills/skynet-project-documentation/README.md`
@@ -1553,6 +1623,10 @@ WebSocket-primary worker execution with the checked-in settings as the source of
 4. Consider bumping Ollama model to 14b/32b if local quality is insufficient.
 
 ## Policy Checklist
+
+- 2026-03-25 repo stabilization pass:
+  - baseline policy verified locally before strict handoff evidence update
+  - authoritative root matrix and repo hygiene docs were updated together to keep tooling/docs in sync
 
 - [x] Documentation updated for behavior/interface/ops changes.
 - [x] Tests run, commands listed, and outcomes recorded.

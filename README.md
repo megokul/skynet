@@ -128,20 +128,31 @@ docker compose -f docker-compose.skynet-only.yml up -d
 ## Install
 
 ```bash
-# Shared control-plane and gateway dependencies
+# Control-plane runtime dependencies
+make install-control-plane
+
+# Gateway runtime dependencies
+make install-gateway
+
+# Dev/test/format/lint dependencies
+make install-dev
+
+# Default local developer setup (control-plane + gateway + dev tools)
 make install
 
 # Worker-agent dependencies
 make install-agent
 
-# Both dependency sets
+# All runtime + worker + dev dependencies
 make install-all
 ```
 
 Dependency ownership:
 
-- root `requirements.txt`: control plane, shared tooling, and gateway test/runtime dependencies
+- root `requirements.txt`: control-plane runtime dependencies
+- `openclaw-gateway/requirements.txt`: gateway runtime dependencies
 - `openclaw-agent/requirements.txt`: worker-agent specific dependencies
+- `requirements-dev.txt`: test, format, and lint tooling
 
 ## Config Split: Settings vs Secrets
 
@@ -200,15 +211,19 @@ SKYNET_SKIP_ENV_SYNC=1 git push
 ## Tests
 
 ```bash
+python -m skynet.test_matrix --run
 make test-control-plane
 make test-gateway
 make test-agent
 make test-policy
+make test-policy-strict
 make test-all
 make smoke
 python scripts/ci/check_repo_hygiene.py
 python scripts/ci/check_settings_policy.py
-python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
+python scripts/ci/check_gateway_warning_allowlist.py
+python scripts/ci/check_engineering_policy.py --mode baseline
+python scripts/ci/check_engineering_policy.py --mode strict --base-ref HEAD~1 --head-ref HEAD
 ```
 
 Curated root tests are explicit and limited to control-plane and repo-policy coverage:
@@ -219,6 +234,8 @@ Curated root tests are explicit and limited to control-plane and repo-policy cov
 - `tests/test_task_queue_control_plane.py`
 - `tests/test_worker_registry.py`
 - `tests/test_ci_engineering_policy.py`
+- `tests/test_ci_repo_hygiene.py`
+- `tests/test_project_documentation_skill.py`
 - `tests/test_prompt_references.py`
 
 Default pytest discovery remains focused on:

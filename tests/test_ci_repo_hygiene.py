@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+from skynet.test_matrix import ROOT_TEST_ENTRYPOINT
+
 
 def _load_hygiene_module():
     repo_root = Path(__file__).parent.parent
@@ -35,10 +37,12 @@ def _write_common_files(repo_root: Path) -> None:
     (repo_root / "README.md").write_text(
         "\n".join(
             [
+                ROOT_TEST_ENTRYPOINT,
                 "make test-control-plane",
                 "make test-gateway",
                 "make test-agent",
                 "make test-policy",
+                "make test-policy-strict",
                 "python scripts/ci/check_repo_hygiene.py",
             ]
         )
@@ -50,6 +54,7 @@ def _write_common_files(repo_root: Path) -> None:
     (docs / "INDEX.md").write_text(
         "\n".join(
             [
+                ROOT_TEST_ENTRYPOINT,
                 "make test-control-plane",
                 "make test-gateway",
                 "make test-agent",
@@ -62,7 +67,7 @@ def _write_common_files(repo_root: Path) -> None:
     (docs / "IMPLEMENTATION_GUIDE.md").write_text(
         "\n".join(
             [
-                "python -m pytest tests/test_api_lifespan.py tests/test_api_provider_config.py tests/test_api_control_plane.py tests/test_job_locking.py tests/test_task_queue_control_plane.py tests/test_worker_registry.py tests/test_ci_engineering_policy.py tests/test_prompt_references.py -q",
+                ROOT_TEST_ENTRYPOINT,
                 "python scripts/ci/check_repo_hygiene.py",
             ]
         )
@@ -72,8 +77,11 @@ def _write_common_files(repo_root: Path) -> None:
     (docs / "KNOWN_DRIFT_AND_TEST_MATRIX.md").write_text(
         "\n".join(
             [
+                ROOT_TEST_ENTRYPOINT,
                 "tests/test_task_queue_control_plane.py",
                 "tests/test_ci_engineering_policy.py",
+                "tests/test_ci_repo_hygiene.py",
+                "tests/test_project_documentation_skill.py",
                 "tests/test_prompt_references.py",
                 "python scripts/ci/check_repo_hygiene.py",
             ]
@@ -88,6 +96,7 @@ def _write_common_files(repo_root: Path) -> None:
             [
                 "default pytest discovery does not recurse into `tests/`",
                 "`make test-control-plane`",
+                "`python -m skynet.test_matrix --run`",
                 "`test_ci_repo_hygiene.py`",
             ]
         )
@@ -97,12 +106,16 @@ def _write_common_files(repo_root: Path) -> None:
     (repo_root / "Makefile").write_text(
         "\n".join(
             [
+                "install-control-plane:",
+                "install-gateway:",
                 "install-agent:",
+                "install-dev:",
                 "install-all:",
                 "test-control-plane:",
                 "test-gateway:",
                 "test-agent:",
                 "test-policy:",
+                "test-policy-strict:",
                 "check-hygiene:",
             ]
         )

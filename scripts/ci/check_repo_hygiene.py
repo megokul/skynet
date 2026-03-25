@@ -9,6 +9,10 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from skynet.test_matrix import ROOT_TEST_ENTRYPOINT
 
 LEGACY_ROOT_TESTS = (
     "tests/test_commander_engine.py",
@@ -51,42 +55,53 @@ REQUIRED_GITIGNORE_SNIPPETS = (
 )
 
 REQUIRED_MAKE_TARGETS = (
+    "install-control-plane:",
+    "install-gateway:",
     "install-agent:",
+    "install-dev:",
     "install-all:",
     "test-control-plane:",
     "test-gateway:",
     "test-agent:",
     "test-policy:",
+    "test-policy-strict:",
     "check-hygiene:",
 )
 
 REQUIRED_DOC_SNIPPETS = {
     "README.md": (
+        ROOT_TEST_ENTRYPOINT,
         "make test-control-plane",
         "make test-gateway",
         "make test-agent",
         "make test-policy",
+        "make test-policy-strict",
         "python scripts/ci/check_repo_hygiene.py",
     ),
     "docs/INDEX.md": (
+        ROOT_TEST_ENTRYPOINT,
         "make test-control-plane",
         "make test-gateway",
         "make test-agent",
         "python scripts/ci/check_repo_hygiene.py",
     ),
     "docs/IMPLEMENTATION_GUIDE.md": (
-        "python -m pytest tests/test_api_lifespan.py tests/test_api_provider_config.py tests/test_api_control_plane.py tests/test_job_locking.py tests/test_task_queue_control_plane.py tests/test_worker_registry.py tests/test_ci_engineering_policy.py tests/test_prompt_references.py -q",
+        ROOT_TEST_ENTRYPOINT,
         "python scripts/ci/check_repo_hygiene.py",
     ),
     "docs/KNOWN_DRIFT_AND_TEST_MATRIX.md": (
+        ROOT_TEST_ENTRYPOINT,
         "tests/test_task_queue_control_plane.py",
         "tests/test_ci_engineering_policy.py",
+        "tests/test_ci_repo_hygiene.py",
+        "tests/test_project_documentation_skill.py",
         "tests/test_prompt_references.py",
         "python scripts/ci/check_repo_hygiene.py",
     ),
     "tests/README.md": (
         "default pytest discovery does not recurse into `tests/`",
         "`make test-control-plane`",
+        "`python -m skynet.test_matrix --run`",
         "`test_ci_repo_hygiene.py`",
     ),
 }

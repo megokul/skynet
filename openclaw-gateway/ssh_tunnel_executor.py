@@ -42,6 +42,7 @@ from skynet.qwen_cli import (
 from skynet.qwen_runtime import normalize_qwen_result, normalize_qwen_task_mode
 from search.web_search import WebSearcher
 from ssh_tunnel_config import load_ssh_executor_config
+from ssh_tunnel_health import SSHHealthTracker
 from ssh_tunnel_support import (
     build_linux_command as _build_linux_command,
     build_windows_command as _build_windows_command,
@@ -89,10 +90,10 @@ class SSHTunnelExecutor:
         self._active_sessions: dict[str, dict[str, Any]] = {}
         self._active_sessions_lock = threading.Lock()
         self._parallel_sem = threading.BoundedSemaphore(self._max_parallel)
-        self._diag_lock = threading.Lock()
-        self._failure_streak = 0
-        self._last_error_category = ""
-        self._circuit_open_until = 0.0
+        self._health = SSHHealthTracker(
+            circuit_breaker_seconds=config.circuit_breaker_seconds,
+            capacity_backoff_seconds=config.capacity_backoff_seconds,
+        )
         self._cline_auto_switch = config.cline_auto_switch
         self._cline_provider_priority = list(config.cline_provider_priority)
         self._cline_provider_base_urls = dict(config.cline_provider_base_urls)
@@ -104,98 +105,26 @@ class SSHTunnelExecutor:
         return self.enabled and bool(self.username and self.host)
 
     def _classify_ssh_error(self, detail: str) -> str:
-        text = (detail or "").strip().lower()
-        if not text:
-            return "unknown"
-        if (
-            "maxstartups" in text
-            or "exceeded maxstartups" in text
-            or "concurrency limit reached" in text
-            or "max_parallel" in text
-        ):
-            return "capacity"
-        if (
-            "permission denied" in text
-            or "authentication failed" in text
-            or "no authentication methods available" in text
-        ):
-            return "auth"
-        if (
-            "error reading ssh protocol banner" in text
-            or "no existing session" in text
-            or "ssh protocol banner" in text
-        ):
-            return "banner"
-        if "timed out" in text or "timeout" in text:
-            return "timeout"
-        if (
-            "connection refused" in text
-            or "name or service not known" in text
-            or "could not resolve hostname" in text
-            or "network is unreachable" in text
-            or "no route to host" in text
-            or "host unreachable" in text
-            or "unable to connect to port" in text
-        ):
-            return "unreachable"
-        return "unknown"
+        return self._health.classify_error(detail)
 
     def _retry_delay_for_category(self, category: str, attempt: int) -> int:
-        if category == "capacity":
-            return self._capacity_backoff_seconds
-        if category == "banner":
-            return 5 if attempt <= 1 else 10
-        if category in {"timeout", "unreachable"}:
-            return 2 if attempt <= 1 else 4
-        return min(8, max(1, attempt * 2))
+        return self._health.retry_delay_for_category(category, attempt)
 
     def _record_ssh_success(self) -> None:
-        with self._diag_lock:
-            self._failure_streak = 0
-            self._last_error_category = ""
-            self._circuit_open_until = 0.0
+        self._health.record_success()
 
     def _record_ssh_failure(self, category: str) -> None:
-        now = time.time()
-        with self._diag_lock:
-            self._failure_streak += 1
-            self._last_error_category = category or "unknown"
-            if self._circuit_breaker_seconds <= 0:
-                return
-            should_open = False
-            if category == "capacity" and self._failure_streak >= 2:
-                should_open = True
-            elif category in {"banner", "timeout"} and self._failure_streak >= 3:
-                should_open = True
-            if should_open:
-                self._circuit_open_until = max(
-                    self._circuit_open_until,
-                    now + float(self._circuit_breaker_seconds),
-                )
+        self._health.record_failure(category)
 
     def _circuit_remaining_seconds(self) -> int:
-        now = time.time()
-        with self._diag_lock:
-            if self._circuit_open_until <= now:
-                self._circuit_open_until = 0.0
-                return 0
-            return int(max(1.0, self._circuit_open_until - now))
+        return self._health.circuit_remaining_seconds()
 
     def get_diagnostics(self) -> dict[str, Any]:
-        remaining = self._circuit_remaining_seconds()
-        with self._diag_lock:
-            category = self._last_error_category
-            streak = int(self._failure_streak)
-            open_until = int(self._circuit_open_until) if remaining > 0 else 0
-        configured = self.is_configured()
-        health_ok = bool(configured and self._last_health[0] and remaining <= 0)
-        return {
-            "ssh_health_ok": health_ok,
-            "ssh_error_category": category,
-            "ssh_failure_streak": streak,
-            "ssh_circuit_open_until": open_until,
-            "ssh_endpoint": f"{self.host}:{self.port}",
-        }
+        return self._health.diagnostics(
+            configured=self.is_configured(),
+            endpoint=f"{self.host}:{self.port}",
+            healthy=bool(self._last_health[0]),
+        )
 
     async def health_check(self) -> tuple[bool, str]:
         """
@@ -3726,5 +3655,4 @@ def get_ssh_executor() -> SSHTunnelExecutor:
     if _SSH_EXECUTOR is None:
         _SSH_EXECUTOR = SSHTunnelExecutor()
     return _SSH_EXECUTOR
-
 

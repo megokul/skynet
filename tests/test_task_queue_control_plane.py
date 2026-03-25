@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from skynet.ledger.schema import init_db
 from skynet.ledger.task_queue import TaskQueueManager
+from skynet.ledger.task_queue_support import load_json_dict, load_json_list
 
 
 @pytest.mark.asyncio
@@ -269,3 +270,15 @@ async def test_release_after_success_is_rejected() -> None:
     assert released is False
 
     await db.close()
+
+
+def test_task_queue_support_warns_and_falls_back_for_invalid_json(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("WARNING")
+
+    parsed_list = load_json_list("{bad json", context="test.dependencies")
+    parsed_dict = load_json_dict("[1, 2, 3]", context="test.params")
+
+    assert parsed_list == []
+    assert parsed_dict == {}
+    assert "task_queue.json_list_fallback" in caplog.text
+    assert "task_queue.json_dict_type_mismatch" in caplog.text

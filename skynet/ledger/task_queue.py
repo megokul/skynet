@@ -12,12 +12,22 @@ Provides:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
 import aiosqlite
 
+from skynet.ledger.task_queue_support import (
+    append_task_event,
+    graph_has_cycle,
+    load_json_dict,
+    load_json_list,
+    normalize_status,
+    parse_iso,
+    row_to_task,
+    uniq_nonempty,
+)
 from skynet.utils import utc_now, iso_now
 
 
@@ -70,59 +80,8 @@ def _iso_now() -> str:
     return iso_now()
 
 
-def _parse_iso(value: str | None) -> datetime | None:
-
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return None
-
-
-def _json_loads_list(value: Any) -> list[Any]:
-
-    if isinstance(value, list):
-        return value
-    if not value:
-        return []
-    try:
-        data = json.loads(value)
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
-
-
-def _json_loads_dict(value: Any) -> dict[str, Any]:
-
-    if isinstance(value, dict):
-        return value
-    if not value:
-        return {}
-    try:
-        data = json.loads(value)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _uniq_nonempty(items: list[str] | None) -> list[str]:
-
-    out: list[str] = []
-    for item in items or []:
-        v = str(item).strip()
-        if v and v not in out:
-            out.append(v)
-    return out
-
-
 def _normalize_status(status: str | None) -> str:
-
-    value = str(status or "").strip().lower()
-    return TASK_STATE_ALIASES.get(value, value)
+    return normalize_status(status, aliases=TASK_STATE_ALIASES)
 
 
 class TaskQueueManager:
@@ -147,8 +106,8 @@ class TaskQueueManager:
 
         now = _iso_now()
         task_id = task_id or f"task-{uuid4().hex[:12]}"
-        deps = _uniq_nonempty(dependencies)
-        files = _uniq_nonempty(required_files)
+        deps = uniq_nonempty(dependencies)
+        files = uniq_nonempty(required_files)
 
         if task_id in deps:
             raise ValueError("Task cannot depend on itself.")
@@ -199,7 +158,7 @@ class TaskQueueManager:
                     (dep_id,),
                 ) as cur:
                     row = await cur.fetchone()
-                dep_dependents = _json_loads_list(row[0] if row else "[]")
+                dep_dependents = load_json_list(row[0] if row else "[]", context="control_tasks.dependents_link")
                 if task_id not in dep_dependents:
                     dep_dependents.append(task_id)
                     await self.db.execute(
@@ -267,11 +226,13 @@ class TaskQueueManager:
 
         status_map = await self._task_status_map()
         for cand in candidates:
-            deps = _json_loads_list(cand.get("dependencies"))
+            deps = load_json_list(cand.get("dependencies"), context="control_tasks.dependencies_ready")
             if any(status_map.get(dep_id) not in DEPENDENCY_DONE_STATES for dep_id in deps):
                 continue
             task_id = str(cand["id"])
-            files = _uniq_nonempty(_json_loads_list(cand.get("required_files")))
+            files = uniq_nonempty(
+                load_json_list(cand.get("required_files"), context="control_tasks.required_files_ready")
+            )
             if not await self._files_unowned(task_id=task_id, files=files):
                 continue
             task = await self.get_task(task_id)
@@ -316,7 +277,7 @@ class TaskQueueManager:
 
             status_map = await self._task_status_map()
             for cand in candidates:
-                deps = _json_loads_list(cand.get("dependencies"))
+                deps = load_json_list(cand.get("dependencies"), context="control_tasks.dependencies_peek")
                 if any(status_map.get(dep_id) not in DEPENDENCY_DONE_STATES for dep_id in deps):
                     continue
 
@@ -346,7 +307,7 @@ class TaskQueueManager:
                 if not task:
                     continue
 
-                files = _uniq_nonempty(task.get("required_files", []))
+                files = uniq_nonempty(task.get("required_files", []))
                 conflict = False
                 for file_path in files:
                     ins = await self.db.execute(
@@ -785,7 +746,7 @@ class TaskQueueManager:
             rows = [dict(r) for r in await cur.fetchall()]
         rows.reverse()
         for row in rows:
-            row["payload"] = _json_loads_dict(row.get("payload"))
+            row["payload"] = load_json_dict(row.get("payload"), context="control_task_events.payload")
         return rows
 
     async def list_active_assignments(self, *, limit: int = 500) -> list[dict[str, Any]]:
@@ -829,7 +790,7 @@ class TaskQueueManager:
             rows = [dict(r) for r in await cur.fetchall()]
 
         for row in rows:
-            locked_at_dt = _parse_iso(row.get("locked_at"))
+            locked_at_dt = parse_iso(row.get("locked_at"))
             if not locked_at_dt:
                 continue
             if locked_at_dt + timedelta(seconds=ttl) <= now_dt:
@@ -874,25 +835,17 @@ class TaskQueueManager:
         payload: dict[str, Any] | None = None,
     ) -> None:
 
-        await self.db.execute(
-            """
-            INSERT INTO control_task_events (
-                task_id, event_type, from_status, to_status,
-                worker_id, claim_token, message, payload, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                task_id,
-                event_type,
-                from_status,
-                to_status,
-                worker_id,
-                claim_token,
-                message[:2000],
-                json.dumps(payload or {}),
-                _iso_now(),
-            ),
+        await append_task_event(
+            self.db,
+            task_id=task_id,
+            event_type=event_type,
+            from_status=from_status,
+            to_status=to_status,
+            worker_id=worker_id,
+            claim_token=claim_token,
+            message=message,
+            payload=payload,
+            now_iso=_iso_now,
         )
 
     async def _graph_has_cycle(self) -> bool:
@@ -900,40 +853,8 @@ class TaskQueueManager:
         async with self.db.execute("SELECT id, dependencies FROM control_tasks") as cur:
             rows = [dict(r) for r in await cur.fetchall()]
 
-        graph: dict[str, list[str]] = {}
-        for row in rows:
-            graph[str(row["id"])] = [str(x) for x in _json_loads_list(row.get("dependencies"))]
-
-        visiting: set[str] = set()
-        visited: set[str] = set()
-
-        def dfs(node: str) -> bool:
-
-            if node in visited:
-                return False
-            if node in visiting:
-                return True
-            visiting.add(node)
-            for nxt in graph.get(node, []):
-                if nxt not in graph:
-                    return True
-                if dfs(nxt):
-                    return True
-            visiting.remove(node)
-            visited.add(node)
-            return False
-
-        for node in list(graph.keys()):
-            if dfs(node):
-                return True
-        return False
+        return graph_has_cycle(rows, dependency_loader=lambda value: load_json_list(value, context="control_tasks.dependencies_graph"))
 
     def _row_to_task(self, row: dict[str, Any]) -> dict[str, Any]:
 
-        row["status"] = _normalize_status(row.get("status"))
-        row["params"] = _json_loads_dict(row.get("params"))
-        row["dependencies"] = _json_loads_list(row.get("dependencies"))
-        row["dependents"] = _json_loads_list(row.get("dependents"))
-        row["required_files"] = _json_loads_list(row.get("required_files"))
-        row["result"] = _json_loads_dict(row.get("result"))
-        return row
+        return row_to_task(row, status_normalizer=_normalize_status)

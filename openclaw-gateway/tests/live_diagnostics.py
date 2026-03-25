@@ -881,6 +881,23 @@ def _build_revision_matches(expected: str, actual: str) -> bool:
     return have == want or have.startswith(want) or want.startswith(have)
 
 
+def _status_needs_local_warmup(
+    status_payload: dict[str, Any],
+    *,
+    required_transport: str,
+    required_agents: list[str],
+) -> bool:
+    if required_transport != "websocket_primary":
+        return False
+    if not bool(status_payload.get("agent_connected", False)):
+        return False
+    if str(status_payload.get("primary_transport_mode") or "").strip().lower() != "websocket_primary":
+        return True
+    if not bool(status_payload.get("websocket_health_ok", False)):
+        return True
+    return bool(_preflight_missing_agents(status_payload, required_agents))
+
+
 async def run_live_e2e_preflight(
     *,
     trace_fn: Callable[..., None],
@@ -903,6 +920,8 @@ async def run_live_e2e_preflight(
     container_log_cfg = dict(policy.get("container_log") or {})
     diagnostics_profile = str(policy.get("diagnostics_profile") or container_log_cfg.get("ssh_profile") or "")
     needs_ssh = str(policy.get("status_probe_mode") or "") == "remote_container_http"
+    required_transport = str(policy.get("required_transport") or "").strip().lower()
+    required_worker_agents = list(policy.get("required_worker_agents") or [])
     has_tunnel = int(policy.get("tunnel_http_port") or 0) > 0
     ssh = resolve_container_log_stream_ssh(diagnostics_profile)
     if not ssh and needs_ssh and not has_tunnel:
@@ -953,6 +972,37 @@ async def run_live_e2e_preflight(
             url=str(local_status_url or f"http://127.0.0.1:{int(getattr(cfg, 'HTTP_PORT', 8766) or 8766)}/status"),
         )
 
+    if not needs_ssh and _status_needs_local_warmup(
+        status_payload,
+        required_transport=required_transport,
+        required_agents=required_worker_agents,
+    ):
+        warmup_url = str(local_status_url or f"http://127.0.0.1:{int(getattr(cfg, 'HTTP_PORT', 8766) or 8766)}/status")
+        warmup_deadline = time.monotonic() + 10.0
+        trace_fn(
+            "preflight.status.warmup.start",
+            flow=flow,
+            url=warmup_url,
+            required_transport=required_transport,
+            required_worker_agents=required_worker_agents,
+        )
+        while time.monotonic() < warmup_deadline:
+            await asyncio.sleep(0.5)
+            status_payload = await fetch_local_gateway_status(url=warmup_url)
+            if not _status_needs_local_warmup(
+                status_payload,
+                required_transport=required_transport,
+                required_agents=required_worker_agents,
+            ):
+                trace_fn(
+                    "preflight.status.warmup.ready",
+                    flow=flow,
+                    primary_transport_mode=str(status_payload.get("primary_transport_mode") or ""),
+                    websocket_health_ok=bool(status_payload.get("websocket_health_ok", False)),
+                    coding_agents=sorted(dict(status_payload.get("coding_agents") or {}).keys()),
+                )
+                break
+
     trace_fn(
         "preflight.status",
         flow=flow,
@@ -991,7 +1041,14 @@ async def run_live_e2e_preflight(
 
     expected_build_revision = str(policy.get("expected_remote_build_revision") or "").strip()
     actual_build_revision = str(status_payload.get("build_revision") or "").strip()
-    if expected_build_revision and not _build_revision_matches(
+    if expected_build_revision and not needs_ssh:
+        trace_fn(
+            "preflight.build_revision.skip_local",
+            flow=flow,
+            expected=expected_build_revision,
+            actual=actual_build_revision or "missing",
+        )
+    elif expected_build_revision and not _build_revision_matches(
         expected_build_revision,
         actual_build_revision,
     ):
@@ -1000,7 +1057,6 @@ async def run_live_e2e_preflight(
             f"expected={expected_build_revision} actual={actual_build_revision or 'missing'}"
         )
 
-    required_transport = str(policy.get("required_transport") or "").strip().lower()
     actual_transport = str(status_payload.get("primary_transport_mode") or "").strip().lower()
     if required_transport and actual_transport != required_transport:
         raise AssertionError(
@@ -1016,10 +1072,7 @@ async def run_live_e2e_preflight(
         if not bool(status_payload.get("websocket_health_ok", False)):
             raise AssertionError("PREFLIGHT_WORKER_STALE: websocket worker heartbeat is stale")
 
-    missing_agents = _preflight_missing_agents(
-        status_payload,
-        list(policy.get("required_worker_agents") or []),
-    )
+    missing_agents = _preflight_missing_agents(status_payload, required_worker_agents)
     if missing_agents:
         raise AssertionError(
             "PREFLIGHT_REQUIRED_AGENTS_MISSING: " + ",".join(sorted(missing_agents))

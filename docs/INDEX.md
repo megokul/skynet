@@ -26,13 +26,17 @@ Push-gate rule: rerun live E2E only after debug-cycle commit + successful push.
 ## Quick Commands
 
 ```bash
+python -m skynet.test_matrix --run
 make test-control-plane
 make test-gateway
 make test-agent
 make test-policy
+make test-policy-strict
 make test-all
 make smoke
 python scripts/ci/check_repo_hygiene.py
 python scripts/ci/check_settings_policy.py
-python scripts/ci/check_engineering_policy.py --base-ref HEAD~1 --head-ref HEAD
+python scripts/ci/check_gateway_warning_allowlist.py
+python scripts/ci/check_engineering_policy.py --mode baseline
+python scripts/ci/check_engineering_policy.py --mode strict --base-ref HEAD~1 --head-ref HEAD
 ```

@@ -816,6 +816,118 @@ async def test_run_live_e2e_preflight_fails_when_build_revision_mismatches(monke
     key_path = tmp_path / "diag.pem"
     key_path.write_text("key", encoding="utf-8")
 
+    async def _fake_remote_status(*, container_name: str, status_url: str, diagnostics_profile: str) -> dict[str, object]:
+        _ = (container_name, status_url, diagnostics_profile)
+        return {
+            "build_revision": "remote-rev",
+            "live_e2e_active": True,
+            "live_e2e_flow": "conversation",
+            "live_e2e_effective_coding_stage_chain": ["qwen"],
+            "primary_transport_mode": "websocket_primary",
+            "agent_connected": True,
+            "websocket_health_ok": True,
+            "coding_agents": {"qwen": "/usr/bin/qwen"},
+        }
+
+    monkeypatch.setattr(
+        live_diagnostics,
+        "resolve_container_log_stream_ssh",
+        lambda *_args, **_kwargs: {
+            "host": "ec2.example",
+            "user": "ubuntu",
+            "key": str(key_path),
+            "key_source": "test",
+            "port": 22,
+        },
+    )
+    monkeypatch.setattr(live_diagnostics, "fetch_remote_gateway_status", _fake_remote_status)
+    monkeypatch.setattr(
+        live_diagnostics,
+        "run_qwen_preflight_smoke_probe",
+        AsyncMock(return_value=None),
+    )
+
+    with pytest.raises(AssertionError, match="PREFLIGHT_BUILD_REVISION_MISMATCH"):
+        await live_diagnostics.run_live_e2e_preflight(
+            trace_fn=lambda *_args, **_kwargs: None,
+            flow="conversation",
+            policy={
+                "required_transport": "websocket_primary",
+                "allow_fallback": False,
+                "required_worker_agents": ["qwen"],
+                "container_log": {"ssh_profile": "tunnel"},
+                "diagnostics_profile": "tunnel",
+                "status_probe_mode": "remote_container_http",
+                "expected_remote_build_revision": "local-rev",
+                "require_telegram_poller": False,
+                "qwen_smoke": {"enabled": False, "timeout_seconds": 45},
+            },
+            local_status_url="http://127.0.0.1:8766/status",
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_live_e2e_preflight_accepts_short_build_revision_prefix(monkeypatch, tmp_path: Path) -> None:
+    key_path = tmp_path / "diag.pem"
+    key_path.write_text("key", encoding="utf-8")
+
+    async def _fake_remote_status(*, container_name: str, status_url: str, diagnostics_profile: str) -> dict[str, object]:
+        _ = (container_name, status_url, diagnostics_profile)
+        return {
+            "build_revision": "756aae766bd2401a74b2c3db7a299495008e734a",
+            "live_e2e_active": True,
+            "live_e2e_flow": "conversation",
+            "live_e2e_effective_coding_stage_chain": ["qwen"],
+            "primary_transport_mode": "websocket_primary",
+            "agent_connected": True,
+            "websocket_health_ok": True,
+            "coding_agents": {"qwen": "/usr/bin/qwen"},
+        }
+
+    monkeypatch.setattr(
+        live_diagnostics,
+        "resolve_container_log_stream_ssh",
+        lambda *_args, **_kwargs: {
+            "host": "ec2.example",
+            "user": "ubuntu",
+            "key": str(key_path),
+            "key_source": "test",
+            "port": 22,
+        },
+    )
+    monkeypatch.setattr(live_diagnostics, "fetch_remote_gateway_status", _fake_remote_status)
+    smoke = AsyncMock(return_value=None)
+    monkeypatch.setattr(live_diagnostics, "run_qwen_preflight_smoke_probe", smoke)
+
+    await live_diagnostics.run_live_e2e_preflight(
+        trace_fn=lambda *_args, **_kwargs: None,
+        flow="conversation",
+        policy={
+            "required_transport": "websocket_primary",
+            "allow_fallback": False,
+            "required_worker_agents": ["qwen"],
+            "container_log": {"ssh_profile": "tunnel"},
+            "diagnostics_profile": "tunnel",
+            "status_probe_mode": "remote_container_http",
+            "expected_remote_build_revision": "756aae7",
+            "require_telegram_poller": False,
+            "qwen_smoke": {"enabled": False, "timeout_seconds": 45},
+        },
+        local_status_url="http://127.0.0.1:8766/status",
+    )
+
+    smoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_live_e2e_preflight_skips_remote_build_revision_pin_for_local_status(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    key_path = tmp_path / "diag.pem"
+    key_path.write_text("key", encoding="utf-8")
+    events: list[tuple[str, dict[str, object]]] = []
+
     async def _fake_local_status(*, url: str, timeout_seconds: int = 10) -> dict[str, object]:
         _ = (url, timeout_seconds)
         return {
@@ -841,66 +953,11 @@ async def test_run_live_e2e_preflight_fails_when_build_revision_mismatches(monke
         },
     )
     monkeypatch.setattr(live_diagnostics, "fetch_local_gateway_status", _fake_local_status)
-    monkeypatch.setattr(
-        live_diagnostics,
-        "run_qwen_preflight_smoke_probe",
-        AsyncMock(return_value=None),
-    )
-
-    with pytest.raises(AssertionError, match="PREFLIGHT_BUILD_REVISION_MISMATCH"):
-        await live_diagnostics.run_live_e2e_preflight(
-            trace_fn=lambda *_args, **_kwargs: None,
-            flow="conversation",
-            policy={
-                "required_transport": "websocket_primary",
-                "allow_fallback": False,
-                "required_worker_agents": ["qwen"],
-                "container_log": {"ssh_profile": "tunnel"},
-                "diagnostics_profile": "tunnel",
-                "status_probe_mode": "local_http",
-                "expected_remote_build_revision": "local-rev",
-                "require_telegram_poller": False,
-                "qwen_smoke": {"enabled": False, "timeout_seconds": 45},
-            },
-            local_status_url="http://127.0.0.1:8766/status",
-        )
-
-
-@pytest.mark.asyncio
-async def test_run_live_e2e_preflight_accepts_short_build_revision_prefix(monkeypatch, tmp_path: Path) -> None:
-    key_path = tmp_path / "diag.pem"
-    key_path.write_text("key", encoding="utf-8")
-
-    async def _fake_local_status(*, url: str, timeout_seconds: int = 10) -> dict[str, object]:
-        _ = (url, timeout_seconds)
-        return {
-            "build_revision": "756aae766bd2401a74b2c3db7a299495008e734a",
-            "live_e2e_active": True,
-            "live_e2e_flow": "conversation",
-            "live_e2e_effective_coding_stage_chain": ["qwen"],
-            "primary_transport_mode": "websocket_primary",
-            "agent_connected": True,
-            "websocket_health_ok": True,
-            "coding_agents": {"qwen": "/usr/bin/qwen"},
-        }
-
-    monkeypatch.setattr(
-        live_diagnostics,
-        "resolve_container_log_stream_ssh",
-        lambda *_args, **_kwargs: {
-            "host": "ec2.example",
-            "user": "ubuntu",
-            "key": str(key_path),
-            "key_source": "test",
-            "port": 22,
-        },
-    )
-    monkeypatch.setattr(live_diagnostics, "fetch_local_gateway_status", _fake_local_status)
     smoke = AsyncMock(return_value=None)
     monkeypatch.setattr(live_diagnostics, "run_qwen_preflight_smoke_probe", smoke)
 
     await live_diagnostics.run_live_e2e_preflight(
-        trace_fn=lambda *_args, **_kwargs: None,
+        trace_fn=lambda event, **fields: events.append((str(event), dict(fields))),
         flow="conversation",
         policy={
             "required_transport": "websocket_primary",
@@ -909,7 +966,7 @@ async def test_run_live_e2e_preflight_accepts_short_build_revision_prefix(monkey
             "container_log": {"ssh_profile": "tunnel"},
             "diagnostics_profile": "tunnel",
             "status_probe_mode": "local_http",
-            "expected_remote_build_revision": "756aae7",
+            "expected_remote_build_revision": "local-rev",
             "require_telegram_poller": False,
             "qwen_smoke": {"enabled": False, "timeout_seconds": 45},
         },
@@ -917,6 +974,7 @@ async def test_run_live_e2e_preflight_accepts_short_build_revision_prefix(monkey
     )
 
     smoke.assert_awaited_once()
+    assert any(event == "preflight.build_revision.skip_local" for event, _fields in events)
 
 
 @pytest.mark.asyncio

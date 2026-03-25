@@ -7,35 +7,41 @@ don't need to know about the DB layer.
 """
 from __future__ import annotations
 
-import json
-import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import aiosqlite
 
+from db.store_memory import (
+    get_project_memory,
+    list_project_memory,
+    upsert_project_memory,
+)
+from db.store_runtime_trace import (
+    create_runtime_trace_event,
+    create_task_node_event,
+    list_runtime_trace_events,
+    list_task_node_events,
+)
+from db.store_support import (
+    dump_json as _dump_json,
+    load_json_dict,
+    load_json_list,
+    new_id as _new_id,
+    now_iso as _now,
+    row_to_dict as _row,
+)
+from db.store_worker_policy import (
+    decode_worker_row as _decode_worker_row,
+    get_active_prompt_policy,
+    list_active_workers,
+    upsert_prompt_policy,
+    upsert_worker_registry,
+)
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-
-
-def _new_id() -> str:
-    return uuid.uuid4().hex[:16]
-
-
-def _row(row: aiosqlite.Row | None) -> dict[str, Any] | None:
-    return dict(row) if row else None
-
-
-def _dump_json(value: Any, default: str = "{}") -> str:
-    if value is None:
-        return default
-    try:
-        return json.dumps(value, ensure_ascii=True)
-    except Exception:
-        return default
 
 
 # ── Users ─────────────────────────────────────────────────────────────────────
@@ -669,270 +675,6 @@ async def delete_critic_findings_for_node(
     return count
 
 
-async def upsert_project_memory(
-    db: aiosqlite.Connection,
-    *,
-    project_id: str,
-    tier: str,
-    memory_key: str,
-    memory_value: Any,
-    source_node_id: int | None = None,
-) -> None:
-    await db.execute(
-        """
-        INSERT INTO project_memory (project_id, tier, memory_key, memory_value_json, source_node_id, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(project_id, tier, memory_key) DO UPDATE SET
-            memory_value_json = excluded.memory_value_json,
-            source_node_id = excluded.source_node_id,
-            updated_at = excluded.updated_at
-        """,
-        (
-            project_id,
-            tier.strip(),
-            memory_key.strip(),
-            _dump_json(memory_value),
-            int(source_node_id) if isinstance(source_node_id, int) else None,
-            _now(),
-        ),
-    )
-    await db.commit()
-
-
-async def get_project_memory(
-    db: aiosqlite.Connection,
-    *,
-    project_id: str,
-    tier: str,
-    memory_key: str,
-) -> dict[str, Any] | None:
-    async with db.execute(
-        """
-        SELECT * FROM project_memory
-        WHERE project_id = ? AND tier = ? AND memory_key = ?
-        LIMIT 1
-        """,
-        (project_id, tier.strip(), memory_key.strip()),
-    ) as cur:
-        row = _row(await cur.fetchone())
-    if not row:
-        return None
-    try:
-        row["memory_value"] = json.loads(str(row.get("memory_value_json") or "{}"))
-    except Exception:
-        row["memory_value"] = {}
-    return row
-
-
-async def list_project_memory(
-    db: aiosqlite.Connection,
-    *,
-    project_id: str,
-    tier: str | None = None,
-) -> list[dict[str, Any]]:
-    if tier:
-        query = (
-            "SELECT * FROM project_memory WHERE project_id = ? AND tier = ? "
-            "ORDER BY updated_at DESC, id DESC"
-        )
-        params: tuple[Any, ...] = (project_id, tier.strip())
-    else:
-        query = (
-            "SELECT * FROM project_memory WHERE project_id = ? "
-            "ORDER BY updated_at DESC, id DESC"
-        )
-        params = (project_id,)
-    async with db.execute(query, params) as cur:
-        rows = [dict(r) for r in await cur.fetchall()]
-    for row in rows:
-        try:
-            row["memory_value"] = json.loads(str(row.get("memory_value_json") or "{}"))
-        except Exception:
-            row["memory_value"] = {}
-    return rows
-
-
-async def create_task_node_event(
-    db: aiosqlite.Connection,
-    *,
-    graph_id: int,
-    node_id: int | None,
-    node_key: str,
-    event_type: str,
-    status: str = "",
-    agent: str = "",
-    stage: str = "",
-    failure_type: str = "",
-    details: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    async with db.execute(
-        """
-        INSERT INTO task_node_events
-            (graph_id, node_id, node_key, event_type, status, agent, stage, failure_type, details_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            int(graph_id),
-            int(node_id) if isinstance(node_id, int) else None,
-            node_key.strip(),
-            event_type.strip(),
-            status.strip(),
-            agent.strip(),
-            stage.strip(),
-            failure_type.strip(),
-            _dump_json(details or {}, "{}"),
-        ),
-    ) as cur:
-        event_id = cur.lastrowid
-    await db.commit()
-    async with db.execute("SELECT * FROM task_node_events WHERE id = ?", (event_id,)) as cur:
-        row = _row(await cur.fetchone())
-    if row:
-        try:
-            row["details"] = json.loads(str(row.get("details_json") or "{}"))
-        except Exception:
-            row["details"] = {}
-    return row or {}
-
-
-async def list_task_node_events(
-    db: aiosqlite.Connection,
-    *,
-    graph_id: int,
-    limit: int = 30,
-    after_id: int | None = None,
-) -> list[dict[str, Any]]:
-    query = (
-        "SELECT * FROM task_node_events WHERE graph_id = ? "
-        + ("AND id > ? " if isinstance(after_id, int) else "")
-        + "ORDER BY id DESC LIMIT ?"
-    )
-    params: tuple[Any, ...]
-    if isinstance(after_id, int):
-        params = (int(graph_id), int(after_id), max(1, int(limit)))
-    else:
-        params = (int(graph_id), max(1, int(limit)))
-    async with db.execute(query, params) as cur:
-        rows = [dict(r) for r in await cur.fetchall()]
-    rows.reverse()
-    for row in rows:
-        try:
-            row["details"] = json.loads(str(row.get("details_json") or "{}"))
-        except Exception:
-            row["details"] = {}
-    return rows
-
-
-async def create_runtime_trace_event(
-    db: aiosqlite.Connection,
-    *,
-    event_payload: dict[str, Any],
-) -> dict[str, Any]:
-    payload = dict(event_payload or {})
-    ts = str(payload.get("ts") or _now()).strip() or _now()
-    async with db.execute(
-        """
-        INSERT INTO runtime_trace_events
-            (
-                ts, level, event, status, event_id, trace_id, root_trace_id, span_id, parent_span_id, session_key, flow,
-                project_id, task_id, graph_id, node_key, node_type, phase, stage, gate,
-                worker_id, transport, runtime_mode, error_type, error_code, error_message,
-                telegram_chat_id, telegram_user_id, telegram_message_id, action_name,
-                command_hash, working_dir, remote_pid, artifact_count, payload_json, created_at
-            )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            ts,
-            str(payload.get("level") or "info").strip(),
-            str(payload.get("event") or "").strip(),
-            str(payload.get("status") or "").strip(),
-            str(payload.get("event_id") or "").strip(),
-            str(payload.get("trace_id") or "").strip(),
-            str(payload.get("root_trace_id") or "").strip(),
-            str(payload.get("span_id") or "").strip(),
-            str(payload.get("parent_span_id") or "").strip(),
-            str(payload.get("session_key") or "").strip(),
-            str(payload.get("flow") or "").strip(),
-            str(payload.get("project_id") or "").strip(),
-            str(payload.get("task_id") or "").strip(),
-            str(payload.get("graph_id") or "").strip(),
-            str(payload.get("node_key") or "").strip(),
-            str(payload.get("node_type") or "").strip(),
-            str(payload.get("phase") or "").strip(),
-            str(payload.get("stage") or "").strip(),
-            str(payload.get("gate") or "").strip(),
-            str(payload.get("worker_id") or "").strip(),
-            str(payload.get("transport") or "").strip(),
-            str(payload.get("runtime_mode") or "").strip(),
-            str(payload.get("error_type") or "").strip(),
-            str(payload.get("error_code") or "").strip(),
-            str(payload.get("error_message") or "").strip(),
-            str(payload.get("telegram_chat_id") or "").strip(),
-            str(payload.get("telegram_user_id") or "").strip(),
-            str(payload.get("telegram_message_id") or "").strip(),
-            str(payload.get("action_name") or "").strip(),
-            str(payload.get("command_hash") or "").strip(),
-            str(payload.get("working_dir") or "").strip(),
-            str(payload.get("remote_pid") or "").strip(),
-            max(0, int(payload.get("artifact_count") or 0)),
-            _dump_json(payload, "{}"),
-            _now(),
-        ),
-    ) as cur:
-        row_id = int(cur.lastrowid)
-    await db.commit()
-    async with db.execute("SELECT * FROM runtime_trace_events WHERE id = ?", (row_id,)) as cur:
-        row = _row(await cur.fetchone())
-    if row:
-        try:
-            row["payload"] = json.loads(str(row.get("payload_json") or "{}"))
-        except Exception:
-            row["payload"] = {}
-    return row or {}
-
-
-async def list_runtime_trace_events(
-    db: aiosqlite.Connection,
-    *,
-    trace_id: str | None = None,
-    project_id: str | None = None,
-    graph_id: str | None = None,
-    session_key: str | None = None,
-    limit: int = 200,
-) -> list[dict[str, Any]]:
-    clauses: list[str] = []
-    params: list[Any] = []
-    if trace_id:
-        clauses.append("trace_id = ?")
-        params.append(str(trace_id).strip())
-    if project_id:
-        clauses.append("project_id = ?")
-        params.append(str(project_id).strip())
-    if graph_id:
-        clauses.append("graph_id = ?")
-        params.append(str(graph_id).strip())
-    if session_key:
-        clauses.append("session_key = ?")
-        params.append(str(session_key).strip())
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
-    query = (
-        "SELECT * FROM runtime_trace_events"
-        + where
-        + " ORDER BY id DESC LIMIT ?"
-    )
-    params.append(max(1, int(limit)))
-    async with db.execute(query, tuple(params)) as cur:
-        rows = [dict(r) for r in await cur.fetchall()]
-    rows.reverse()
-    for row in rows:
-        try:
-            row["payload"] = json.loads(str(row.get("payload_json") or "{}"))
-        except Exception:
-            row["payload"] = {}
-    return rows
-
-
 async def upsert_code_index_file(
     db: aiosqlite.Connection,
     *,
@@ -1134,11 +876,10 @@ def _decode_architecture_state(row: dict[str, Any] | None) -> dict[str, Any] | N
         ("data_flows_json", "data_flows"),
         ("constraints_json", "constraints"),
     ]:
-        try:
-            parsed = json.loads(str(out.get(json_field) or "[]"))
-        except Exception:
-            parsed = []
-        out[key] = parsed if isinstance(parsed, list) else []
+        out[key] = load_json_list(
+            out.get(json_field),
+            context=f"architecture_state.{json_field}",
+        )
     return out
 
 
@@ -1215,11 +956,16 @@ def _decode_task_strategy(row: dict[str, Any] | None) -> dict[str, Any] | None:
         ("risk_assessment_json", "risk_assessment", []),
         ("execution_strategy_json", "execution_strategy", {}),
     ]:
-        try:
-            parsed = json.loads(str(out.get(json_field) or _dump_json(default)))
-        except Exception:
-            parsed = default
-        out[key] = parsed if isinstance(parsed, type(default)) else default
+        if isinstance(default, list):
+            out[key] = load_json_list(
+                out.get(json_field),
+                context=f"task_strategy.{json_field}",
+            )
+        else:
+            out[key] = load_json_dict(
+                out.get(json_field),
+                context=f"task_strategy.{json_field}",
+            )
     return out
 
 
@@ -1239,85 +985,6 @@ async def get_task_strategy(
     ) as cur:
         row = _row(await cur.fetchone())
     return _decode_task_strategy(row)
-
-
-async def upsert_worker_registry(
-    db: aiosqlite.Connection,
-    *,
-    worker_id: str,
-    label: str,
-    transport: str = "ssh",
-    endpoint: dict[str, Any] | None = None,
-    capabilities: list[str] | None = None,
-    status: str = "active",
-    priority: int = 100,
-) -> dict[str, Any]:
-    await db.execute(
-        """
-        INSERT INTO worker_registry (
-            id, label, transport, endpoint_json, capabilities_json, status, priority, last_seen_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            label = excluded.label,
-            transport = excluded.transport,
-            endpoint_json = excluded.endpoint_json,
-            capabilities_json = excluded.capabilities_json,
-            status = excluded.status,
-            priority = excluded.priority,
-            last_seen_at = excluded.last_seen_at
-        """,
-        (
-            worker_id.strip(),
-            label.strip() or worker_id.strip(),
-            transport.strip() or "ssh",
-            _dump_json(endpoint or {}, "{}"),
-            _dump_json(capabilities or [], "[]"),
-            status.strip() or "active",
-            int(priority),
-            _now(),
-        ),
-    )
-    await db.commit()
-    async with db.execute("SELECT * FROM worker_registry WHERE id = ?", (worker_id.strip(),)) as cur:
-        row = _row(await cur.fetchone())
-    return _decode_worker_row(row) or {}
-
-
-def _decode_worker_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not row:
-        return None
-    out = dict(row)
-    try:
-        endpoint = json.loads(str(out.get("endpoint_json") or "{}"))
-    except Exception:
-        endpoint = {}
-    try:
-        capabilities = json.loads(str(out.get("capabilities_json") or "[]"))
-    except Exception:
-        capabilities = []
-    out["endpoint"] = endpoint if isinstance(endpoint, dict) else {}
-    out["capabilities"] = [str(item).strip() for item in capabilities if str(item).strip()]
-    return out
-
-
-async def list_active_workers(
-    db: aiosqlite.Connection,
-) -> list[dict[str, Any]]:
-    async with db.execute(
-        """
-        SELECT * FROM worker_registry
-        WHERE status = 'active'
-        ORDER BY priority DESC, id ASC
-        """
-    ) as cur:
-        rows = [dict(r) for r in await cur.fetchall()]
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        decoded = _decode_worker_row(row)
-        if decoded:
-            out.append(decoded)
-    return out
 
 
 async def create_node_worker_assignment(
@@ -1405,10 +1072,10 @@ async def create_learning_event(
     async with db.execute("SELECT * FROM learning_events WHERE id = ?", (learning_id,)) as cur:
         row = _row(await cur.fetchone())
     if row:
-        try:
-            row["event"] = json.loads(str(row.get("event_json") or "{}"))
-        except Exception:
-            row["event"] = {}
+        row["event"] = load_json_dict(
+            row.get("event_json"),
+            context="learning_event.read",
+        )
     return row or {}
 
 
@@ -1438,92 +1105,11 @@ async def list_learning_events(
         rows = [dict(r) for r in await cur.fetchall()]
     rows.reverse()
     for row in rows:
-        try:
-            row["event"] = json.loads(str(row.get("event_json") or "{}"))
-        except Exception:
-            row["event"] = {}
+        row["event"] = load_json_dict(
+            row.get("event_json"),
+            context="learning_event.list",
+        )
     return rows
-
-
-async def upsert_prompt_policy(
-    db: aiosqlite.Connection,
-    *,
-    scope: str,
-    project_id: str,
-    policy_kind: str,
-    policy: dict[str, Any],
-    source: str = "learning",
-    active: bool = True,
-) -> dict[str, Any]:
-    scope_value = scope.strip() or "project"
-    project_value = project_id.strip() if scope_value == "project" else ""
-    kind_value = policy_kind.strip()
-    active_value = 1 if active else 0
-
-    if active_value == 1:
-        await db.execute(
-            """
-            UPDATE prompt_policies
-            SET active = 0
-            WHERE scope = ? AND project_id = ? AND policy_kind = ? AND active = 1
-            """,
-            (scope_value, project_value, kind_value),
-        )
-
-    async with db.execute(
-        """
-        INSERT INTO prompt_policies (
-            scope, project_id, policy_kind, policy_json, source, active
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            scope_value,
-            project_value,
-            kind_value,
-            _dump_json(policy or {}, "{}"),
-            source.strip() or "learning",
-            active_value,
-        ),
-    ) as cur:
-        policy_id = cur.lastrowid
-    await db.commit()
-    async with db.execute("SELECT * FROM prompt_policies WHERE id = ?", (policy_id,)) as cur:
-        row = _row(await cur.fetchone())
-    if row:
-        try:
-            row["policy"] = json.loads(str(row.get("policy_json") or "{}"))
-        except Exception:
-            row["policy"] = {}
-    return row or {}
-
-
-async def get_active_prompt_policy(
-    db: aiosqlite.Connection,
-    *,
-    scope: str,
-    project_id: str,
-    policy_kind: str,
-) -> dict[str, Any] | None:
-    scope_value = scope.strip() or "project"
-    project_value = project_id.strip() if scope_value == "project" else ""
-    async with db.execute(
-        """
-        SELECT * FROM prompt_policies
-        WHERE scope = ? AND project_id = ? AND policy_kind = ? AND active = 1
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (scope_value, project_value, policy_kind.strip()),
-    ) as cur:
-        row = _row(await cur.fetchone())
-    if not row:
-        return None
-    try:
-        row["policy"] = json.loads(str(row.get("policy_json") or "{}"))
-    except Exception:
-        row["policy"] = {}
-    return row
 
 
 async def record_provider_usage(

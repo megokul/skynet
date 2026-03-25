@@ -163,3 +163,11 @@ def test_valid_evidence_passes_for_code_change(tmp_path: Path) -> None:
         strict=True,
     )
     assert violations == []
+
+
+def test_baseline_mode_ignores_missing_handoff_for_code_changes(tmp_path: Path) -> None:
+    policy = _load_policy_module()
+    _write_required_docs(tmp_path, policy)
+
+    violations = policy.evaluate_policy(tmp_path, ["skynet/api/main.py"], strict=False)
+    assert violations == []
