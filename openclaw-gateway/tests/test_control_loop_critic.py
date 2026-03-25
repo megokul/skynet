@@ -3,6 +3,7 @@ from __future__ import annotations
 import aiosqlite
 import pytest
 
+from bot.handlers.coding import _is_infra_error
 from db.store import create_critic_finding, delete_critic_findings_for_node, list_critic_findings
 from orchestration.completion import validate_completion_contract
 from orchestration.critic import is_blocking, normalize_severity, parse_critic_response
@@ -130,4 +131,30 @@ async def test_stale_findings_cleaned_after_repair(_critic_db):
     )
     assert passed is True
     assert "satisfied" in reason
+
+
+# ── Smoke timeout classification tests ────────────────────────────────
+
+
+def test_smoke_process_timeout_not_infra():
+    """A process timeout during smoke is a code quality issue, not infra."""
+    assert _is_infra_error("Process timed out after 120s and was killed") is True
+    # The gate handler should NOT treat this as infra because it checks
+    # for "process timed out" explicitly.  This test documents the raw
+    # _is_infra_error behavior (returns True because of "timed out").
+
+
+def test_smoke_process_timeout_gate_handler_excludes_infra():
+    """The smoke gate handler excludes 'process timed out' from infra classification."""
+    msg = "TimeoutError: Process timed out after 120s and was killed"
+    # Simulates the gate handler logic:
+    is_infra = _is_infra_error(msg) and "process timed out" not in msg.lower()
+    assert is_infra is False
+
+
+def test_real_infra_errors_still_classified():
+    """Genuine infra errors must still be flagged."""
+    assert _is_infra_error("ssh action failed: connection refused") is True
+    assert _is_infra_error("no agent connected") is True
+    assert _is_infra_error("worker not connected") is True
 

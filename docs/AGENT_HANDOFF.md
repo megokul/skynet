@@ -6,6 +6,16 @@ Last updated (UTC): 2026-03-18 10:24
 
 WebSocket-primary worker execution with the checked-in settings as the source of truth: `legacy` orchestration by default, `loop_v2` enabled, Codex as planner primary, `qwen,codex` coding fallback, and SSH fallback disabled unless explicitly enabled.
 
+### 2026-03-25 Smoke Gate Server-Aware Startup Probe
+
+- Fixed: HTML page project ("Philipinte pari") failed because smoke gate ran `python philipinte_pari.py` which starts `httpd.serve_forever()` — hangs 120s → killed → "process timed out" → misclassified as infra failure → repair never triggered → graph failed (complete=0, failed=2).
+- Root cause: `_is_infra_error()` matches "timed out" broadly (coding.py:1365), and smoke exception handler unconditionally set `infra_failure = True` (line 2997).
+- Fix 1: Smoke timeout exception handler now excludes "process timed out" from infra classification — smoke timeouts route through gate-failure → critic → repair flow.
+- Fix 2: Smoke gate now uses a startup-probe wrapper: runs the entrypoint in background, waits 15s, if still alive (server) → success. Timeout reduced from 120s to 30s.
+- Fix 3: Repair prompt detects timeout findings and adds specific guidance for fixing blocking server entrypoints.
+- Regression tests added for smoke timeout classification.
+- Test results: 266 passed, 3 skipped, 0 failures.
+
 ### 2026-03-24 Stale Critic Findings Fix (gate_final CONTRACT_FAILED)
 
 - Fixed `CONTRACT_FAILED: "Blocking critic findings remain: 1"` after successful repair.

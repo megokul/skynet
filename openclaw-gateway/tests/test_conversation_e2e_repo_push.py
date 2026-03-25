@@ -260,8 +260,17 @@ async def test_conversation_e2e_generates_code_and_pushes_local_remote(tmp_path:
             cmd = str(params["command"])
             wd  = params["working_dir"]
 
-            parts = cmd.split()
-            rc, out, err = _run([sys.executable, *parts[1:]], cwd=wd)
+            # Smoke probe wraps the command in a subshell; run via shell
+            if any(ch in cmd for ch in ("&", ";", "|", "(")):
+                # Extract the inner command from probe wrapper: (CMD) & PID=...
+                import re
+                m = re.match(r"^\((.+?)\)\s*&", cmd)
+                inner = m.group(1).strip() if m else cmd
+                parts = inner.split()
+                rc, out, err = _run([sys.executable, *parts[1:]], cwd=wd)
+            else:
+                parts = cmd.split()
+                rc, out, err = _run([sys.executable, *parts[1:]], cwd=wd)
             return _worker_ok(rc, out, err)
 
         return _worker_ok(0, "", "")
