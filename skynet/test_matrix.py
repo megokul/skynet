@@ -19,6 +19,7 @@ ROOT_TEST_FILES: tuple[str, ...] = (
     "tests/test_ci_engineering_policy.py",
     "tests/test_ci_repo_hygiene.py",
     "tests/test_project_documentation_skill.py",
+    "tests/test_prompt_container_contract.py",
     "tests/test_prompt_references.py",
 )
 

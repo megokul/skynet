@@ -23,6 +23,7 @@ Notes:
 - `docker-compose.yml` now keeps gateway HTTP `8766` internal to Docker network.
 - Gateway WebSocket `8765` remains published for worker connectivity.
 - Gateway HTTP bind is configurable via `OPENCLAW_HTTP_HOST`/`OPENCLAW_HTTP_PORT`.
+- Runtime prompt files are mounted at `/app/prompts` so prompt edits stay external to Python modules and visible to both services.
 
 ## Mode B: SKYNET Only (OpenClaw Already Running)
 

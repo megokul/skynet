@@ -12,10 +12,12 @@
       - SKYNET_DB_PATH=/app/data/skynet.db
       - OPENCLAW_GATEWAY_URL=http://openclaw-gateway:8766
       - OPENCLAW_GATEWAY_URLS
+      - SKYNET_PROMPT_LIBRARY_DIR=/app/prompts
       - SKYNET_API_KEY
     volumes:
       - skynet-data:/app/data
       - ./skynet:/app/skynet:ro
+      - ./prompts:/app/prompts:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
       interval: 30s
@@ -101,10 +103,12 @@
       - SKYNET_LOG_S3_ENABLED
       - SKYNET_LOG_S3_PREFIX
       - SKYNET_TRACE_MIRROR_LOG_DIR
+      - SKYNET_PROMPT_LIBRARY_DIR=/app/prompts
     volumes:
       - openclaw-data:/app/data
       - ./openclaw-gateway/external-skills:/app/external-skills:ro
       - ./skynet:/app/skynet:ro
+      - ./prompts:/app/prompts:ro
       - ${OPENCLAW_SSH_KEY_FILE:-/dev/null}:${OPENCLAW_SSH_KEY_PATH:-/app/keys/laptop_ed25519}:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"

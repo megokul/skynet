@@ -1,10 +1,32 @@
 # Agent Handoff
 
-Last updated (UTC): 2026-03-25 13:50
+Last updated (UTC): 2026-03-26 11:52
 
 ## Current Goal
 
 WebSocket-primary worker execution with the checked-in settings as the source of truth: `legacy` orchestration by default, `loop_v2` enabled, Codex as planner primary, `qwen,codex` coding fallback, and SSH fallback disabled unless explicitly enabled.
+
+### 2026-03-26 Prompt Library Deployment Contract Fix
+
+- Post-deploy live Telegram verification against build `a815697` reached the new remote gateway revision, but failed before requirements collection.
+- Exact deployed failure:
+  - `FileNotFoundError: Prompt file not found: /app/prompts/gateway/planning/project_specialist_opening.md`
+  - stack entered via `openclaw-gateway/bot/handlers/project.py` -> `skynet/project_specialist.py` -> `skynet/prompt_library.py`
+- Root cause:
+  - prompt files were correctly externalized to repo-root `prompts/`
+  - root deploy/runtime paths still mounted `/app/skynet` into containers
+  - no container launch path was providing `/app/prompts` to the gateway
+- Fixes applied:
+  - root `docker-compose.yml` now mounts `./prompts:/app/prompts:ro` for both `skynet-api` and `openclaw-gateway`
+  - `openclaw-gateway/docker-compose.yml` now mounts `../prompts:/app/prompts:ro`
+  - both compose files set `SKYNET_PROMPT_LIBRARY_DIR=/app/prompts`
+  - `docker/skynet/Dockerfile` now copies `prompts/` into the control-plane image
+  - root `.dockerignore` re-includes `prompts/**` so image builds keep prompt files
+  - GitHub deploy workflow now validates prompt availability inside both running containers before declaring deploy success
+  - added guard test `tests/test_prompt_container_contract.py` and folded it into `skynet.test_matrix`
+- Expected effect:
+  - future deploys fail fast if `/app/prompts` is missing or empty
+  - live E2E should now reach prompt-backed project-specialist startup instead of crashing on missing prompt files
 
 ### 2026-03-25 Live Conversation E2E Readiness Fix
 

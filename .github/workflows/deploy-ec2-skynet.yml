@@ -345,6 +345,35 @@ jobs:
           print(f"default_working_dir={default_working_dir}")
           PY
 
+      - name: Validate prompt library availability
+        shell: bash
+        run: |
+          docker exec openclaw-gateway python - <<'PY'
+          from skynet.prompt_library import load_prompt, resolve_prompt_path
+
+          prompt_ref = "gateway/planning/project_specialist_opening.md"
+          prompt_path = resolve_prompt_path(prompt_ref)
+          if not prompt_path.exists():
+              raise SystemExit(f"gateway prompt missing: {prompt_path}")
+          prompt_text = load_prompt(prompt_ref)
+          if not prompt_text.strip():
+              raise SystemExit(f"gateway prompt is empty: {prompt_path}")
+          print(f"gateway_prompt_path={prompt_path}")
+          PY
+
+          docker exec skynet-api python - <<'PY'
+          from skynet.prompt_library import load_prompt, resolve_prompt_path
+
+          prompt_ref = "gateway/planning/project_specialist_opening.md"
+          prompt_path = resolve_prompt_path(prompt_ref)
+          if not prompt_path.exists():
+              raise SystemExit(f"control-plane prompt missing: {prompt_path}")
+          prompt_text = load_prompt(prompt_ref)
+          if not prompt_text.strip():
+              raise SystemExit(f"control-plane prompt is empty: {prompt_path}")
+          print(f"control_plane_prompt_path={prompt_path}")
+          PY
+
       - name: Verify OpenClaw provider wiring
         shell: bash
         run: |

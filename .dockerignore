@@ -25,6 +25,8 @@ ENV/
 # Documentation
 *.md
 !README.md
+!prompts/
+!prompts/**
 CLAUDE.md
 TODO.md
 SESSION_NOTES.md
