@@ -80,9 +80,7 @@ TRACE_MARKER_PATTERN = re.compile(
 )
 TEMPLATE_DOCSTRING_BLOCK_PATTERN = re.compile(r'(?ms)^[ \t]*"""\n.*?^[ \t]*"""[ \t]*$')
 TEMPLATE_DOCSTRING_MARKERS = ("Purpose:", "How it works:", "Why this exists:")
-TEMPLATE_DOCSTRING_ALLOWLIST = {
-    "openclaw-gateway/ssh_tunnel_executor.py",
-}
+TEMPLATE_DOCSTRING_ALLOWLIST: set[str] = set()
 
 
 def _read_text(path: Path) -> str:

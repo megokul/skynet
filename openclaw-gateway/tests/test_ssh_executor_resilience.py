@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 import base64
+import json
 import time
 from unittest.mock import MagicMock
 
 import paramiko
 import pytest
 
+from skynet.prompt_library import load_prompt
 from ssh_tunnel_executor import SSHTunnelExecutor, _build_windows_command
+
+
+_PLAN_THIS = load_prompt("testing/common/plan_this.txt")
+_READY_SENTENCE_PROMPT = load_prompt("testing/common/reply_exact_ready_sentence.txt")
+_TEMPORARY_PLANNER_INSTRUCTIONS = load_prompt("testing/common/temporary_planner_instructions.txt")
+_BUILD_MILESTONES_FROM_PLAN = load_prompt("testing/common/build_milestones_from_plan.md")
+_QWEN_READY_MISMATCH = load_prompt("testing/outputs/qwen_ready_sentence_mismatch.txt")
+_QWEN_CONTEXT_PLACEHOLDER = next(
+    line for line in load_prompt("gateway/planning/qwen_planner_context_default.md").splitlines() if line.strip()
+)
 
 
 @pytest.fixture
@@ -208,12 +220,7 @@ def test_block_parser_ignores_mermaid_tag_and_writes_python_fallback(
 
 
 def test_build_windows_command_uses_base64_argument_transport() -> None:
-    prompt = (
-        "Build milestones from this plan.\n"
-        "feature idea, bug, release goal, dependencies, and scope.\n"
-        "{\"nodes\":[{\"title\":\"Implement core\"}]}"
-    )
-    cmd = _build_windows_command(["codex", "exec", prompt], cwd="E:/SKYNET-SANDBOX/Projects/tmp")
+    cmd = _build_windows_command(["codex", "exec", _BUILD_MILESTONES_FROM_PLAN], cwd="E:/SKYNET-SANDBOX/Projects/tmp")
     assert "-EncodedCommand " in cmd
     # Raw multiline prompt should never be embedded directly in the shell command.
     assert "feature idea, bug" not in cmd
@@ -244,11 +251,11 @@ def test_run_coding_agent_passes_qwen_context_text_to_native(
         action="run_coding_agent",
         params={
             "agent": "qwen",
-            "prompt": "plan this",
+            "prompt": _PLAN_THIS,
             "working_dir": "/tmp/qwen-project",
             "timeout_seconds": 120,
             "task_mode": "planner_chat",
-            "qwen_context_text": "Planner chat behavior for Qwen Code",
+            "qwen_context_text": _QWEN_CONTEXT_PLACEHOLDER,
             "reply_contract": "ask_next_question",
             "planner_state_json": {"plan_ready": False, "missing_slots": ["storage"]},
             "requirement_summary_md": "- Project Kind: local terminal utility script",
@@ -258,7 +265,7 @@ def test_run_coding_agent_passes_qwen_context_text_to_native(
     assert result["returncode"] == 0
     assert seen["agent"] == "qwen"
     assert seen["task_mode"] == "planner_chat"
-    assert seen["qwen_context_text"] == "Planner chat behavior for Qwen Code"
+    assert seen["qwen_context_text"] == _QWEN_CONTEXT_PLACEHOLDER
     assert seen["reply_contract"] == "ask_next_question"
     assert seen["planner_state"] == {"plan_ready": False, "missing_slots": ["storage"]}
     assert seen["requirement_summary_md"] == "- Project Kind: local terminal utility script"
@@ -276,9 +283,8 @@ def test_run_coding_agent_native_qwen_uses_contract_aware_normalization(
         "_run_command",
         lambda *_args, **_kwargs: {
             "returncode": 0,
-            "stdout": (
-                '[{"type":"result","subtype":"success",'
-                '"result":"I need one more clarification before I can continue."}]'
+            "stdout": json.dumps(
+                [{"type": "result", "subtype": "success", "result": _QWEN_READY_MISMATCH}]
             ),
             "stderr": "",
         },
@@ -287,7 +293,7 @@ def test_run_coding_agent_native_qwen_uses_contract_aware_normalization(
     run = executor._run_coding_agent_native(
         client=MagicMock(),
         agent="qwen",
-        prompt="reply exactly with the ready sentence",
+        prompt=_READY_SENTENCE_PROMPT,
         cwd="/tmp/qwen-project",
         timeout=120,
         model="",
@@ -352,10 +358,10 @@ def test_managed_remote_qwen_context_file_restores_previous_text(
     with executor._managed_remote_qwen_context_file(
         client=client,
         cwd="/tmp/qwen-project",
-        context_text="temporary planner instructions",
+        context_text=_TEMPORARY_PLANNER_INSTRUCTIONS,
         enabled=True,
     ):
-        assert files[context_path] == "temporary planner instructions"
+        assert files[context_path] == _TEMPORARY_PLANNER_INSTRUCTIONS
 
     assert files[context_path] == "previous instructions"
 

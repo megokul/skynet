@@ -30,6 +30,7 @@ from orchestration.failure import (
     is_repairable,
 )
 from orchestration.graph import LoopNode, validate_acyclic
+from orchestration.milestone_contracts import normalize_node_specs
 from orchestration.memory import LoopMemory, TIER_TASK_STATE
 from orchestration.scheduler import pick_batch
 from orchestration.trace import emit_trace_event
@@ -72,7 +73,10 @@ class ClosedLoopController:
         self._max_tokens = max(1, int(max_tokens))
         self._deadlock_idle_ticks = max(1, int(deadlock_idle_ticks))
         self._success_contract = success_contract or {}
-        self._node_specs = [spec for spec in (node_specs or []) if isinstance(spec, dict)]
+        self._node_specs = normalize_node_specs(
+            node_specs=[spec for spec in (node_specs or []) if isinstance(spec, dict)],
+            milestones=(self._milestones if not node_specs else None),
+        )
         self._graph_id: int | None = None
         self._started_ts = time.time()
         self._idle_ticks = 0
@@ -116,25 +120,14 @@ class ClosedLoopController:
                     "priority": int(spec.get("priority") or 200),
                     "tools_required": list(spec.get("tools_required") or []),
                     "acceptance": list(spec.get("acceptance") or []),
+                    "deliverables": list(spec.get("deliverables") or []),
+                    "required_for_completion": bool(spec.get("required_for_completion", True)),
+                    "satisfaction_checks": list(spec.get("satisfaction_checks") or []),
                     "risk": dict(spec.get("risk") or {}),
                     "risk_level": str(spec.get("risk_level") or (spec.get("risk") or {}).get("level") or "medium"),
                     "owner": str(spec.get("owner") or "codex"),
                 }
             )
-        if not work_specs:
-            for index, milestone in enumerate(self._milestones, start=1):
-                work_specs.append(
-                    {
-                        "node_key": f"work_{index}",
-                        "title": milestone,
-                        "deps": [],
-                        "priority": 200,
-                        "tools_required": [],
-                        "acceptance": [],
-                        "risk": {},
-                        "owner": "codex",
-                    }
-                )
 
         known_work_keys = {str(spec.get("node_key")) for spec in work_specs}
         critic_keys: list[str] = []
@@ -160,10 +153,14 @@ class ClosedLoopController:
                     "index": index,
                     "tools_required": list(spec.get("tools_required") or []),
                     "acceptance": list(spec.get("acceptance") or []),
+                    "deliverables": list(spec.get("deliverables") or []),
+                    "required_for_completion": bool(spec.get("required_for_completion", True)),
+                    "satisfaction_checks": list(spec.get("satisfaction_checks") or []),
                     "risk": dict(spec.get("risk") or {}),
                 },
                 retry_budget=0,
                 tools_required=list(spec.get("tools_required") or []),
+                acceptance=list(spec.get("acceptance") or []),
                 risk_level=str(spec.get("risk_level") or (spec.get("risk") or {}).get("level") or "medium"),
                 priority=int(spec.get("priority") or 200),
                 execution_lock="repo-write",

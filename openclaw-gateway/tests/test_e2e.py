@@ -37,6 +37,7 @@ from bot.handlers.greeting import greeting_handler
 from bot.handlers.project import (
     approve_plan,
     ask_project_name,
+    handle_requirements_message,
     receive_project_name,
     receive_project_type,
     requirements_done_handler,
@@ -198,6 +199,60 @@ class TestProjectCreationFlow:
                     for row in markup.inline_keyboard for btn in row]
         assert CB_PLAN_APPROVE in all_data
         assert CB_PLAN_CHANGES in all_data
+
+    @pytest.mark.asyncio
+    async def test_requirements_done_falls_back_to_deterministic_plan_on_planner_failure(self):
+        update  = make_callback_update(CB_REQUIREMENTS_DONE)
+        context = make_context(
+            user_data={
+                _NAME_KEY: "SkyApp",
+                _TYPE_KEY: "Python App",
+                _REQS_HISTORY: [
+                    {"role": "assistant", "content": "What does it do?"},
+                    {"role": "user", "content": "It should show a hi popup on Windows and play a beep."},
+                ],
+            },
+            bot_data={KEY_ROUTER: MagicMock()},
+        )
+
+        with patch(
+            "bot.handlers.project._planner_via_codex_then_router",
+            new=AsyncMock(side_effect=RuntimeError("QWEN_CONTRACT_VIOLATION: plan_generation_missing_structure")),
+        ):
+            state = await requirements_done_handler(update, context)
+
+        assert state == REVIEWING_PLAN
+        plan = context.user_data[_PLAN_KEY]
+        assert "Project Plan" in plan
+        assert "**Milestones:**" in plan
+        assert "skynet_run.json" in plan
+
+    @pytest.mark.asyncio
+    async def test_requirements_message_degrades_to_generate_plan_prompt_on_planner_failure(self):
+        update = make_message_update("It should show a hi popup on Windows and play a beep.")
+        context = make_context(
+            user_data={
+                _NAME_KEY: "SkyApp",
+                _TYPE_KEY: "Python App",
+                _REQS_HISTORY: [{"role": "assistant", "content": "What does it do?"}],
+            },
+            bot_data={KEY_ROUTER: MagicMock()},
+        )
+
+        with patch(
+            "bot.handlers.project._planner_via_codex_then_router",
+            new=AsyncMock(side_effect=RuntimeError("QWEN_CONTRACT_VIOLATION: planner_ready_sentence_mismatch")),
+        ):
+            state = await handle_requirements_message(update, context)
+
+        assert state == GATHERING_REQUIREMENTS
+        history = context.user_data[_REQS_HISTORY]
+        assert history[-1]["role"] == "assistant"
+        assert "generate plan" in history[-1]["content"].lower()
+        markup = update.message.reply_text.call_args.kwargs.get("reply_markup")
+        assert markup is not None
+        all_data = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        assert CB_REQUIREMENTS_DONE in all_data
 
     # ── Step 6: "✅ Approve" saves to DB, shows Start Coding — no GitHub ask ───
 

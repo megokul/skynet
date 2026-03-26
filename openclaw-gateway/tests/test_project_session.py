@@ -7,6 +7,16 @@ from bot.handlers.project_session import (
     TYPE_KEY,
     ProjectConversationSession,
 )
+from skynet.project_specialist import build_project_specialist_opening
+
+
+_PROJECT_TEMPLATE = {
+    "stack": "Python 3.11+ + FastAPI or Flask + SQLAlchemy + PostgreSQL",
+    "questions": [
+        "What does this app do? (web service, automation, utility, other)",
+        "Any other constraints?",
+    ],
+}
 
 
 def test_project_session_trims_history_and_refreshes_planner_state() -> None:
@@ -14,9 +24,9 @@ def test_project_session_trims_history_and_refreshes_planner_state() -> None:
     session.set_project_name("demo")
     session.set_project_type("Python App")
 
-    session.append_history("assistant", "What does this app do?")
+    session.append_history("assistant", build_project_specialist_opening("demo", "Python App", _PROJECT_TEMPLATE))
     session.append_history("user", "A Windows terminal script with popup and beep.")
-    session.append_history("assistant", "Any other constraints?")
+    session.append_history("assistant", _PROJECT_TEMPLATE["questions"][1])
     history = session.append_history("user", "Use only the standard library and include tests.")
     planner_state = session.refresh_planner_state(project_name="demo", project_type_label="Python App")
 
@@ -30,7 +40,7 @@ def test_project_session_clear_removes_all_project_keys() -> None:
     user_data = {
         NAME_KEY: "demo",
         TYPE_KEY: "Python App",
-        REQS_HISTORY_KEY: [{"role": "assistant", "content": "What does this app do?"}],
+        REQS_HISTORY_KEY: [{"role": "assistant", "content": build_project_specialist_opening("demo", "Python App", _PROJECT_TEMPLATE)}],
         PLANNER_STATE_KEY: {"plan_ready": False},
         "unrelated": "keep-me",
     }

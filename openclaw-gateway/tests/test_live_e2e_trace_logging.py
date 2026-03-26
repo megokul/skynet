@@ -11,6 +11,12 @@ import config as gateway_config
 import e2e_live
 import live_diagnostics
 import test_e2e_telegram_real_live as telegram_live
+from skynet.project_specialist import ready_sentence
+from skynet.prompt_library import load_prompt
+
+
+_READY_SENTENCE = ready_sentence()
+_DEMO_PROJECT_PLAN = load_prompt("testing/outputs/demo_project_plan.md")
 
 
 def test_live_trace_defaults_to_repo_logs(monkeypatch) -> None:
@@ -1048,7 +1054,7 @@ async def test_qwen_preflight_smoke_runs_ready_and_plan_generation_probes(monkey
             return {
                 "result": {
                     "returncode": 0,
-                    "assistant_text": "I have everything I need. Send /plan to generate your project plan.",
+                    "assistant_text": _READY_SENTENCE,
                     "output_contract": "ok",
                     "session_id": "sess-ready",
                     "model": "coder-model",
@@ -1059,15 +1065,7 @@ async def test_qwen_preflight_smoke_runs_ready_and_plan_generation_probes(monkey
             return {
                 "result": {
                     "returncode": 0,
-                    "assistant_text": (
-                        "**preflight-qwen - Project Plan**\n"
-                        "**Overview:** demo\n"
-                        "**Core Features:**\n- popup\n"
-                        "**Tech Stack:** Python\n"
-                        "**Project Structure:**\n- app/\n"
-                        "**Milestones:**\n1. ship\n"
-                        "**Open Questions:** None"
-                    ),
+                    "assistant_text": _DEMO_PROJECT_PLAN,
                     "output_contract": "ok",
                     "session_id": "sess-plan",
                     "model": "coder-model",
@@ -1129,7 +1127,7 @@ async def test_qwen_preflight_smoke_falls_back_to_remote_action_when_tunnel_rese
             return {
                 "result": {
                     "returncode": 0,
-                    "assistant_text": "I have everything I need. Send /plan to generate your project plan.",
+                    "assistant_text": _READY_SENTENCE,
                     "output_contract": "ok",
                     "session_id": "sess-ready",
                     "model": "coder-model",
@@ -1140,15 +1138,7 @@ async def test_qwen_preflight_smoke_falls_back_to_remote_action_when_tunnel_rese
             return {
                 "result": {
                     "returncode": 0,
-                    "assistant_text": (
-                        "**preflight-qwen - Project Plan**\n"
-                        "**Overview:** demo\n"
-                        "**Core Features:**\n- popup\n"
-                        "**Tech Stack:** Python\n"
-                        "**Project Structure:**\n- app/\n"
-                        "**Milestones:**\n1. ship\n"
-                        "**Open Questions:** None"
-                    ),
+                    "assistant_text": _DEMO_PROJECT_PLAN,
                     "output_contract": "ok",
                     "session_id": "sess-plan",
                     "model": "coder-model",

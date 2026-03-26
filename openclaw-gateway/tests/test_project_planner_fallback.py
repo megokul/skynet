@@ -6,6 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from bot.handlers.project import _planner_via_codex_then_router
+from skynet.project_specialist import build_qwen_plan_generation_context
+from skynet.prompt_library import load_prompt
+
+
+_PLAN_THIS = load_prompt("testing/common/plan_this.txt")
+_PLANNER_SYSTEM = load_prompt("testing/common/planner_system_placeholder.txt")
+_GENERATE_FULL_PROJECT_PLAN_NOW = load_prompt("testing/common/generate_full_project_plan_now.txt")
 
 
 @pytest.mark.asyncio
@@ -34,8 +41,8 @@ async def test_planner_codex_success_skips_router_fallback():
     ):
         reply = await _planner_via_codex_then_router(
             router=router,
-            messages=[{"role": "user", "content": "plan this"}],
-            system="planner system",
+            messages=[{"role": "user", "content": _PLAN_THIS}],
+            system=_PLANNER_SYSTEM,
             max_tokens=512,
             task_type="planning",
             user_id=42,
@@ -75,8 +82,8 @@ async def test_planner_qwen_success_skips_router_fallback():
     ):
         reply = await _planner_via_codex_then_router(
             router=router,
-            messages=[{"role": "user", "content": "plan this"}],
-            system="planner system",
+            messages=[{"role": "user", "content": _PLAN_THIS}],
+            system=_PLANNER_SYSTEM,
             max_tokens=512,
             task_type="planning",
             user_id=42,
@@ -102,7 +109,10 @@ async def test_planner_qwen_plan_request_uses_plan_generation():
             assert params["reply_contract"] == "emit_plan"
             assert "planner_state_json" in params
             assert "requirement_summary_md" in params
-            assert "Do not say requirements are missing." in params["qwen_context_text"]
+            assert params["qwen_context_text"] == build_qwen_plan_generation_context(
+                _PLANNER_SYSTEM,
+                params["planner_state_json"],
+            )
             assert "working_dir" not in params
             return {
                 "status": "success",
@@ -120,9 +130,9 @@ async def test_planner_qwen_plan_request_uses_plan_generation():
             messages=[
                 {"role": "assistant", "content": "What does this app do?"},
                 {"role": "user", "content": "It is a small Windows terminal script."},
-                {"role": "user", "content": "Generate the full project plan now based on everything we discussed."},
+                {"role": "user", "content": _GENERATE_FULL_PROJECT_PLAN_NOW},
             ],
-            system="planner system",
+            system=_PLANNER_SYSTEM,
             max_tokens=512,
             task_type="planning",
             user_id=42,
@@ -145,8 +155,8 @@ async def test_planner_worker_agent_list_is_configurable():
     ):
         reply = await _planner_via_codex_then_router(
             router=router,
-            messages=[{"role": "user", "content": "plan this"}],
-            system="planner system",
+            messages=[{"role": "user", "content": _PLAN_THIS}],
+            system=_PLANNER_SYSTEM,
             max_tokens=512,
             task_type="planning",
             user_id=42,
@@ -179,8 +189,8 @@ async def test_planner_codex_failure_falls_back_to_router():
     ):
         reply = await _planner_via_codex_then_router(
             router=router,
-            messages=[{"role": "user", "content": "plan this"}],
-            system="planner system",
+            messages=[{"role": "user", "content": _PLAN_THIS}],
+            system=_PLANNER_SYSTEM,
             max_tokens=512,
             task_type="planning",
             user_id=42,
@@ -220,8 +230,8 @@ async def test_planner_ssh_mode_forces_send_action_path():
     ):
         reply = await _planner_via_codex_then_router(
             router=router,
-            messages=[{"role": "user", "content": "plan this"}],
-            system="planner system",
+            messages=[{"role": "user", "content": _PLAN_THIS}],
+            system=_PLANNER_SYSTEM,
             max_tokens=512,
             task_type="planning",
             user_id=42,
@@ -255,8 +265,8 @@ async def test_planner_live_policy_blocks_router_fallback(monkeypatch: pytest.Mo
         with pytest.raises(RuntimeError, match="fallback is disabled"):
             await _planner_via_codex_then_router(
                 router=router,
-                messages=[{"role": "user", "content": "plan this"}],
-                system="planner system",
+                messages=[{"role": "user", "content": _PLAN_THIS}],
+                system=_PLANNER_SYSTEM,
                 max_tokens=512,
                 task_type="planning",
                 user_id=42,

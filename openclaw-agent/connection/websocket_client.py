@@ -221,7 +221,10 @@ async def _handle_message(
         return
 
     if msg_type == "log_write":
-        line_count = _write_log_lines(
+        # Disk I/O for mirrored gateway logs can be bursty during live runs.
+        # Keep it off the event loop so websocket keepalives stay responsive.
+        line_count = await asyncio.to_thread(
+            _write_log_lines,
             message.get("stream", "runtime"),
             message.get("lines", []),
         )

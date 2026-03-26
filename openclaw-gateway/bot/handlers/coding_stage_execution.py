@@ -3,8 +3,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+
+_PROVIDER_CAPACITY_PATTERNS = (
+    "quota exceeded",
+    "quota has been reached",
+    "daily quota",
+    "rate limit",
+    "rate-limit",
+    "too many requests",
+)
 
 
 @dataclass(frozen=True)
@@ -34,6 +43,66 @@ class StageExecutionDeps:
     acp_backend_name: Callable[[str], str]
     record_orchestration_event: Callable[..., Awaitable[None]]
     write_generated_blocks_to_worker: Callable[..., Awaitable[tuple[list[str], str]]]
+
+
+@dataclass(frozen=True)
+class StageFailure:
+    stage: str
+    returncode: str
+    error_excerpt: str
+    failure_type: str = ""
+    error_code: str = ""
+
+    def as_dict(self) -> dict[str, str]:
+        payload = {
+            "stage": self.stage,
+            "returncode": self.returncode,
+            "error_excerpt": self.error_excerpt,
+        }
+        if self.failure_type:
+            payload["failure_type"] = self.failure_type
+        if self.error_code:
+            payload["error_code"] = self.error_code
+        return payload
+
+
+@dataclass(frozen=True)
+class StageExecutionResult:
+    ok: bool
+    inner: dict[str, Any] = field(default_factory=dict)
+    stage_name: str = ""
+    attempted_stages: tuple[str, ...] = ()
+    stage_failures: tuple[StageFailure, ...] = ()
+    failure_type: str = ""
+    failure_reason: str = ""
+    error_code: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "inner": dict(self.inner),
+            "stage_name": self.stage_name,
+            "attempted_stages": list(self.attempted_stages),
+            "stage_failures": [item.as_dict() for item in self.stage_failures],
+            "failure_type": self.failure_type,
+            "failure_reason": self.failure_reason,
+            "error_code": self.error_code,
+        }
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.as_dict().get(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        return self.as_dict()[key]
+
+
+def _detect_provider_capacity_failure(*, stdout_text: str, stderr_text: str) -> tuple[str, str, str] | None:
+    combined = f"{stdout_text}\n{stderr_text}".strip()
+    lowered = combined.lower()
+    if not any(pattern in lowered for pattern in _PROVIDER_CAPACITY_PATTERNS):
+        return None
+    excerpt = combined.replace("\r", " ").replace("\n", " ").strip()[:220]
+    return ("ENVIRONMENT_FAILED", "PROVIDER_QUOTA_EXHAUSTED", f"PROVIDER_QUOTA_EXHAUSTED: {excerpt}")
 
 
 async def record_orchestration_event(
@@ -121,18 +190,17 @@ async def run_stage_chain_for_generation(
     require_runnable_files: bool = True,
     notify_stage_switch: bool = True,
     tracker_hook: Callable[..., Awaitable[None]] | None = None,
-) -> dict[str, Any]:
+) -> StageExecutionResult:
     attempted_stages: list[str] = []
-    stage_failures: list[dict[str, str]] = []
+    stage_failures: list[StageFailure] = []
 
     if not stage_chain:
-        return {
-            "ok": False,
-            "inner": {},
-            "stage_name": "",
-            "attempted_stages": attempted_stages,
-            "stage_failures": stage_failures,
-        }
+        return StageExecutionResult(
+            ok=False,
+            attempted_stages=tuple(attempted_stages),
+            stage_failures=tuple(stage_failures),
+            failure_reason="No stages configured.",
+        )
 
     for idx, stage_name in enumerate(stage_chain, start=1):
         attempted_stages.append(stage_name)
@@ -206,6 +274,8 @@ async def run_stage_chain_for_generation(
                 )
 
         failure_reason = ""
+        failure_type = ""
+        error_code = ""
         result: dict[str, Any] | None = None
         inner: dict[str, Any] = {}
         return_code = 1
@@ -358,7 +428,13 @@ async def run_stage_chain_for_generation(
                     if recovered_files:
                         written = deps.normalize_written_files(recovered_files)
 
-            if result.get("status") == "error":
+            capacity_failure = _detect_provider_capacity_failure(
+                stdout_text=str(inner.get("stdout") or ""),
+                stderr_text=str(inner.get("stderr") or ""),
+            )
+            if capacity_failure is not None:
+                failure_type, error_code, failure_reason = capacity_failure
+            elif result.get("status") == "error":
                 failure_reason = deps.action_error_text(result, "run_coding_agent")
             elif return_code != 0:
                 failure_reason = deps.action_excerpt(result)
@@ -426,13 +502,13 @@ async def run_stage_chain_for_generation(
                 session_key=stage_session_key,
                 details={"returncode": return_code, "files_written": len(written)},
             )
-            return {
-                "ok": True,
-                "inner": inner,
-                "stage_name": stage_name,
-                "attempted_stages": attempted_stages,
-                "stage_failures": stage_failures,
-            }
+            return StageExecutionResult(
+                ok=True,
+                inner=inner,
+                stage_name=stage_name,
+                attempted_stages=tuple(attempted_stages),
+                stage_failures=tuple(stage_failures),
+            )
 
         failure_excerpt = str(failure_reason).strip()[:220] or "unknown stage failure"
         deps.logger.warning(
@@ -460,17 +536,17 @@ async def run_stage_chain_for_generation(
             transport=deps.runtime_transport_label(use_acp=use_acp),
             runtime_mode=deps.runtime_mode_label(use_acp=use_acp),
             error_type="StageFailure",
-            error_code="GENERATION_FAILED",
+            error_code=error_code or "GENERATION_FAILED",
             error_message=failure_excerpt,
             action_name="run_coding_agent",
             command_hash=deps.command_hash(prompt),
             working_dir=working_dir,
             session_key=stage_session_key,
-            failure_class="GENERATION_FAILED",
+            failure_class=failure_type or "GENERATION_FAILED",
             mitigation_hint="Inspect stage output and causal chain via /trace deep.",
             details={"returncode": return_code, "attempted_stages": list(attempted_stages)},
             debug_bundle=deps.build_debug_bundle(
-                failure_class="GENERATION_FAILED",
+                failure_class=failure_type or "GENERATION_FAILED",
                 error_message=failure_excerpt,
                 causal_chain=[f"coding.stage.start:{stage_name}", f"coding.stage.end:{stage_name}"],
                 last_success_event=(f"coding.stage.end:{attempted_stages[-2]}" if len(attempted_stages) > 1 else ""),
@@ -493,11 +569,13 @@ async def run_stage_chain_for_generation(
                 queue_mode=queue_mode,
             )
         stage_failures.append(
-            {
-                "stage": stage_name,
-                "returncode": str(return_code),
-                "error_excerpt": failure_excerpt,
-            }
+            StageFailure(
+                stage=stage_name,
+                returncode=str(return_code),
+                error_excerpt=failure_excerpt,
+                failure_type=failure_type,
+                error_code=error_code,
+            )
         )
         if tracker_hook is not None:
             with contextlib.suppress(Exception):
@@ -531,10 +609,14 @@ async def run_stage_chain_for_generation(
                 f"\u26A0\uFE0F Stage {stage_name} failed ({failure_excerpt}). Trying {next_stage}...",
             )
 
-    return {
-        "ok": False,
-        "inner": {},
-        "stage_name": "",
-        "attempted_stages": attempted_stages,
-        "stage_failures": stage_failures,
-    }
+    last_failure = stage_failures[-1] if stage_failures else None
+    return StageExecutionResult(
+        ok=False,
+        inner={},
+        stage_name="",
+        attempted_stages=tuple(attempted_stages),
+        stage_failures=tuple(stage_failures),
+        failure_type=(last_failure.failure_type if last_failure is not None else ""),
+        failure_reason=(last_failure.error_excerpt if last_failure is not None else ""),
+        error_code=(last_failure.error_code if last_failure is not None else ""),
+    )

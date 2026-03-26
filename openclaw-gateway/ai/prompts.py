@@ -4,12 +4,7 @@ SKYNET - System prompts loaded from the centralized prompt library.
 
 from __future__ import annotations
 
-from core.prompt_library import load_prompt
-
-PLANNING_PROMPT = load_prompt("ai/planning_system.md")
-CODING_PROMPT = load_prompt("ai/coding_system.md")
-TESTING_PROMPT = load_prompt("ai/testing_system.md")
-_BASE_RULES = load_prompt("ai/base_rules.md")
+from skynet.prompt_library import load_prompt, render_prompt
 
 _AGENT_PROMPT_FILES: dict[str, str] = {
     "architect": "ai/roles/architect.md",
@@ -25,10 +20,16 @@ _AGENT_PROMPT_FILES: dict[str, str] = {
     "monitoring": "ai/roles/monitoring.md",
 }
 
-AGENT_PROMPTS: dict[str, str] = {
-    role: load_prompt(path)
-    for role, path in _AGENT_PROMPT_FILES.items()
-}
+def planning_prompt() -> str:
+    return load_prompt("ai/planning_system.md")
+
+
+def coding_prompt() -> str:
+    return load_prompt("ai/coding_system.md")
+
+
+def testing_prompt() -> str:
+    return load_prompt("ai/testing_system.md")
 
 
 def get_agent_prompt(
@@ -48,7 +49,7 @@ def get_agent_prompt(
         f"Current milestone: {current_milestone}\n"
         f"Current task: {current_task}\n"
         f"Project directory: {project_path}\n"
-        + _BASE_RULES.format(project_path=project_path)
+        + render_prompt("ai/base_rules.md", project_path=project_path)
     )
-    template = AGENT_PROMPTS.get(role, AGENT_PROMPTS["backend"])
-    return template.format(base_context=base_context)
+    template_ref = _AGENT_PROMPT_FILES.get(role, _AGENT_PROMPT_FILES["backend"])
+    return render_prompt(template_ref, base_context=base_context)

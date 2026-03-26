@@ -6,6 +6,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from skynet.prompt_library import load_prompt, render_prompt
+
 
 QWEN_TASK_MODES = {
     "planner_chat",
@@ -23,7 +25,6 @@ QWEN_REPLY_CONTRACTS = {
     "emit_ready_sentence",
     "emit_plan",
 }
-_READY_SENTENCE = "I have everything I need. Send /plan to generate your project plan."
 _PLANNER_META_PATTERNS = (
     "ready to assist with your telegram product workflow planning",
     "what would you like to work on?",
@@ -113,6 +114,10 @@ def _normalize_session_id(session_id: str) -> str:
         return str(uuid.UUID(text))
     except ValueError:
         return str(uuid.uuid5(uuid.NAMESPACE_URL, text))
+
+
+def _ready_sentence() -> str:
+    return load_prompt("gateway/planning/ready_sentence.txt")
 
 
 def _profile_key(task_mode: str) -> str:
@@ -266,76 +271,63 @@ def build_qwen_runtime_prompt(
     summary = str(requirement_summary_md or "").strip()
     base_prompt = str(prompt or "").strip()
     if mode == "coding_implementation":
-        return "\n".join(
-            [
-                "Implement the following task now in the current working directory.",
-                "Create or update files directly in the workspace.",
-                "If the workspace is empty, scaffold the required files yourself.",
-                "Do not ask what to build or implement.",
-                "Do not ask clarifying questions.",
-                "Do not restate the task as a question.",
-                "After writing files, return a short summary of what changed.",
-                "",
-                "Task:",
-                base_prompt or "<missing task>",
-            ]
-        ).strip()
+        return render_prompt(
+            "gateway/planning/qwen_runtime_implementation.md",
+            gateway_prompt=base_prompt or "<missing task>",
+        )
     if mode == "coding_review":
         return (base_prompt or "<missing task>").strip()
     if mode == "coding_validation":
-        return "\n".join(
-            [
-                "Validate the current workspace now.",
-                "Run the validation or fix work immediately in the current working directory.",
-                "Do not ask what to validate.",
-                "Do not ask clarifying questions.",
-                "If validation reveals a fix is needed, update the files directly.",
-                "Return a short summary of the checks and any fixes applied.",
-                "",
-                "Task:",
-                base_prompt or "<missing task>",
-            ]
-        ).strip()
-    output_rules: list[str] = []
+        return render_prompt(
+            "gateway/planning/qwen_runtime_validation.md",
+            gateway_prompt=base_prompt or "<missing task>",
+        )
+    planner_state_json = json.dumps(state, ensure_ascii=True)
+    requirement_summary = summary or "- None yet"
+    gateway_prompt = base_prompt or "<missing task>"
     if contract == "emit_ready_sentence":
-        output_rules = [
-            "Output rules:",
-            f"- Return exactly this sentence: {_READY_SENTENCE}",
-            "- Do not generate the project plan yet.",
-            "- Do not add markdown, bullets, headings, or any extra text.",
-            "- Stop immediately after the final period.",
+        return render_prompt(
+            "gateway/planning/qwen_runtime_emit_ready_sentence.md",
+            task_mode=mode,
+            reply_contract=contract or "none",
+            ready_sentence=_ready_sentence(),
+            planner_state_json=planner_state_json,
+            requirement_summary=requirement_summary,
+            gateway_prompt=gateway_prompt,
+        )
+    if contract == "ask_next_question":
+        return render_prompt(
+            "gateway/planning/qwen_runtime_question.md",
+            task_mode=mode,
+            reply_contract=contract or "none",
+            planner_state_json=planner_state_json,
+            requirement_summary=requirement_summary,
+            gateway_prompt=gateway_prompt,
+        )
+    if contract == "emit_plan":
+        return render_prompt(
+            "gateway/planning/qwen_runtime_emit_plan.md",
+            task_mode=mode,
+            reply_contract=contract or "none",
+            planner_state_json=planner_state_json,
+            requirement_summary=requirement_summary,
+            gateway_prompt=gateway_prompt,
+        )
+    return "\n".join(
+        [
+            f"task_mode: {mode}",
+            f"reply_contract: {contract or 'none'}",
             "",
-        ]
-    elif contract == "ask_next_question":
-        output_rules = [
-            "Output rules:",
-            "- Ask only about missing slots from planner_state_json.",
-            "- Ask 1-2 concise questions maximum.",
-            "- Do not ask about answered slots.",
-            "- Return only the next assistant reply text.",
+            "Planner state JSON:",
+            planner_state_json,
             "",
-        ]
-    elif contract == "emit_plan":
-        output_rules = [
-            "Output rules:",
-            "- Generate the full project plan now.",
-            "- Do not ask follow-up questions.",
-            "- Return only the final plan text.",
+            "Requirement summary:",
+            requirement_summary,
             "",
+            "Gateway prompt:",
+            gateway_prompt,
         ]
-    lines = [
-        f"task_mode: {mode}",
-        f"reply_contract: {contract or 'none'}",
-        *output_rules,
-        "Planner state JSON:",
-        json.dumps(state, ensure_ascii=True),
-        "",
-        "Requirement summary:",
-        summary or "- None yet",
-    ]
-    if base_prompt:
-        lines.extend(["", "Gateway prompt:", base_prompt])
-    return "\n".join(lines).strip()
+    ).strip()
 
 
 def discover_qwen_context_paths(cwd: str, *, include_home: bool = True) -> list[str]:
@@ -463,7 +455,7 @@ def classify_qwen_output_contract(
     if mode == "planner_chat":
         if tool_use_names:
             return "planner_tool_use"
-        if contract == "emit_ready_sentence" and text != _READY_SENTENCE:
+        if contract == "emit_ready_sentence" and text != _ready_sentence():
             return "planner_ready_sentence_mismatch"
         if contract == "ask_next_question":
             if "?" not in text:

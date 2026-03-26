@@ -335,7 +335,7 @@ WebSocket-primary worker execution with the checked-in settings as the source of
   - result:
     - `returncode=0`
     - `output_contract=ok`
-    - exact assistant text: `I have everything I need. Send /plan to generate your project plan.`
+    - assistant text matched `prompts/gateway/planning/ready_sentence.txt`
     - `permission_denials=[]`
     - `tools.totalCalls=0`
 - Live E2E status after local fixes:
@@ -1354,6 +1354,15 @@ WebSocket-primary worker execution with the checked-in settings as the source of
 
 ## Test Results
 
+### 2026-03-25 E2E Validation And Telegram Build Pin Sync
+
+- `python -m pytest openclaw-gateway/tests/test_e2e.py -q` -> `24 passed, 3 warnings`
+- `python -m pytest openclaw-gateway/tests/test_conversation_e2e_repo_push.py -q` -> `1 passed`
+- `python -m pytest openclaw-gateway/tests/test_e2e.py openclaw-gateway/tests/test_project_planner_fallback.py -q` -> `32 passed, 3 warnings`
+- `$env:SKYNET_ENV_FILE='.env.local-e2e'; $env:SKYNET_E2E_LIVE='1'; python -m pytest openclaw-gateway/tests/test_e2e_conversation_live.py -m live -q -s` -> `1 passed` (~249s)
+- `$env:SKYNET_ENV_FILE='.env.local-e2e'; $env:SKYNET_E2E_LIVE='1'; $env:SKYNET_LIVE_E2E_EXPECT_REMOTE_BUILD_REVISION='37dfa4f'; python -m pytest openclaw-gateway/tests/test_e2e_telegram_real_live.py -m live -q -s` -> `1 passed` (~800s)
+- `.env.local-e2e` build pin updated: `SKYNET_LIVE_E2E_EXPECT_REMOTE_BUILD_REVISION=37dfa4f`
+
 ### 2026-03-25 Live Conversation E2E Readiness Fix
 
 - `python -m pytest openclaw-gateway/tests/test_e2e_conversation_live.py -m live -q -s` -> `1 passed, 3 warnings` in `206.65s`
@@ -1461,8 +1470,7 @@ WebSocket-primary worker execution with the checked-in settings as the source of
 - `docker exec openclaw-gateway python tests/e2e_live.py`
   - `ALL STEPS PASSED` (9.7s with 7b model)
 - Ollama benchmark: 59.3 tok/s, 100% GPU (4.9GB/8GB VRAM)
-- `pytest -q openclaw-agent/tests/test_executor.py openclaw-gateway/tests/test_bot_ui_contract.py openclaw-gateway/tests/test_coding_retry.py openclaw-gateway/tests/test_e2e.py openclaw-gateway/tests/test_integration.py`
-  - `54 passed, 1 skipped`
+- historical combined validation of executor, bot UI, coding retry, and gateway E2E paths before the skipped legacy integration test was retired
 
 - python -m py_compile openclaw-gateway/config.py openclaw-agent/executor/actions.py
   - pass
@@ -1488,6 +1496,16 @@ WebSocket-primary worker execution with the checked-in settings as the source of
   - `1 passed` (`test_live_conversation_real_planner_codegen_and_github_push`, ~236s)
 - `$env:SKYNET_ENV_FILE='.env.local-e2e'; python openclaw-gateway/tests/e2e_live.py`
   - `1 passed` (`test_live_conversation_real_planner_codegen_and_github_push`, ~143s, trace `e2e-live-1772610595.log`)
+- `python -m pytest openclaw-gateway/tests/test_tracker_progress.py openclaw-gateway/tests/test_coding_retry.py openclaw-gateway/tests/test_planner_resilience.py openclaw-gateway/tests/test_coding_tracker_runtime.py openclaw-gateway/tests/test_coding_stop_cleanup.py -q`
+  - `35 passed`
+- `python -m pytest openclaw-gateway/tests/test_ssh_tunnel_sessions.py openclaw-gateway/tests/test_ssh_executor_resilience.py -q`
+  - `23 passed` (Paramiko/Cryptography deprecation warnings only)
+- `python scripts/ci/check_engineering_policy.py --mode baseline`
+  - pass
+- `python -m pytest openclaw-gateway/tests/test_e2e.py openclaw-gateway/tests/test_project_planner_fallback.py -q`
+  - `32 passed`
+- `$env:SKYNET_ENV_FILE='.env.local-e2e'; $env:SKYNET_E2E_LIVE='1'; python -m pytest openclaw-gateway/tests/test_e2e_conversation_live.py -m live -q -s`
+  - `1 passed` (~249s, websocket-primary live conversation E2E)
 
 ### 2026-03-07 WebSocket-only execution (SSH fallback disabled)
 
@@ -1512,6 +1530,12 @@ WebSocket-primary worker execution with the checked-in settings as the source of
 
 ## Trace Evidence
 
+- request_id=e2e-validation-and-telegram-pin-sync-20260325
+- task_id=conversation-live-pass-and-telegram-real-pass
+- `E:\MyProjects\skynet\logs\live-conversation-e2e-1774451876.log`
+- `E:\MyProjects\skynet\logs\telegram-real-live-e2e-1774452483.log`
+- `.env.local-e2e` build pin synchronized to deployed gateway revision `37dfa4f`
+
 - request_id=live-conversation-e2e-readiness-20260325
 - task_id=websocket-preflight-warmup-and-local-build-pin-skip
 - `E:\MyProjects\skynet\logs\live-conversation-e2e-1774446287.log`
@@ -1521,6 +1545,9 @@ WebSocket-primary worker execution with the checked-in settings as the source of
 - task_id=authoritative-root-matrix-and-hotspot-extraction
 - /v1/events regression path validated through `tests/test_api_control_plane.py` and `tests/test_task_queue_control_plane.py`
 - skynet.trace.log policy remains unchanged; this pass focused on structural seams and guardrail verification rather than runtime protocol changes
+- request_id=live-planner-fallback-fix-20260325
+- task_id=conversation-e2e-plan-generation-resilience
+- `E:\MyProjects\skynet\logs\live-conversation-e2e-1774451876.log`
 
 - request_id=critic-timeout-advisory-20260324
 - task_id=critic-timeout-resilience
@@ -1578,6 +1605,8 @@ WebSocket-primary worker execution with the checked-in settings as the source of
 - task_id=ws-log-sink-prompt-file-keepalive
 - `E:\MyProjects\skynet\logs\e2e-live-1772881218.log`
 - skynet.trace.log
+- request_id=gateway-cleanup-pass-2-20260325
+- task_id=gateway-hotpath-helper-extraction
 
 ## Documentation Updates
 
@@ -1610,6 +1639,17 @@ WebSocket-primary worker execution with the checked-in settings as the source of
 - `.env.example`
 - `.env.ec2-gateway.example`
 - `.env.local-e2e.example`
+- `openclaw-gateway/bot/handlers/coding_tracker_runtime.py`
+- `openclaw-gateway/bot/handlers/coding_stop_cleanup.py`
+- `openclaw-gateway/tests/test_coding_tracker_runtime.py`
+- `openclaw-gateway/tests/test_coding_stop_cleanup.py`
+- `openclaw-gateway/ssh_tunnel_sessions.py`
+- `openclaw-gateway/tests/test_ssh_tunnel_sessions.py`
+- `openclaw-gateway/bot/handlers/project.py`
+- `openclaw-gateway/tests/test_e2e.py`
+- `.env.local-e2e`
+- `docs/CODE_QUALITY_AUDIT.md`
+- `docs/AGENT_HANDOFF.md`
 
 ## Blockers
 
@@ -1627,6 +1667,25 @@ WebSocket-primary worker execution with the checked-in settings as the source of
 - 2026-03-25 repo stabilization pass:
   - baseline policy verified locally before strict handoff evidence update
   - authoritative root matrix and repo hygiene docs were updated together to keep tooling/docs in sync
+- 2026-03-25 gateway cleanup pass 2:
+  - tracker lifecycle and stop-request cleanup moved behind dedicated helper seams
+  - SSH runtime session bookkeeping moved behind a dedicated helper seam and template-docstring allowlist debt was removed
+  - the permanently skipped legacy gateway integration test was removed so the matrix only names deterministic coverage
+- 2026-03-25 E2E validation:
+  - planner-failure fallback fix in `openclaw-gateway/bot/handlers/project.py` was verified against deterministic and live conversation flows
+  - the Telegram live test preflight failure was caused by a stale `.env.local-e2e` build pin; the pin was synchronized to deployed revision `37dfa4f` after runtime verification
+- 2026-03-26 long-term redundant-milestone fix:
+  - control-loop planning now normalizes both DAG planner output and plain milestone lists into structured work-node contracts
+  - completion defaults are now strict for all non-optional work nodes, so a required work-node failure blocks `gate_final`
+  - milestone pre-satisfaction checks now run before provider execution for run-contract, tests, README instructions, and required-file evidence
+  - stage execution now owns quota/rate-limit classification, removing the old success-then-fail split between stage execution and `_work_executor`
+  - local validation passed with:
+    - `python -m pytest openclaw-gateway/tests -q`
+    - `python -m skynet.test_matrix --run`
+    - `python scripts/ci/check_engineering_policy.py --mode baseline`
+    - `python scripts/ci/check_engineering_policy.py --mode strict --base-ref HEAD~1 --head-ref HEAD`
+    - `python scripts/ci/check_repo_hygiene.py`
+  - a live Telegram E2E was also run before deploy, but it still targeted remote build `37dfa4f`, so that live `complete=1, failed=4` result belonged to the old deployed gateway rather than this local fix set
 
 - [x] Documentation updated for behavior/interface/ops changes.
 - [x] Tests run, commands listed, and outcomes recorded.

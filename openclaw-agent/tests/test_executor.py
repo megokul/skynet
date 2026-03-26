@@ -35,8 +35,32 @@ from skynet.project_specialist import (
     build_qwen_planner_prompt,
     build_project_specialist_opening,
     build_project_specialist_system_prompt,
+    ready_sentence,
 )
+from skynet.prompt_library import load_prompt, render_prompt
 from skynet.qwen_cli import build_qwen_runtime_prompt
+
+
+_WRITE_HELLO_WORLD = load_prompt("testing/common/write_hello_world.txt")
+_DO_SOMETHING = load_prompt("testing/common/do_something.txt")
+_PLAN_THIS = load_prompt("testing/common/plan_this.txt")
+_READY_SENTENCE_PROMPT = load_prompt("testing/common/reply_exact_ready_sentence.txt")
+_GENERATE_PROJECT_PLAN_NOW = load_prompt("testing/common/generate_project_plan_now.txt")
+_ASK_ABOUT_STORAGE = load_prompt("testing/common/ask_about_storage.txt")
+_ASK_MISSING_SLOTS_ONLY = load_prompt("testing/common/ask_missing_slots_only.txt")
+_CREATE_MAIN_PY_HELLO = load_prompt("testing/common/create_main_py_hello.txt")
+_SYSTEM_INSTRUCTIONS_PLACEHOLDER = load_prompt("testing/common/system_instructions_placeholder.txt")
+_OLLAMA_CODING_ASSISTANT_SYSTEM = load_prompt("testing/common/ollama_coding_assistant_system.txt")
+_QWEN_FRAMEWORK_QUESTION = load_prompt("testing/outputs/qwen_framework_question.txt")
+_QWEN_GROUNDED_PLANNER_REPLY = load_prompt("testing/outputs/qwen_grounded_planner_reply.txt")
+_QWEN_META_OUTPUT_PLANNER = load_prompt("testing/outputs/qwen_meta_output_planner.txt")
+_QWEN_READY_SENTENCE_MISMATCH = load_prompt("testing/outputs/qwen_ready_sentence_mismatch.txt")
+_QWEN_PLAN_GENERATION_RESET = load_prompt("testing/outputs/qwen_plan_generation_reset.txt")
+_QWEN_QUESTION_TWO_SLOTS = load_prompt("testing/outputs/qwen_question_two_slots.txt")
+_QWEN_STORAGE_QUESTION = load_prompt("testing/outputs/qwen_storage_question.txt")
+_QWEN_CODING_META_OUTPUT = load_prompt("testing/outputs/qwen_coding_meta_output.txt")
+_DEMO_PROJECT_PLAN = load_prompt("testing/outputs/demo_project_plan.md")
+_READY_SENTENCE = ready_sentence()
 
 
 # ── exec_command ──────────────────────────────────────────────────────────────
@@ -183,7 +207,7 @@ class TestRunCodingAgent:
         """An agent name not in the allowlist must return a descriptive error."""
         result = await run_coding_agent({
             "agent":       "gpt4cli",
-            "prompt":      "Write hello world",
+            "prompt":      _WRITE_HELLO_WORLD,
             "working_dir": str(tmp_path),
         })
 
@@ -208,7 +232,7 @@ class TestRunCodingAgent:
         try:
             result = await run_coding_agent({
                 "agent":       "cline",
-                "prompt":      "Do something",
+                "prompt":      _DO_SOMETHING,
                 "working_dir": str(tmp_path),
             })
         finally:
@@ -226,7 +250,7 @@ class TestRunCodingAgent:
         """Omitting the agent parameter must raise ValueError."""
         with pytest.raises(ValueError, match="agent"):
             await run_coding_agent({
-                "prompt":      "Do something",
+                "prompt":      _DO_SOMETHING,
                 "working_dir": str(tmp_path),
             })
 
@@ -244,7 +268,7 @@ class TestRunCodingAgent:
         """timeout_seconds outside [30, 3600] must return a validation error."""
         result = await run_coding_agent({
             "agent":            "cline",
-            "prompt":           "Do something",
+            "prompt":           _DO_SOMETHING,
             "working_dir":      str(tmp_path),
             "timeout_seconds":  5,   # below minimum of 30
         })
@@ -262,7 +286,7 @@ class TestRunCodingAgent:
             with pytest.raises(ValueError, match="task_mode"):
                 await run_coding_agent({
                     "agent": "qwen",
-                    "prompt": "plan this",
+                    "prompt": _PLAN_THIS,
                     "working_dir": str(tmp_path),
                 })
         finally:
@@ -284,7 +308,7 @@ class TestRunCodingAgent:
                     "type": "assistant",
                     "message": {
                         "content": [
-                            {"type": "text", "text": "Which framework should this script use?"}
+                            {"type": "text", "text": _QWEN_FRAMEWORK_QUESTION}
                         ]
                     },
                 },
@@ -292,7 +316,7 @@ class TestRunCodingAgent:
                     "type": "result",
                     "subtype": "success",
                     "session_id": "sess-123",
-                    "result": "Which framework should this script use?",
+                    "result": _QWEN_FRAMEWORK_QUESTION,
                 },
             ]
         )
@@ -316,13 +340,13 @@ class TestRunCodingAgent:
             result = await run_coding_agent({
                 "agent": "qwen",
                 "task_mode": "planner_chat",
-                "prompt": "plan this",
+                "prompt": _PLAN_THIS,
                 "working_dir": str(tmp_path),
             })
 
         assert result["returncode"] == 0
-        assert result["assistant_text"] == "Which framework should this script use?"
-        assert result["stdout"] == "Which framework should this script use?"
+        assert result["assistant_text"] == _QWEN_FRAMEWORK_QUESTION
+        assert result["stdout"] == _QWEN_FRAMEWORK_QUESTION
         assert result["output_contract"] == "ok"
         assert result["session_id"] == "sess-123"
         assert result["auth_type"] == "qwen-oauth"
@@ -343,7 +367,7 @@ class TestRunCodingAgent:
                         {
                             "type": "result",
                             "subtype": "success",
-                            "result": "Grounded planner reply.",
+                            "result": _QWEN_GROUNDED_PLANNER_REPLY,
                         },
                     ]
                 ),
@@ -360,7 +384,7 @@ class TestRunCodingAgent:
                 "agent": "qwen",
                 "task_mode": "planner_chat",
                 "session_key": "abc123",
-                "prompt": "plan this",
+                "prompt": _PLAN_THIS,
                 "working_dir": str(tmp_path),
             })
 
@@ -381,7 +405,7 @@ class TestRunCodingAgent:
                         "content": [
                             {
                                 "type": "text",
-                                "text": "Understood. I'm ready to assist with your Telegram product workflow planning. What would you like to work on?",
+                                "text": _QWEN_META_OUTPUT_PLANNER,
                             }
                         ]
                     },
@@ -390,7 +414,7 @@ class TestRunCodingAgent:
                     "type": "result",
                     "subtype": "success",
                     "session_id": "sess-456",
-                    "result": "Understood. I'm ready to assist with your Telegram product workflow planning. What would you like to work on?",
+                    "result": _QWEN_META_OUTPUT_PLANNER,
                 },
             ]
         )
@@ -414,7 +438,7 @@ class TestRunCodingAgent:
             result = await run_coding_agent({
                 "agent": "qwen",
                 "task_mode": "planner_chat",
-                "prompt": "plan this",
+                "prompt": _PLAN_THIS,
                 "working_dir": str(tmp_path),
             })
 
@@ -433,7 +457,7 @@ class TestRunCodingAgent:
                     "type": "result",
                     "subtype": "success",
                     "session_id": "sess-ready",
-                    "result": "I need one more clarification before I can continue.",
+                    "result": _QWEN_READY_SENTENCE_MISMATCH,
                 },
             ]
         )
@@ -460,7 +484,7 @@ class TestRunCodingAgent:
                 "reply_contract": "emit_ready_sentence",
                 "planner_state_json": {"plan_ready": True, "missing_slots": []},
                 "requirement_summary_md": "- Project Kind: local terminal utility script",
-                "prompt": "reply exactly with the ready sentence",
+                "prompt": _READY_SENTENCE_PROMPT,
                 "working_dir": str(tmp_path),
             })
 
@@ -478,7 +502,7 @@ class TestRunCodingAgent:
                     "type": "result",
                     "subtype": "success",
                     "session_id": "sess-question",
-                    "result": "What does this app do and which framework should it use?",
+                    "result": _QWEN_QUESTION_TWO_SLOTS,
                 },
             ]
         )
@@ -508,7 +532,7 @@ class TestRunCodingAgent:
                     "missing_slots": ["storage", "integrations"],
                 },
                 "requirement_summary_md": "- Project Kind: local terminal utility script",
-                "prompt": "ask about the missing slots only",
+                "prompt": _ASK_MISSING_SLOTS_ONLY,
                 "working_dir": str(tmp_path),
             })
 
@@ -528,10 +552,7 @@ class TestRunCodingAgent:
                         "content": [
                             {
                                 "type": "text",
-                                "text": (
-                                    "I don't have any requirements gathered yet for this project. "
-                                    "Let me ask the key questions first."
-                                ),
+                                "text": _QWEN_PLAN_GENERATION_RESET,
                             }
                         ]
                     },
@@ -540,7 +561,7 @@ class TestRunCodingAgent:
                     "type": "result",
                     "subtype": "success",
                     "session_id": "sess-789",
-                    "result": "I don't have any requirements gathered yet for this project. Let me ask the key questions first.",
+                    "result": _QWEN_PLAN_GENERATION_RESET,
                 },
             ]
         )
@@ -564,7 +585,7 @@ class TestRunCodingAgent:
             result = await run_coding_agent({
                 "agent": "qwen",
                 "task_mode": "plan_generation",
-                "prompt": "generate the project plan now",
+                "prompt": _GENERATE_PROJECT_PLAN_NOW,
                 "working_dir": str(tmp_path),
             })
 
@@ -588,7 +609,7 @@ class TestRunCodingAgent:
                 "stdout": json.dumps(
                     [
                         {"type": "system", "subtype": "init", "session_id": str(uuid.uuid4())},
-                        {"type": "result", "subtype": "success", "result": "What storage is needed?"},
+                        {"type": "result", "subtype": "success", "result": _QWEN_STORAGE_QUESTION},
                     ]
                 ),
                 "stderr": "",
@@ -612,7 +633,7 @@ class TestRunCodingAgent:
                 "reply_contract": "ask_next_question",
                 "planner_state_json": {"plan_ready": False, "missing_slots": ["storage"]},
                 "requirement_summary_md": "- Project Kind: local terminal utility script",
-                "prompt": "ask about storage",
+                "prompt": _ASK_ABOUT_STORAGE,
                 "working_dir": str(tmp_path),
             })
 
@@ -637,15 +658,7 @@ class TestRunCodingAgent:
                         {
                             "type": "result",
                             "subtype": "success",
-                            "result": (
-                                "**Demo - Project Plan**\n"
-                                "**Overview:** demo\n"
-                                "**Core Features:**\n- one\n"
-                                "**Tech Stack:** python\n"
-                                "**Project Structure:**\n- app/\n"
-                                "**Milestones:**\n1. ship\n"
-                                "**Open Questions:** None"
-                            ),
+                            "result": _DEMO_PROJECT_PLAN,
                         },
                     ]
                 ),
@@ -662,7 +675,7 @@ class TestRunCodingAgent:
                 "agent": "qwen",
                 "task_mode": "plan_generation",
                 "session_key": "req-scoped",
-                "prompt": "generate the project plan now",
+                "prompt": _GENERATE_PROJECT_PLAN_NOW,
                 "working_dir": str(tmp_path),
             })
 
@@ -673,27 +686,33 @@ class TestRunCodingAgent:
 
     def test_qwen_ready_sentence_runtime_prompt_forbids_inline_plan_generation(self):
         prompt = build_qwen_runtime_prompt(
-            prompt="reply exactly with the ready sentence",
+            prompt=_READY_SENTENCE_PROMPT,
             task_mode="planner_chat",
             reply_contract="emit_ready_sentence",
             planner_state={"plan_ready": True, "missing_slots": []},
             requirement_summary_md="- Project Kind: local terminal utility script",
         )
 
-        assert "Return exactly this sentence" in prompt
-        assert "Do not generate the project plan yet." in prompt
-        assert "Stop immediately after the final period." in prompt
+        assert prompt == render_prompt(
+            "gateway/planning/qwen_runtime_emit_ready_sentence.md",
+            task_mode="planner_chat",
+            reply_contract="emit_ready_sentence",
+            ready_sentence=_READY_SENTENCE,
+            planner_state_json='{"plan_ready": true, "missing_slots": []}',
+            requirement_summary="- Project Kind: local terminal utility script",
+            gateway_prompt=_READY_SENTENCE_PROMPT,
+        )
 
     def test_qwen_coding_runtime_prompt_demands_immediate_implementation(self):
         prompt = build_qwen_runtime_prompt(
-            prompt="Create main.py that prints hello",
+            prompt=_CREATE_MAIN_PY_HELLO,
             task_mode="coding_implementation",
         )
 
-        assert "Implement the following task now" in prompt
-        assert "Do not ask what to build or implement." in prompt
-        assert "If the workspace is empty, scaffold the required files yourself." in prompt
-        assert "Create main.py that prints hello" in prompt
+        assert prompt == render_prompt(
+            "gateway/planning/qwen_runtime_implementation.md",
+            gateway_prompt=_CREATE_MAIN_PY_HELLO,
+        )
 
     @pytest.mark.asyncio
     async def test_qwen_coding_meta_output_becomes_contract_failure(self, tmp_path):
@@ -706,7 +725,7 @@ class TestRunCodingAgent:
                     "type": "result",
                     "subtype": "success",
                     "session_id": "sess-code",
-                    "result": "I'm ready to help with your coding implementation task. What would you like me to build or implement?",
+                    "result": _QWEN_CODING_META_OUTPUT,
                 },
             ]
         )
@@ -730,7 +749,7 @@ class TestRunCodingAgent:
             result = await run_coding_agent({
                 "agent": "qwen",
                 "task_mode": "coding_implementation",
-                "prompt": "Create main.py that prints hello",
+                "prompt": _CREATE_MAIN_PY_HELLO,
                 "working_dir": str(tmp_path),
             })
 
@@ -978,7 +997,7 @@ class TestOllamaChat:
             await ollama_chat({
                 "messages": json.dumps([{"role": "user", "content": "hi"}]),
                 "model":    "qwen2.5-coder:7b",
-                "system":   "You are a coding assistant.",
+                "system":   _OLLAMA_CODING_ASSISTANT_SYSTEM,
             })
 
         assert captured_body, "A request must have been sent"

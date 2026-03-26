@@ -1,19 +1,9 @@
 """
-SKYNET Bot — Chat Handler
+SKYNET Bot - Chat Handler
 
 Free-form conversational AI backed by the provider router.
-
-Flow:
-  User taps "💬 Chat"
-    → bot sends a welcome + hint
-    → every text message is forwarded to the AI with full history
-    → /done, /cancel, or /start exits back to the main menu
-
-History is stored in context.user_data["chat_history"] as a standard
-OpenAI-format messages list. It is capped at MAX_HISTORY_TURNS to avoid
-exceeding provider token limits. History is cleared on exit so the next
-chat session starts fresh.
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,25 +21,19 @@ from telegram.ext import (
 
 from bot.keyboards import CB_CHAT, back_to_main, main_menu
 from bot.state import KEY_ROUTER
+from skynet.prompt_library import load_prompt
 
 logger = logging.getLogger("skynet.bot.chat")
 
-# ── Constants ─────────────────────────────────────────────────────────────────
 CHATTING = 1
 
-_HISTORY_KEY   = "chat_history"
-MAX_HISTORY_TURNS = 20   # keep last 20 user+assistant pairs (40 messages)
-
-_SYSTEM_PROMPT = (
-    "You are Jarvis, a sharp and capable personal assistant. "
-    "Be concise and direct — no fluff, no filler. "
-    "When the user wants to build something, remind them they can use "
-    "'Start a Project' from the main menu. "
-    "Today you are running inside a Telegram bot."
-)
+_HISTORY_KEY = "chat_history"
+MAX_HISTORY_TURNS = 20
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+def _system_prompt() -> str:
+    return load_prompt("gateway/chat/system.md")
+
 
 def _trim_history(history: list[dict]) -> list[dict]:
     """Keep only the most recent MAX_HISTORY_TURNS turns."""
@@ -57,17 +41,15 @@ def _trim_history(history: list[dict]) -> list[dict]:
     return history[-max_msgs:] if len(history) > max_msgs else history
 
 
-# ── Handlers ──────────────────────────────────────────────────────────────────
-
 async def start_chat(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
-    """Entry: user tapped '💬 Chat'."""
+    """Entry: user tapped the Chat button."""
     await update.callback_query.answer()
     context.user_data[_HISTORY_KEY] = []
     await update.callback_query.message.reply_text(
-        "Chat mode — I'm listening.\n"
+        "Chat mode - I'm listening.\n"
         "Type anything. Send /done to return to the main menu.",
     )
     return CHATTING
@@ -87,7 +69,6 @@ async def handle_chat_message(
         await update.message.reply_text("AI router is not available right now.")
         return CHATTING
 
-    # Show typing indicator while the AI thinks.
     await update.effective_chat.send_action(ChatAction.TYPING)
 
     history: list[dict] = context.user_data.get(_HISTORY_KEY, [])
@@ -97,11 +78,11 @@ async def handle_chat_message(
     try:
         response = await router.chat(
             messages=history,
-            system=_SYSTEM_PROMPT,
+            system=_system_prompt(),
             max_tokens=1024,
             task_type="general",
         )
-        reply = (response.text or "").strip() or "…"
+        reply = (response.text or "").strip() or "..."
     except Exception:
         logger.exception("Chat AI call failed")
         await update.message.reply_text(
@@ -130,8 +111,6 @@ async def end_chat(
     return ConversationHandler.END
 
 
-# ── Builder ───────────────────────────────────────────────────────────────────
-
 def build_chat_conversation_handler() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[
@@ -143,9 +122,9 @@ def build_chat_conversation_handler() -> ConversationHandler:
             ],
         },
         fallbacks=[
-            CommandHandler("done",   end_chat),
+            CommandHandler("done", end_chat),
             CommandHandler("cancel", end_chat),
-            CommandHandler("start",  end_chat),
+            CommandHandler("start", end_chat),
         ],
         allow_reentry=True,
         per_message=False,

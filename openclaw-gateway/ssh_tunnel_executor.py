@@ -35,6 +35,7 @@ from runtime_trace import (
     command_preview,
     emit_runtime_trace,
 )
+from skynet.prompt_library import load_prompt
 from skynet.qwen_cli import (
     build_qwen_command_args,
     qwen_profile_for_task_mode,
@@ -43,6 +44,7 @@ from skynet.qwen_runtime import normalize_qwen_result, normalize_qwen_task_mode
 from search.web_search import WebSearcher
 from ssh_tunnel_config import load_ssh_executor_config
 from ssh_tunnel_health import SSHHealthTracker
+import ssh_tunnel_sessions
 from ssh_tunnel_support import (
     build_linux_command as _build_linux_command,
     build_windows_command as _build_windows_command,
@@ -51,6 +53,26 @@ from ssh_tunnel_support import (
     ps_quote as _ps_quote,
     sanitize_powershell_output as _sanitize_powershell_output,
 )
+
+
+def _looks_like_ssh_infra_error(detail: str) -> bool:
+    lowered = str(detail or "").strip().lower()
+    markers = (
+        "ssh",
+        "socket",
+        "timed out",
+        "timeout",
+        "connection refused",
+        "connection reset",
+        "banner",
+        "auth",
+        "authentication",
+        "permission denied",
+        "name or service not known",
+        "network is unreachable",
+        "maxstartups",
+    )
+    return any(marker in lowered for marker in markers)
 
 
 class SSHTunnelExecutor:
@@ -127,27 +149,6 @@ class SSHTunnelExecutor:
         )
 
     async def health_check(self) -> tuple[bool, str]:
-        """
-        Health check.
-        
-        Purpose:
-        - Implement `health_check` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `tuple[bool, str]` when available; otherwise side effects only.
-        """
 
         if not self.is_configured():
             self._last_health = (False, "SSH executor not configured")
@@ -183,29 +184,6 @@ class SSHTunnelExecutor:
         params: dict[str, Any],
         confirmed: bool = True,
     ) -> dict[str, Any]:
-        """
-        Execute action.
-        
-        Purpose:
-        - Implement `execute_action` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `action`: input used by this function to compute or route work.
-        - `params`: input used by this function to compute or route work.
-        - `confirmed`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
-        """
 
         del confirmed
         raw_params = dict(params or {})
@@ -456,27 +434,6 @@ class SSHTunnelExecutor:
             return {"status": "error", "action": action, "error": f"SSH action failed: {err_msg}"}
 
     def _probe_sync(self) -> None:
-        """
-        Probe sync.
-        
-        Purpose:
-        - Implement `_probe_sync` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `None` when available; otherwise side effects only.
-        """
 
         remaining = self._circuit_remaining_seconds()
         if remaining > 0:
@@ -502,27 +459,6 @@ class SSHTunnelExecutor:
             self._parallel_sem.release()
 
     def _connect(self, *, max_retries: int = 3, timeout_override: int | None = None) -> paramiko.SSHClient:
-        """
-        Connect.
-        
-        Purpose:
-        - Implement `_connect` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - None.
-        
-        Returns:
-        - Return value typed as `paramiko.SSHClient` when available; otherwise side effects only.
-        """
 
         retries = max(1, int(max_retries))
         last_exc: Exception | None = None
@@ -664,63 +600,22 @@ class SSHTunnelExecutor:
         raise last_exc  # unreachable, but keeps mypy happy
 
     def _runtime_trace_context(self) -> dict[str, Any]:
-        ctx = getattr(self._trace_local, "ctx", None)
-        if isinstance(ctx, dict):
-            return dict(ctx)
-        return {}
+        return ssh_tunnel_sessions.runtime_trace_context(self)
 
     def _register_active_session(self, session_key: str, **fields: Any) -> None:
-        key = str(session_key or "").strip()
-        if not key:
-            return
-        with self._active_sessions_lock:
-            entry = dict(self._active_sessions.get(key) or {})
-            entry.update(fields)
-            entry.setdefault("session_key", key)
-            entry.setdefault("started_at", time.time())
-            self._active_sessions[key] = entry
+        ssh_tunnel_sessions.register_active_session(self, session_key, **fields)
 
     def _update_active_session(self, session_key: str, **fields: Any) -> None:
-        self._register_active_session(session_key, **fields)
+        ssh_tunnel_sessions.update_active_session(self, session_key, **fields)
 
     def _get_active_session(self, session_key: str) -> dict[str, Any]:
-        key = str(session_key or "").strip()
-        if not key:
-            return {}
-        with self._active_sessions_lock:
-            return dict(self._active_sessions.get(key) or {})
+        return ssh_tunnel_sessions.get_active_session(self, session_key)
 
     def _pop_active_session(self, session_key: str) -> dict[str, Any]:
-        key = str(session_key or "").strip()
-        if not key:
-            return {}
-        with self._active_sessions_lock:
-            return dict(self._active_sessions.pop(key, {}) or {})
+        return ssh_tunnel_sessions.pop_active_session(self, session_key)
 
     def _trace_fields(self, trace_ctx: dict[str, Any], **extra: Any) -> dict[str, Any]:
-        payload = {
-            "trace_id": str(trace_ctx.get("trace_id") or ""),
-            "root_trace_id": str(trace_ctx.get("root_trace_id") or trace_ctx.get("trace_id") or ""),
-            "parent_span_id": str(trace_ctx.get("span_id") or ""),
-            "phase": str(trace_ctx.get("phase") or "ssh_executor"),
-            "stage": str(trace_ctx.get("stage") or ""),
-            "project_id": str(trace_ctx.get("project_id") or ""),
-            "task_id": str(trace_ctx.get("task_id") or ""),
-            "graph_id": str(trace_ctx.get("graph_id") or ""),
-            "node_key": str(trace_ctx.get("node_key") or ""),
-            "node_type": str(trace_ctx.get("node_type") or ""),
-            "worker_id": str(trace_ctx.get("worker_id") or ""),
-            "transport": "ssh_first",
-            "runtime_mode": str(bot_cfg.effective_orchestration_mode() or "legacy").strip().lower(),
-            "action_name": str(trace_ctx.get("action_name") or ""),
-            "command_hash": str(trace_ctx.get("command_hash") or ""),
-            "working_dir": str(trace_ctx.get("working_dir") or ""),
-            "session_key": str(trace_ctx.get("session_key") or ""),
-            "remote_pid": str(trace_ctx.get("remote_pid") or ""),
-            "artifact_count": max(0, int(trace_ctx.get("artifact_count") or 0)),
-        }
-        payload.update(extra)
-        return payload
+        return ssh_tunnel_sessions.trace_fields(self, trace_ctx, **extra)
 
     def _read_channel_stream(
         self,
@@ -1014,28 +909,6 @@ class SSHTunnelExecutor:
         params: dict[str, Any],
         trace_ctx: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """
-        Execute sync.
-        
-        Purpose:
-        - Implement `_execute_sync` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `action`: input used by this function to compute or route work.
-        - `params`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
-        """
 
         prev_ctx = getattr(self._trace_local, "ctx", None)
         self._trace_local.ctx = dict(trace_ctx or {})
@@ -1069,56 +942,12 @@ class SSHTunnelExecutor:
         cwd: str | None,
         env: dict[str, str] | None = None,
     ) -> str:
-        """
-        Build command.
-        
-        Purpose:
-        - Implement `_build_command` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `args`: input used by this function to compute or route work.
-        - `cwd`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `str` when available; otherwise side effects only.
-        """
 
         if self.remote_os == "windows":
             return _build_windows_command(args, cwd=cwd, env=env)
         return _build_linux_command(args, cwd=cwd, env=env)
 
     def _require_str(self, params: dict[str, Any], key: str) -> str:
-        """
-        Require str.
-        
-        Purpose:
-        - Implement `_require_str` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `params`: input used by this function to compute or route work.
-        - `key`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `str` when available; otherwise side effects only.
-        """
 
         value = params.get(key)
         if not value or not isinstance(value, str):
@@ -1135,30 +964,6 @@ class SSHTunnelExecutor:
         env: dict[str, str] | None = None,
         use_pty: bool = False,
     ) -> dict[str, Any]:
-        """
-        Run command.
-        
-        Purpose:
-        - Implement `_run_command` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `client`: input used by this function to compute or route work.
-        - `args`: input used by this function to compute or route work.
-        - `cwd`: input used by this function to compute or route work.
-        - `timeout`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
-        """
 
         command = self._build_command(args, cwd=cwd, env=env)
         preview = command_preview(command)
@@ -1680,28 +1485,9 @@ class SSHTunnelExecutor:
     # intelligence (prompt building, code parsing, file writing) stays on EC2.
     # ------------------------------------------------------------------
 
-    _OLLAMA_SYSTEM_PROMPT = (
-        "You are an expert coding agent. Implement the task completely.\n"
-        "For EVERY file you create or modify, output it in a fenced code block.\n"
-        "The opening fence MUST be the filename (not a language name).\n\n"
-        "Example:\n"
-        "```main.py\n"
-        "print('hello')\n"
-        "```\n\n"
-        "```utils/helper.py\n"
-        "def add(a, b): return a + b\n"
-        "```\n\n"
-        "Rules:\n"
-        "- The opening ``` MUST be followed by the actual filename, NEVER a language like python or js.\n"
-        "- Write complete, working code - no placeholders, no '...'.\n"
-        "- Include every file needed (source, config, requirements, etc.).\n"
-        "- Do NOT add explanations outside code blocks.\n"
-        "- Use the working directory as the project root.\n"
-        "- NEVER create a subdirectory with the same name as a top-level .py file. "
-        "For example, if you have main.py, do NOT also create main/utils.py - "
-        "use a different directory name like lib/ or helpers/ instead.\n"
-        "- Name the main entry-point file after the project name given in the task.\n"
-    )
+    @staticmethod
+    def _ollama_system_prompt() -> str:
+        return load_prompt("gateway/coding/system.md")
 
     def _run_ollama_coding_agent(
         self,
@@ -1722,7 +1508,7 @@ class SSHTunnelExecutor:
         Laptop is a dumb executor: it runs Python standard library + Ollama.
         All logic lives here on EC2.
         """
-        full_prompt = f"{self._OLLAMA_SYSTEM_PROMPT}\nTask: {prompt}"
+        full_prompt = f"{self._ollama_system_prompt()}\nTask: {prompt}"
         b64_prompt  = base64.b64encode(full_prompt.encode("utf-8")).decode("ascii")
         b64_url     = base64.b64encode(ollama_url.encode("utf-8")).decode("ascii")
         b64_model   = base64.b64encode(model.encode("utf-8")).decode("ascii")
@@ -2432,7 +2218,7 @@ class SSHTunnelExecutor:
                     ),
                 }
 
-        enforced_prompt = f"{self._OLLAMA_SYSTEM_PROMPT}\nTask:\n{prompt}"
+        enforced_prompt = f"{self._ollama_system_prompt()}\nTask:\n{prompt}"
         args = self._build_claude_command_args(
             binary=binary,
             prompt=enforced_prompt,
@@ -2500,29 +2286,6 @@ class SSHTunnelExecutor:
         return args
 
     def _run_command_action(self, client: paramiko.SSHClient, action: str, params: dict[str, Any]) -> dict[str, Any]:
-        """
-        Run command action.
-        
-        Purpose:
-        - Implement `_run_command_action` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `client`: input used by this function to compute or route work.
-        - `action`: input used by this function to compute or route work.
-        - `params`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
-        """
 
         if action == "git_status":
             cwd = self._require_str(params, "working_dir")
@@ -2984,27 +2747,6 @@ class SSHTunnelExecutor:
 
     @staticmethod
     def _default_api_key_for_provider(provider: str) -> str:
-        """
-        Default api key for provider.
-        
-        Purpose:
-        - Implement `_default_api_key_for_provider` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `provider`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `str` when available; otherwise side effects only.
-        """
 
         keys = {
             "gemini": bot_cfg.GOOGLE_AI_API_KEY,
@@ -3018,27 +2760,6 @@ class SSHTunnelExecutor:
 
     @staticmethod
     def _default_model_for_provider(provider: str) -> str:
-        """
-        Default model for provider.
-        
-        Purpose:
-        - Implement `_default_model_for_provider` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `provider`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `str` when available; otherwise side effects only.
-        """
 
         defaults = {
             "gemini": bot_cfg.get_str("OPENCLAW_CLINE_GEMINI_MODEL", bot_cfg.GEMINI_MODEL or "gemini-2.0-flash"),
@@ -3063,32 +2784,6 @@ class SSHTunnelExecutor:
         model: str,
         base_url: str,
     ) -> dict[str, Any]:
-        """
-        Configure cline provider.
-        
-        Purpose:
-        - Implement `_configure_cline_provider` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `client`: input used by this function to compute or route work.
-        - `binary`: input used by this function to compute or route work.
-        - `provider`: input used by this function to compute or route work.
-        - `api_key`: input used by this function to compute or route work.
-        - `model`: input used by this function to compute or route work.
-        - `base_url`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
-        """
 
         args = [binary, "auth", "-p", provider, "-k", api_key]
         if model:
@@ -3099,27 +2794,6 @@ class SSHTunnelExecutor:
 
     @staticmethod
     def _is_retryable_cline_failure(result: dict[str, Any]) -> bool:
-        """
-        Is retryable cline failure.
-        
-        Purpose:
-        - Implement `_is_retryable_cline_failure` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `result`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `bool` when available; otherwise side effects only.
-        """
 
         text = (
             f"{result.get('stdout', '')}\n{result.get('stderr', '')}"
@@ -3154,32 +2828,6 @@ class SSHTunnelExecutor:
         timeout: int,
         initial_result: dict[str, Any],
     ) -> dict[str, Any]:
-        """
-        Run cline with auto switch.
-        
-        Purpose:
-        - Implement `_run_cline_with_auto_switch` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `client`: input used by this function to compute or route work.
-        - `binary`: input used by this function to compute or route work.
-        - `prompt`: input used by this function to compute or route work.
-        - `cwd`: input used by this function to compute or route work.
-        - `timeout`: input used by this function to compute or route work.
-        - `initial_result`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
-        """
 
         attempted: list[str] = []
         last = dict(initial_result)
@@ -3243,28 +2891,6 @@ class SSHTunnelExecutor:
         return last
 
     def _resolve_windows_binary(self, client: paramiko.SSHClient, binary: str) -> tuple[str, bool]:
-        """
-        Resolve windows binary.
-        
-        Purpose:
-        - Implement `_resolve_windows_binary` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `client`: input used by this function to compute or route work.
-        - `binary`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `tuple[str, bool]` when available; otherwise side effects only.
-        """
 
         b = (binary or "").strip()
         if not b:
@@ -3296,28 +2922,6 @@ class SSHTunnelExecutor:
 
     @staticmethod
     def _remote_path_exists(client: paramiko.SSHClient, path: str) -> bool:
-        """
-        Remote path exists.
-        
-        Purpose:
-        - Implement `_remote_path_exists` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `client`: input used by this function to compute or route work.
-        - `path`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `bool` when available; otherwise side effects only.
-        """
 
         sftp = client.open_sftp()
         try:
@@ -3329,28 +2933,6 @@ class SSHTunnelExecutor:
             sftp.close()
 
     def _norm_join(self, parent: str | None, child: str) -> str:
-        """
-        Norm join.
-        
-        Purpose:
-        - Implement `_norm_join` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `parent`: input used by this function to compute or route work.
-        - `child`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `str` when available; otherwise side effects only.
-        """
 
         if not parent:
             return child
@@ -3359,28 +2941,6 @@ class SSHTunnelExecutor:
         return str(PurePosixPath(parent) / child)
 
     def _file_read(self, client: paramiko.SSHClient, params: dict[str, Any]) -> dict[str, Any]:
-        """
-        File read.
-        
-        Purpose:
-        - Implement `_file_read` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `client`: input used by this function to compute or route work.
-        - `params`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
-        """
 
         filepath = self._require_str(params, "file")
         sftp = client.open_sftp()
@@ -3404,28 +2964,6 @@ class SSHTunnelExecutor:
             sftp.close()
 
     def _file_write(self, client: paramiko.SSHClient, params: dict[str, Any]) -> dict[str, Any]:
-        """
-        File write.
-        
-        Purpose:
-        - Implement `_file_write` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `client`: input used by this function to compute or route work.
-        - `params`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
-        """
 
         filepath = self._require_str(params, "file")
         content = params.get("content", "")
@@ -3456,28 +2994,6 @@ class SSHTunnelExecutor:
             sftp.close()
 
     def _create_directory(self, client: paramiko.SSHClient, params: dict[str, Any]) -> dict[str, Any]:
-        """
-        Create directory.
-        
-        Purpose:
-        - Implement `_create_directory` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `client`: input used by this function to compute or route work.
-        - `params`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
-        """
 
         directory = self._require_str(params, "directory")
         sftp = client.open_sftp()
@@ -3493,28 +3009,6 @@ class SSHTunnelExecutor:
             sftp.close()
 
     def _sftp_makedirs(self, sftp: paramiko.SFTPClient, path: str) -> None:
-        """
-        Sftp makedirs.
-        
-        Purpose:
-        - Implement `_sftp_makedirs` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `sftp`: input used by this function to compute or route work.
-        - `path`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `None` when available; otherwise side effects only.
-        """
 
         if not path:
             return
@@ -3541,28 +3035,6 @@ class SSHTunnelExecutor:
                 sftp.mkdir(current)
 
     def _list_directory(self, client: paramiko.SSHClient, params: dict[str, Any]) -> dict[str, Any]:
-        """
-        List directory.
-        
-        Purpose:
-        - Implement `_list_directory` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `client`: input used by this function to compute or route work.
-        - `params`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `dict[str, Any]` when available; otherwise side effects only.
-        """
 
         directory = self._require_str(params, "directory")
         recursive = params.get("recursive", False) is True
@@ -3600,32 +3072,6 @@ class SSHTunnelExecutor:
         out: list[str],
         state: dict[str, int],
     ) -> None:
-        """
-        Walk sftp.
-        
-        Purpose:
-        - Implement `_walk_sftp` within this module's workflow.
-        - Keep behavior localized so callers have one stable entrypoint.
-        
-        How it works:
-        - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-        - Produces deterministic return data or side effects expected by calling code.
-        
-        Why this exists:
-        - Prevents duplicated logic in upstream orchestration paths.
-        - Improves debuggability by centralizing this behavior in one named function.
-        
-        Parameters:
-        - `sftp`: input used by this function to compute or route work.
-        - `directory`: input used by this function to compute or route work.
-        - `recursive`: input used by this function to compute or route work.
-        - `depth`: input used by this function to compute or route work.
-        - `out`: input used by this function to compute or route work.
-        - `state`: input used by this function to compute or route work.
-        
-        Returns:
-        - Return value typed as `None` when available; otherwise side effects only.
-        """
 
         max_depth = 3
         max_entries = 500
@@ -3655,4 +3101,3 @@ def get_ssh_executor() -> SSHTunnelExecutor:
     if _SSH_EXECUTOR is None:
         _SSH_EXECUTOR = SSHTunnelExecutor()
     return _SSH_EXECUTOR
-

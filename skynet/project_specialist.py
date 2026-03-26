@@ -5,9 +5,10 @@ import re
 from html import unescape
 from typing import Any
 
+from skynet.prompt_library import load_prompt, render_prompt
+
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
-_READY_SENTENCE = "I have everything I need. Send /plan to generate your project plan."
 _DEFAULT_REQUIRED_SLOTS = (
     "project_kind",
     "framework_or_script",
@@ -38,7 +39,7 @@ _LOCAL_SCRIPT_TERMS = ("script", "terminal", "command line", "cli", "popup", "be
 
 
 def ready_sentence() -> str:
-    return _READY_SENTENCE
+    return load_prompt("gateway/planning/ready_sentence.txt")
 
 
 def required_slots_for_project_type(project_type_label: str) -> tuple[str, ...]:
@@ -49,36 +50,25 @@ def required_slots_for_project_type(project_type_label: str) -> tuple[str, ...]:
 def build_project_specialist_system_prompt(name: str, project_type_label: str, template: dict[str, Any]) -> str:
     questions = "\n".join(f"- {q}" for q in list(template.get("questions") or []))
     stack = str(template.get("stack") or "").strip()
-    return (
-        "You are the Project Specialist for OpenClaw - a sharp, experienced software architect.\n"
-        f"You are helping the user plan '{name}', a {project_type_label} project.\n\n"
-        f"Recommended stack: {stack}\n\n"
-        "Key requirements to cover (ask in order, 1-2 at a time):\n"
-        f"{questions}\n\n"
-        "Guidelines:\n"
-        "- Be concise - this is a Telegram chat, not a document\n"
-        "- Ask follow-up questions if answers are vague\n"
-        "- After covering the key questions, tell the user exactly:\n"
-        "  'I have everything I need. Send /plan to generate your project plan.'\n\n"
-        "When generating the plan, use this exact format:\n"
-        f"**{name} - Project Plan**\n"
-        "**Overview:** (2-3 sentences)\n"
-        "**Core Features:**\n  - feature 1\n  - feature 2\n"
-        "**Tech Stack:** (specific versions/libraries)\n"
-        "**Project Structure:** (top-level folders)\n"
-        "**Milestones:**\n  1. milestone\n  2. milestone\n"
-        "**Open Questions:** (anything still unclear, or 'None')"
+    return render_prompt(
+        "gateway/planning/project_specialist_system.md",
+        project_name=name,
+        project_type_label=project_type_label,
+        stack=stack,
+        questions_block=questions or "- What does this app do?",
+        ready_sentence=ready_sentence(),
     )
 
 
 def build_project_specialist_opening(name: str, project_type_label: str, template: dict[str, Any]) -> str:
     first_question = str((list(template.get("questions") or ["What does this app do?"]) or ["What does this app do?"])[0])
     stack = str(template.get("stack") or "").strip()
-    return (
-        "I'm your Project Specialist.\n\n"
-        f"Project: <b>{name}</b> - {project_type_label}\n"
-        f"Stack: {stack}\n\n"
-        f"{first_question}"
+    return render_prompt(
+        "gateway/planning/project_specialist_opening.md",
+        project_name=name,
+        project_type_label=project_type_label,
+        stack=stack,
+        first_question=first_question,
     )
 
 
@@ -361,58 +351,28 @@ def build_qwen_planner_context(
     state = dict(planner_state or {})
     summary = build_requirement_summary_markdown(state)
     contract = str(reply_contract or "").strip().lower()
-    contract_lines = [
-        "- The gateway owns planner state and requirement readiness.",
-        "- Treat the supplied planner state and requirement summary as the source of truth.",
-        "- Ignore the working directory, filesystem state, and any empty-workspace context.",
-        "- Do not mention the workspace, files, or directory.",
-        "- Do not say you are ready to assist and do not restart the conversation.",
-        "- Return only the assistant reply text.",
-        f"- The only valid completion sentence is '{_READY_SENTENCE}'.",
-    ]
+    template_ref = "gateway/planning/qwen_planner_context_default.md"
     if contract == "emit_ready_sentence":
-        contract_lines.extend(
-            [
-                "- planner_state.plan_ready is already true.",
-                "- Do not generate the project plan yet.",
-                "- Do not use markdown, headings, bullets, or code fences.",
-                "- Reply with exactly the required completion sentence and nothing else.",
-                "- Stop immediately after the final period of the completion sentence.",
-            ]
-        )
+        template_ref = "gateway/planning/qwen_planner_context_ready.md"
     elif contract == "ask_next_question":
-        contract_lines.extend(
-            [
-                "- Ask only about the currently missing slots.",
-                "- Ask 1-2 concise questions maximum.",
-                "- Do not ask about answered slots.",
-            ]
-        )
-    return (
-        "Planner chat behavior for Qwen Code:\n"
-        f"{chr(10).join(contract_lines)}\n\n"
-        f"Planner state JSON:\n{json.dumps(state, ensure_ascii=True)}\n\n"
-        f"Requirement summary:\n{summary or '- None yet'}\n\n"
-        f"System instructions:\n{system}\n"
+        template_ref = "gateway/planning/qwen_planner_context_question.md"
+    return render_prompt(
+        template_ref,
+        ready_sentence=ready_sentence(),
+        planner_state_json=json.dumps(state, ensure_ascii=True),
+        requirement_summary=summary or "- None yet",
+        system=system,
     )
 
 
 def build_qwen_plan_generation_context(system: str, planner_state: dict[str, Any] | None = None) -> str:
     state = dict(planner_state or {})
     summary = build_requirement_summary_markdown(state)
-    return (
-        "Plan generation behavior for Qwen Code:\n"
-        "- The gateway has already determined that the project is ready for plan generation.\n"
-        "- Treat the planner state and requirement summary as authoritative.\n"
-        "- Generate the full project plan now.\n"
-        "- Do not ask follow-up questions.\n"
-        "- Do not say requirements are missing.\n"
-        "- Put any genuinely unspecified details under **Open Questions:**.\n"
-        "- Ignore the working directory, filesystem state, and any empty-workspace context.\n"
-        "- Return only the final plan text in the exact required format.\n\n"
-        f"Planner state JSON:\n{json.dumps(state, ensure_ascii=True)}\n\n"
-        f"Requirement summary:\n{summary or '- None yet'}\n\n"
-        f"System instructions:\n{system}\n"
+    return render_prompt(
+        "gateway/planning/qwen_plan_generation_context.md",
+        planner_state_json=json.dumps(state, ensure_ascii=True),
+        requirement_summary=summary or "- None yet",
+        system=system,
     )
 
 
@@ -441,47 +401,29 @@ def build_qwen_planner_prompt(
         elif item["role"] == "user":
             latest_user_message = item["content"]
     if contract == "emit_plan":
-        return (
-            "reply_contract: emit_plan\n"
-            "The gateway has already determined the requirements are sufficient.\n"
-            "Generate the complete project plan now from the supplied planner state and requirement summary.\n"
-            "Do not ask follow-up questions.\n"
-            "Return only the plan text.\n\n"
-            f"Planner state JSON:\n{json.dumps(state, ensure_ascii=True)}\n\n"
-            f"Requirement summary:\n{summary or '- None yet'}\n\n"
-            f"Conversation history JSON:\n{json.dumps(normalized_history, ensure_ascii=True)}"
+        return render_prompt(
+            "gateway/planning/qwen_planner_emit_plan.md",
+            planner_state_json=json.dumps(state, ensure_ascii=True),
+            requirement_summary=summary or "- None yet",
+            conversation_history_json=json.dumps(normalized_history, ensure_ascii=True),
         )
     if contract == "emit_ready_sentence":
-        return (
-            "reply_contract: emit_ready_sentence\n"
-            "The gateway has already determined that all required slots are satisfied.\n"
-            "Reply exactly with the required completion sentence below.\n"
-            "Do not ask follow-up questions.\n"
-            "Do not generate the plan yet.\n"
-            "Do not use markdown, bullets, headings, or extra explanation.\n"
-            "Return only the sentence and stop immediately after the final period.\n\n"
-            "Required completion sentence:\n"
-            f"{_READY_SENTENCE}\n\n"
-            f"Planner state JSON:\n{json.dumps(state, ensure_ascii=True)}\n\n"
-            f"Requirement summary:\n{summary or '- None yet'}\n\n"
-            f"Conversation history JSON:\n{json.dumps(normalized_history, ensure_ascii=True)}"
+        return render_prompt(
+            "gateway/planning/qwen_planner_ready.md",
+            ready_sentence=ready_sentence(),
+            planner_state_json=json.dumps(state, ensure_ascii=True),
+            requirement_summary=summary or "- None yet",
+            conversation_history_json=json.dumps(normalized_history, ensure_ascii=True),
         )
-    return (
-        "reply_contract: ask_next_question\n"
-        "The gateway has identified missing requirement slots that still need clarification.\n"
-        "Ask only about the listed missing slots. Ask 1-2 concise questions max.\n"
-        "Do not ask about slots that are already answered.\n"
-        "Do not repeat a question if the user already answered it explicitly or implicitly.\n"
-        "Do not restart the conversation.\n"
-        "Return only the next assistant reply text.\n\n"
-        "Conversation status:\n"
-        f"- Latest assistant message: {latest_assistant_message}\n"
-        f"- Latest user message: {latest_user_message}\n"
-        f"- Missing slots: {json.dumps(list(state.get('missing_slots') or []), ensure_ascii=True)}\n"
-        f"- Suggested question targets: {json.dumps(list(state.get('next_question_hints') or []), ensure_ascii=True)}\n\n"
-        f"Planner state JSON:\n{json.dumps(state, ensure_ascii=True)}\n\n"
-        f"Requirement summary:\n{summary or '- None yet'}\n\n"
-        f"Conversation history JSON:\n{json.dumps(normalized_history, ensure_ascii=True)}"
+    return render_prompt(
+        "gateway/planning/qwen_planner_question.md",
+        latest_assistant_message=latest_assistant_message,
+        latest_user_message=latest_user_message,
+        missing_slots_json=json.dumps(list(state.get("missing_slots") or []), ensure_ascii=True),
+        question_targets_json=json.dumps(list(state.get("next_question_hints") or []), ensure_ascii=True),
+        planner_state_json=json.dumps(state, ensure_ascii=True),
+        requirement_summary=summary or "- None yet",
+        conversation_history_json=json.dumps(normalized_history, ensure_ascii=True),
     )
 
 
@@ -495,27 +437,11 @@ def build_planner_chat_prompt(system: str, messages: list[dict[str, Any]]) -> st
             previous_assistant_message = item["content"]
         elif item["role"] == "user":
             latest_user_message = item["content"]
-    return (
-        "Produce the next assistant reply for the in-progress Telegram conversation below.\n"
-        "Treat the System instructions block as the authoritative behavior contract.\n"
-        "Respond to the latest user message now.\n"
-        "Ignore the working directory, filesystem state, and any empty-workspace context. It is irrelevant for planner_chat.\n"
-        "Do not describe your role.\n"
-        "Do not say you are ready to assist.\n"
-        "Do not ask what the user wants to work on.\n"
-        "Do not mention the workspace, files, or project directory.\n"
-        "Do not restart the conversation.\n"
-        "If the final user message already requests the full project plan, generate it immediately in the exact required format.\n"
-        "If the latest user message answers the previous assistant question, continue to the next unanswered requirement from the System instructions.\n"
-        "Otherwise, either ask 1-2 concrete follow-up questions grounded in the conversation history or, if enough information is already available, reply with the exact completion sentence required by the System instructions.\n"
-        "Return only the assistant reply text.\n\n"
-        "Bad responses that are always invalid:\n"
-        "- Understood. I'm ready to assist...\n"
-        "- What would you like to work on?\n\n"
-        f"System instructions:\n{system}\n\n"
-        f"Previous assistant message:\n{previous_assistant_message}\n\n"
-        f"Latest user message:\n{latest_user_message}\n\n"
-        "Conversation transcript:\n"
-        f"{chr(10).join(transcript_lines)}\n\n"
-        f"Conversation history JSON:\n{json.dumps(normalized_history, ensure_ascii=True)}\n"
+    return render_prompt(
+        "gateway/planning/planner_chat.md",
+        system=system,
+        previous_assistant_message=previous_assistant_message,
+        latest_user_message=latest_user_message,
+        transcript=chr(10).join(transcript_lines),
+        conversation_history_json=json.dumps(normalized_history, ensure_ascii=True),
     )

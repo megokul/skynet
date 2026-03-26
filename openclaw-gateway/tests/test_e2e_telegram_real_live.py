@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import time
 from collections import deque
+from ctypes import wintypes
 from datetime import datetime, timezone
 from hashlib import sha1
 from pathlib import Path
@@ -54,6 +56,9 @@ _CONVERSATIONAL_RESTATEMENT = (
     "It is a Windows terminal Python script that pops up \"hi\" and plays a short beep on run, "
     "using only stdlib."
 )
+_WINDOWS_DEFAULT_POPUP_TITLES = ("Message", "Notification")
+_WINDOWS_POPUP_CLASSES = ("#32770", "TkTopLevel")
+_WM_CLOSE = 0x0010
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -75,6 +80,17 @@ def _env_int(name: str, default: int) -> int:
 
 def _env_flag(name: str, default: bool) -> bool:
     return _env_bool(name, default)
+
+
+def _terminal_run_project_failure_text(text: str) -> str:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return ""
+    if "run failed:" in lowered:
+        return str(text).strip()
+    if "exited with code " in lowered:
+        return str(text).strip()
+    return ""
 
 
 def _terminal_coding_failure_text(text: str) -> str:
@@ -150,6 +166,109 @@ def _terminal_bot_failure_text(text: str) -> str:
         if marker in lowered:
             return str(text).strip()
     return ""
+
+
+def _window_text(hwnd: int) -> str:
+    if sys.platform != "win32":
+        return ""
+    length = int(ctypes.windll.user32.GetWindowTextLengthW(hwnd) or 0)
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    ctypes.windll.user32.GetWindowTextW(hwnd, buffer, len(buffer))
+    return str(buffer.value or "")
+
+
+def _window_class_name(hwnd: int) -> str:
+    if sys.platform != "win32":
+        return ""
+    buffer = ctypes.create_unicode_buffer(256)
+    ctypes.windll.user32.GetClassNameW(hwnd, buffer, len(buffer))
+    return str(buffer.value or "")
+
+
+def _close_windows_popup_dialogs_once(*, titles: set[str] | None = None) -> list[dict[str, Any]]:
+    if sys.platform != "win32":
+        return []
+    user32 = ctypes.windll.user32
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    title_whitelist = {title.lower() for title in (titles or set(_WINDOWS_DEFAULT_POPUP_TITLES))}
+    class_whitelist = {name.lower() for name in _WINDOWS_POPUP_CLASSES}
+    closed_windows: list[dict[str, Any]] = []
+
+    @enum_proc
+    def _callback(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        title = _window_text(hwnd).strip()
+        if not title or title.lower() not in title_whitelist:
+            return True
+        class_name = _window_class_name(hwnd).strip()
+        class_lower = class_name.lower()
+        if class_lower not in class_whitelist and "tk" not in class_lower:
+            return True
+        user32.PostMessageW(hwnd, _WM_CLOSE, 0, 0)
+        closed_windows.append(
+            {
+                "hwnd": int(hwnd),
+                "title": title,
+                "class_name": class_name,
+            }
+        )
+        return True
+
+    user32.EnumWindows(_callback, 0)
+    return closed_windows
+
+
+async def _popup_auto_close_worker(
+    *,
+    stop_event: asyncio.Event,
+    trace_fn: Callable[..., None],
+    step: str,
+    titles: set[str] | None = None,
+) -> None:
+    if sys.platform != "win32":
+        trace_fn("popup.auto_close.skip", step=step, reason="non_windows")
+        return
+    if not _env_flag("SKYNET_E2E_AUTO_CLOSE_POPUPS", True):
+        trace_fn("popup.auto_close.skip", step=step, reason="disabled")
+        return
+    poll_interval_s = max(
+        0.2,
+        float((os.environ.get("SKYNET_E2E_POPUP_CLOSE_POLL_S") or "0.5").strip() or "0.5"),
+    )
+    trace_fn(
+        "popup.auto_close.start",
+        step=step,
+        poll_interval_s=poll_interval_s,
+        titles=sorted(titles or set(_WINDOWS_DEFAULT_POPUP_TITLES)),
+    )
+    closed_count = 0
+    while not stop_event.is_set():
+        try:
+            closed_windows = await asyncio.to_thread(
+                _close_windows_popup_dialogs_once,
+                titles=titles,
+            )
+        except Exception as exc:
+            trace_fn(
+                "popup.auto_close.error",
+                step=step,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            closed_windows = []
+        for window in closed_windows:
+            closed_count += 1
+            trace_fn(
+                "popup.auto_close.closed",
+                step=step,
+                close_count=closed_count,
+                **window,
+            )
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=poll_interval_s)
+        except asyncio.TimeoutError:
+            pass
+    trace_fn("popup.auto_close.stop", step=step, close_count=closed_count)
 
 
 class _TerminalBotFailure(AssertionError):
@@ -368,6 +487,14 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _popup_title_candidates(project_slug: str) -> set[str]:
+    titles = {title for title in _WINDOWS_DEFAULT_POPUP_TITLES if title}
+    normalized_slug = str(project_slug or "").strip()
+    if normalized_slug:
+        titles.add(normalized_slug)
+    return titles
+
+
 def _button_texts(message) -> list[str]:
     rows = getattr(message, "buttons", None) or []
     out: list[str] = []
@@ -388,6 +515,7 @@ async def _wait_for_bot_message(
     trace_fn: Callable[..., None],
     step: str,
     predicate: Callable[[str, list[str]], bool],
+    terminal_failure_text_fn: Callable[[str], str] | None = None,
 ) -> object:
     deadline = time.monotonic() + timeout_s
     started = time.monotonic()
@@ -418,6 +546,21 @@ async def _wait_for_bot_message(
                 raise _TerminalBotFailure(
                     f"Terminal bot failure encountered: {terminal_failure[:260]}"
                 )
+            if terminal_failure_text_fn is not None:
+                extra_failure = terminal_failure_text_fn(text)
+                if extra_failure:
+                    trace_fn(
+                        "telegram.wait.terminal_failure",
+                        step=step,
+                        message_id=int(getattr(msg, "id", 0)),
+                        text_preview=extra_failure[:220],
+                        buttons=btns,
+                        polls=poll_count,
+                        waited_s=round(time.monotonic() - started, 1),
+                    )
+                    raise _TerminalBotFailure(
+                        f"Terminal bot failure encountered: {extra_failure[:260]}"
+                    )
             if predicate(text, btns):
                 trace_fn(
                     "telegram.wait.match",
@@ -803,6 +946,8 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
     trace("test.requirement.payload", payload=requirement)
 
     worker_proc: subprocess.Popen | None = None
+    popup_close_stop: asyncio.Event | None = None
+    popup_close_task: asyncio.Task[None] | None = None
     try:
         async with TelegramClient(StringSession(session), api_id, api_hash) as client:
             trace("telegram.client.connected")
@@ -1023,6 +1168,15 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                 "no coding agents available for chain",
                 "codex_write_blocked",
                 "generation_failed: codex",
+            )
+            popup_close_stop = asyncio.Event()
+            popup_close_task = asyncio.create_task(
+                _popup_auto_close_worker(
+                    stop_event=popup_close_stop,
+                    trace_fn=trace,
+                    step="coding_and_run",
+                    titles=_popup_title_candidates(project_slug),
+                )
             )
 
             def _raise_terminal_coding_failure(failure_text: str, *, reason: str) -> None:
@@ -1324,6 +1478,7 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                         trace_fn=trace,
                         step="await_run_project_output",
                         predicate=lambda t, _b: "exit" in t.lower() or "finished" in t.lower(),
+                        terminal_failure_text_fn=_terminal_run_project_failure_text,
                     )
                     last_id = int(run_msg.id)
                     run_text = str(getattr(run_msg, "message", "") or "")
@@ -1337,6 +1492,12 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
                     if "exit 0" in run_text.lower() or "finished (exit 0)" in run_text.lower():
                         saw_run_success = True
                     break
+
+            if popup_close_stop is not None and popup_close_task is not None:
+                popup_close_stop.set()
+                await popup_close_task
+                popup_close_stop = None
+                popup_close_task = None
 
             if saw_run_success:
                 _validate_generated_project_artifacts(project_slug=project_slug, trace_fn=trace)
@@ -1412,6 +1573,9 @@ async def test_real_telegram_chat_flow_no_github_repo_creation() -> None:
             bundle_reason = "test_failure"
         raise
     finally:
+        if popup_close_stop is not None and popup_close_task is not None:
+            popup_close_stop.set()
+            await popup_close_task
         if not bundle_emitted:
             await container_diagnostics.emit_bundle(
                 status=bundle_status,

@@ -1,56 +1,79 @@
-"""Prompt-reference integrity test suite.
-
-Purpose:
-- Scan Python source for referenced prompt paths.
-- Ensure every declared prompt reference resolves to a real file.
-- Prevent runtime failures from stale or renamed prompt assets."""
-
 from __future__ import annotations
 
 from pathlib import Path
 import re
 
+from skynet.prompt_library import load_prompt, resolve_prompt_path
 
-PROMPT_REF_RE = re.compile(r'prompt\s*=\s*"(?P<ref>prompts/[^"]+)"')
+
+PROMPT_CALL_RE = re.compile(r'(?:load_prompt|render_prompt)\(\s*["\'](?P<ref>[^"\']+)["\']')
+
+PROMPT_RUNTIME_FILES = [
+    "openclaw-gateway/bot/handlers/chat.py",
+    "openclaw-gateway/bot/handlers/coding.py",
+    "openclaw-gateway/bot/handlers/coding_planning.py",
+    "openclaw-gateway/orchestration/critic.py",
+    "openclaw-gateway/orchestration/director.py",
+    "openclaw-gateway/orchestration/architect.py",
+    "openclaw-gateway/ssh_tunnel_executor.py",
+    "openclaw-gateway/ai/context.py",
+    "openclaw-gateway/ai/prompts.py",
+    "skynet/project_specialist.py",
+    "skynet/qwen_cli.py",
+]
+
+BANNED_RUNTIME_PROMPT_REFS = [
+    "gateway/chat/system.md",
+    "gateway/coding/system.md",
+    "gateway/planning/project_specialist_system.md",
+    "gateway/orchestration/director_contract.md",
+    "gateway/orchestration/architect_contract.md",
+    "gateway/orchestration/critic_review.md",
+    "gateway/planning/ready_sentence.txt",
+]
 
 
-def test_all_prompt_references_exist_under_prompt_repo() -> None:
-    """
-    Test scenario `test_all_prompt_references_exist_under_prompt_repo`.
-    
-    Purpose:
-    - Implement `test_all_prompt_references_exist_under_prompt_repo` within this module's workflow.
-    - Keep behavior localized so callers have one stable entrypoint.
-    
-    How it works:
-    - Consumes declared inputs, performs local validation/transforms, and applies the function logic.
-    - Produces deterministic return data or side effects expected by calling code.
-    
-    Why this exists:
-    - Prevents duplicated logic in upstream orchestration paths.
-    - Improves debuggability by centralizing this behavior in one named function.
-    
-    Parameters:
-    - None.
-    
-    Returns:
-    - Return value typed as `None` when available; otherwise side effects only.
-    """
+def _runtime_audit_snippets() -> list[str]:
+    snippets: list[str] = []
+    for prompt_ref in BANNED_RUNTIME_PROMPT_REFS:
+        first_line = next(
+            (line.strip() for line in load_prompt(prompt_ref).splitlines() if line.strip()),
+            "",
+        )
+        if first_line:
+            snippets.append(first_line)
+    return snippets
 
+
+def test_all_prompt_library_references_resolve() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    gateway_root = repo_root / "openclaw-gateway"
     missing: list[str] = []
 
-    for py_file in gateway_root.rglob("*.py"):
+    for rel_path in PROMPT_RUNTIME_FILES:
+        py_file = repo_root / rel_path
         text = py_file.read_text(encoding="utf-8")
-        for match in PROMPT_REF_RE.finditer(text):
+        for match in PROMPT_CALL_RE.finditer(text):
             prompt_ref = match.group("ref")
-            rel = prompt_ref.removeprefix("prompts/")
-            prompt_path = gateway_root / "prompts" / rel
+            try:
+                prompt_path = resolve_prompt_path(prompt_ref)
+            except Exception as exc:
+                missing.append(f"{rel_path} -> {prompt_ref} ({type(exc).__name__}: {exc})")
+                continue
             if not prompt_path.exists():
-                missing.append(
-                    f"{py_file.relative_to(repo_root)} -> {prompt_ref} (expected: {prompt_path.relative_to(repo_root)})"
-                )
+                missing.append(f"{rel_path} -> {prompt_ref} (missing: {prompt_path})")
 
     assert not missing, "Missing prompt files for code references:\n" + "\n".join(sorted(missing))
 
+
+def test_runtime_modules_do_not_embed_primary_prompt_literals() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    audit_snippets = _runtime_audit_snippets()
+
+    for rel_path in PROMPT_RUNTIME_FILES:
+        text = (repo_root / rel_path).read_text(encoding="utf-8")
+        for snippet in audit_snippets:
+            if snippet in text:
+                offenders.append(f"{rel_path} -> {snippet}")
+
+    assert not offenders, "Runtime modules still contain hardcoded prompt text:\n" + "\n".join(sorted(offenders))

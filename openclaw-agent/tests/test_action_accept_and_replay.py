@@ -68,6 +68,29 @@ async def test_log_write_emits_ack_and_writes_file(tmp_path: Path, monkeypatch: 
 
 
 @pytest.mark.asyncio
+async def test_log_write_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict[str, object] = {}
+
+    async def _fake_to_thread(func, *args):
+        called["func"] = func
+        called["args"] = args
+        return 7
+
+    monkeypatch.setattr(websocket_client.asyncio, "to_thread", _fake_to_thread)
+    ws = _FakeWS()
+    await websocket_client._handle_message(
+        ws,
+        json.dumps({"type": "log_write", "log_id": "log-2", "stream": "runtime", "lines": ["a", "b"]}),
+        asyncio.Lock(),
+    )
+
+    assert called["func"] is websocket_client._write_log_lines
+    assert called["args"] == ("runtime", ["a", "b"])
+    assert ws.sent[-1]["type"] == "log_write_ack"
+    assert ws.sent[-1]["line_count"] == 7
+
+
+@pytest.mark.asyncio
 async def test_action_request_sends_accept_then_response(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fake_route(message: dict[str, object]) -> dict[str, object]:
         return {"request_id": str(message.get("request_id") or ""), "status": "success", "action": str(message.get("action") or ""), "result": {"returncode": 0, "stdout": "ok", "stderr": ""}}

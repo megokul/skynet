@@ -8,15 +8,21 @@ import pytest
 from bot.handlers import coding_stage_execution
 
 
-def _make_deps(*, has_existing_run_contract: bool) -> coding_stage_execution.StageExecutionDeps:
+def _make_deps(
+    *,
+    has_existing_run_contract: bool,
+    stdout: str = "ok",
+    stderr: str = "",
+    files_written: list[str] | None = None,
+) -> coding_stage_execution.StageExecutionDeps:
     send_action_with_heartbeat = AsyncMock(
         return_value={
             "status": "success",
             "result": {
                 "returncode": 0,
-                "stdout": "ok",
-                "stderr": "",
-                "files_written": [".pytest_cache/v/cache/nodeids"],
+                "stdout": stdout,
+                "stderr": stderr,
+                "files_written": list(files_written or [".pytest_cache/v/cache/nodeids"]),
             },
         }
     )
@@ -96,5 +102,45 @@ async def test_stage_fails_when_no_runnable_files_and_no_existing_run_contract()
             "stage": "qwen",
             "returncode": "0",
             "error_excerpt": "no runnable files generated",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stage_fails_with_quota_excerpt_before_success_when_existing_run_contract_exists() -> None:
+    result = await coding_stage_execution.run_stage_chain_for_generation(
+        deps=_make_deps(
+            has_existing_run_contract=True,
+            stdout="Qwen OAuth quota exceeded: Your free daily quota has been reached.",
+            stderr="",
+            files_written=[".pytest_cache/v/cache/nodeids"],
+        ),
+        db=None,
+        app=SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock())),
+        chat_id=1,
+        user_id=1,
+        project={"id": "proj-1"},
+        task_id=143,
+        prompt="verify existing runnable project",
+        working_dir="E:/SKYNET-SANDBOX/Projects/demo",
+        stage_chain=["qwen"],
+        label_prefix="coding",
+        require_runnable_files=True,
+        notify_stage_switch=False,
+    )
+
+    assert result["ok"] is False
+    assert result["failure_type"] == "ENVIRONMENT_FAILED"
+    assert result["error_code"] == "PROVIDER_QUOTA_EXHAUSTED"
+    assert result["stage_failures"] == [
+        {
+            "stage": "qwen",
+            "returncode": "0",
+            "error_excerpt": (
+                "PROVIDER_QUOTA_EXHAUSTED: "
+                "Qwen OAuth quota exceeded: Your free daily quota has been reached."
+            ),
+            "failure_type": "ENVIRONMENT_FAILED",
+            "error_code": "PROVIDER_QUOTA_EXHAUSTED",
         }
     ]

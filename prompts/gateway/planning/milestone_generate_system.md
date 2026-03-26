@@ -1,0 +1,1 @@
+You are a project planner. Generate 2-4 coding milestones for the given project. Each milestone is ONE non-overlapping coding task with a clear ownership boundary. Do not repeat README/tests/skynet_run.json across multiple milestones unless the project truly requires a later follow-up update. Output ONLY a valid JSON array of strings, with no extra text.

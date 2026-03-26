@@ -6,6 +6,9 @@ import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from orchestration.milestone_contracts import normalize_node_specs
+from skynet.prompt_library import render_prompt
+
 
 @dataclass(frozen=True)
 class MilestoneExtractionDeps:
@@ -35,6 +38,12 @@ def _reset_loop_graph_hints(project: dict[str, Any]) -> None:
     project["_loop_parallel_lanes"] = []
     project["_loop_risk_assessment"] = []
     project["_loop_node_specs"] = []
+
+
+def _apply_structured_milestones(project: dict[str, Any], milestones: list[str]) -> list[str]:
+    _reset_loop_graph_hints(project)
+    project["_loop_node_specs"] = normalize_node_specs(milestones=milestones)
+    return milestones
 
 
 def _deterministic_fallback(
@@ -88,17 +97,15 @@ async def extract_milestones_router(
     if not plan:
         return []
 
-    system = (
-        "You are a project planner. Extract the coding milestones from the project plan "
-        "as a JSON array of strings. Each element is ONE self-contained coding task "
-        "(e.g. 'Set up project structure', 'Implement login endpoint'). "
-        "Output ONLY a valid JSON array, no extra text."
-    )
+    system = render_prompt("gateway/planning/milestone_extract_system.md")
     messages = [
         {
             "role": "user",
-            "content": f"Project: {project['name']}\n\nPlan:\n{plan}\n\n"
-            "Return the milestones as a JSON array of strings.",
+            "content": render_prompt(
+                "gateway/planning/milestone_extract_user.md",
+                project_name=project["name"],
+                plan=plan,
+            ),
         }
     ]
 
@@ -114,29 +121,28 @@ async def extract_milestones_router(
         raw = re.sub(r"\s*```$", "", raw)
         milestones = json.loads(raw)
         if isinstance(milestones, list) and all(isinstance(m, str) for m in milestones):
-            return [m.strip() for m in milestones if m.strip()]
+            return _apply_structured_milestones(
+                project,
+                [m.strip() for m in milestones if m.strip()],
+            )
     except Exception:
         logger.warning("JSON milestone extraction failed; falling back to line parsing")
 
     fallback = parse_milestones_fallback(plan)
     if fallback:
-        return fallback
+        return _apply_structured_milestones(project, fallback)
 
     logger.warning("No milestones found in plan text; generating from project info")
     try:
-        gen_system = (
-            "You are a project planner. Generate 2-4 coding milestones for the given project. "
-            "Each milestone is ONE self-contained coding task. "
-            "Output ONLY a valid JSON array of strings, no extra text."
-        )
+        gen_system = render_prompt("gateway/planning/milestone_generate_system.md")
         gen_messages = [
             {
                 "role": "user",
-                "content": (
-                    f"Project name: {project['name']}\n"
-                    f"Type: {project.get('project_type', 'Other')}\n"
-                    f"Description: {plan[:500]}\n\n"
-                    "Generate milestones as a JSON array of strings."
+                "content": render_prompt(
+                    "gateway/planning/milestone_generate_user.md",
+                    project_name=project["name"],
+                    project_type=project.get("project_type", "Other"),
+                    plan_excerpt=plan[:500],
                 ),
             }
         ]
@@ -151,7 +157,10 @@ async def extract_milestones_router(
         raw = re.sub(r"\s*```$", "", raw)
         milestones = json.loads(raw)
         if isinstance(milestones, list) and all(isinstance(m, str) for m in milestones):
-            return [m.strip() for m in milestones if m.strip()]
+            return _apply_structured_milestones(
+                project,
+                [m.strip() for m in milestones if m.strip()],
+            )
     except Exception:
         logger.warning("Last-resort milestone generation also failed")
 
@@ -184,8 +193,7 @@ async def extract_milestones_codex_then_router(
             project=project,
             parse_milestones_fallback=deps.parse_milestones_fallback,
         )
-        _reset_loop_graph_hints(project)
-        return fallback
+        return _apply_structured_milestones(project, fallback)
 
     plan = project.get("description", "")
     if not plan:
@@ -193,20 +201,12 @@ async def extract_milestones_codex_then_router(
 
     direct_milestones = deps.parse_milestones_fallback(str(plan))
     if direct_milestones:
-        _reset_loop_graph_hints(project)
-        return direct_milestones
+        return _apply_structured_milestones(project, direct_milestones)
 
-    prompt = (
-        "You are a project planner. Build an execution DAG for coding milestones.\n"
-        "Return ONLY valid JSON, no markdown.\n"
-        "Preferred schema:\n"
-        "{\"nodes\":[{\"node_key\":\"work_1\",\"title\":\"...\",\"node_type\":\"work\",\"owner\":\"codex\","
-        "\"deps\":[],\"priority\":200,\"tools_required\":[\"code\",\"test\"],\"acceptance\":[],\"risk\":{\"level\":\"medium\"}}],"
-        "\"success_contract\":{\"required_nodes\":[\"work_1\"],\"required_artifacts\":[\"skynet_run.json\"]},"
-        "\"execution_strategy\":{\"mode\":\"adaptive_parallel_x2\"}}\n"
-        "Fallback schema: JSON array of milestone strings.\n\n"
-        f"Project: {project['name']}\n"
-        f"Plan:\n{plan}\n"
+    prompt = render_prompt(
+        "gateway/planning/milestone_graph.md",
+        project_name=project["name"],
+        plan=plan,
     )
     timeout = max(30, int(getattr(deps.cfg, "MILESTONE_CODEX_TIMEOUT_SECONDS", 120) or 120))
 
@@ -267,13 +267,12 @@ async def extract_milestones_codex_then_router(
             return [str(item).strip() for item in (parsed_graph.get("milestones") or []) if str(item).strip()]
         parsed_list = deps.parse_json_string_list(output)
         if parsed_list:
-            _reset_loop_graph_hints(project)
-            return parsed_list
+            return _apply_structured_milestones(project, parsed_list)
         fallback = _deterministic_fallback(
             project=project,
             parse_milestones_fallback=deps.parse_milestones_fallback,
         )
-        _reset_loop_graph_hints(project)
+        _apply_structured_milestones(project, fallback)
         deps.logger.warning(
             "milestone.primary.codex_invalid_json project_id=%s fallback_count=%s",
             project.get("id"),
@@ -292,7 +291,7 @@ async def extract_milestones_codex_then_router(
             parse_milestones_fallback=deps.parse_milestones_fallback,
         )
         if fallback:
-            _reset_loop_graph_hints(project)
+            _apply_structured_milestones(project, fallback)
             deps.logger.warning(
                 "milestone.primary.local_fallback project_id=%s fallback_count=%s",
                 project.get("id"),

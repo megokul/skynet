@@ -16,7 +16,7 @@ from typing import Any, Callable, Awaitable
 
 import aiosqlite
 
-from core.prompt_library import load_prompt
+from skynet.prompt_library import load_prompt
 from db import store
 
 logger = logging.getLogger("skynet.ai.context")
@@ -31,10 +31,6 @@ _SUMMARISE_THRESHOLD = 0.70
 
 # Number of recent messages to always keep in full (never summarised).
 _KEEP_RECENT_FULL = 12
-
-# System prompt used for generating conversation summaries.
-_SUMMARISE_PROMPT = load_prompt("ai/context/summarize_system.md")
-
 
 # Type alias for the summariser callback.
 SummariseFn = Callable[[list[dict[str, Any]], str], Awaitable[str]]
@@ -193,7 +189,7 @@ async def _summarise_messages(
         try:
             # Build a simplified version of the messages for the summariser.
             simplified = _simplify_for_summary(messages)
-            return await summarise_fn(simplified, _SUMMARISE_PROMPT)
+            return await summarise_fn(simplified, load_prompt("ai/context/summarize_system.md"))
         except Exception:
             logger.exception("AI summarisation failed, using extractive fallback")
 

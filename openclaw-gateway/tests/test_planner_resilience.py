@@ -9,6 +9,12 @@ from bot.handlers.project import (
     _build_deterministic_plan,
     _is_requirement_grounded_plan,
 )
+from skynet.prompt_library import load_prompt
+
+
+_GENERATE_MILESTONES = load_prompt("testing/common/generate_milestones.txt")
+_PLANNER_ASSISTANT_BOILERPLATE = load_prompt("testing/outputs/planner_assistant_boilerplate.txt")
+_PROMPT_ECHO_PLAN = load_prompt("testing/outputs/prompt_echo_plan.md")
 
 
 def _history() -> list[dict]:
@@ -38,35 +44,23 @@ def test_deterministic_plan_fallback_is_requirement_grounded():
 
 
 def test_meta_planner_boilerplate_is_rejected():
-    bad_plan = (
-        "I'll act as your planner assistant for the Telegram product workflow.\n"
-        "Send what you want to plan and I will structure it."
-    )
-    assert _is_requirement_grounded_plan(bad_plan, _history()) is False
+    assert _is_requirement_grounded_plan(_PLANNER_ASSISTANT_BOILERPLATE, _history()) is False
 
 
 def test_prompt_echo_plan_is_rejected():
-    bad_plan = (
-        "**demo — Project Plan**\n"
-        "**Overview:** You MUST generate the full project plan now.\n"
-        "**Core Features:**\n- item\n"
-        "**Tech Stack:**\n- Python\n"
-        "**Project Structure:**\n- main.py\n"
-        "**Milestones:**\n1. step one\n2. step two"
-    )
-    assert _is_requirement_grounded_plan(bad_plan, _history()) is False
+    assert _is_requirement_grounded_plan(_PROMPT_ECHO_PLAN, _history()) is False
 
 
 def test_planner_agent_payload_adds_qwen_plan_generation_task_mode():
     qwen_payload = _planner_agent_payload(
         agent="qwen",
-        prompt="Generate milestones",
+        prompt=_GENERATE_MILESTONES,
         working_dir="E:/SKYNET-SANDBOX/Projects/demo",
         timeout_seconds=90,
     )
     codex_payload = _planner_agent_payload(
         agent="codex",
-        prompt="Generate milestones",
+        prompt=_GENERATE_MILESTONES,
         working_dir="E:/SKYNET-SANDBOX/Projects/demo",
         timeout_seconds=90,
     )
@@ -100,7 +94,7 @@ async def test_extract_milestones_invalid_codex_json_uses_local_fallback():
             "status": "success",
             "result": {
                 "returncode": 0,
-                "stdout": "I will help you plan this workflow.",
+                "stdout": _PLANNER_ASSISTANT_BOILERPLATE,
                 "stderr": "",
             },
         }
@@ -119,7 +113,9 @@ async def test_extract_milestones_invalid_codex_json_uses_local_fallback():
 
     assert len(milestones) >= 2
     assert all(isinstance(item, str) and item.strip() for item in milestones)
-    assert project.get("_loop_node_specs") == []
+    node_specs = project.get("_loop_node_specs") or []
+    assert len(node_specs) == len(milestones)
+    assert all(spec.get("required_for_completion") is True for spec in node_specs)
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any
 
+from skynet.prompt_library import render_prompt
+
 
 def build_architect_prompt(
     *,
@@ -13,21 +15,13 @@ def build_architect_prompt(
     previous_state: dict[str, Any] | None,
     index_summary: list[dict[str, Any]] | None = None,
 ) -> str:
-    return (
-        "You are the Architect agent for a coding orchestration loop.\n"
-        "Return ONLY valid JSON with this schema:\n"
-        '{"components":[{"name":"...","purpose":"..."}],'
-        '"interfaces":[{"name":"...","contract":"..."}],'
-        '"boundaries":[{"from":"...","to":"...","allowed":true}],'
-        '"data_flows":[{"from":"...","to":"...","data":"..."}],'
-        '"constraints":["..."],'
-        '"adr_summary":"..."}\n'
-        "Do not return markdown.\n\n"
-        f"Project: {project_name}\n"
-        f"Goal:\n{goal}\n\n"
-        f"Director contract JSON:\n{json.dumps(director_contract or {}, ensure_ascii=True)}\n\n"
-        f"Previous architecture state JSON:\n{json.dumps(previous_state or {}, ensure_ascii=True)}\n\n"
-        f"Code index summary JSON:\n{json.dumps(index_summary or [], ensure_ascii=True)}\n"
+    return render_prompt(
+        "gateway/orchestration/architect_contract.md",
+        project_name=project_name,
+        goal=goal,
+        director_contract_json=json.dumps(director_contract or {}, ensure_ascii=True),
+        previous_state_json=json.dumps(previous_state or {}, ensure_ascii=True),
+        index_summary_json=json.dumps(index_summary or [], ensure_ascii=True),
     )
 
 

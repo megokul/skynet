@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any
 
+from skynet.prompt_library import render_prompt
+
 SEVERITY_ORDER = {
     "low": 1,
     "medium": 2,
@@ -79,14 +81,10 @@ def build_review_prompt(
     files_written: list[str],
     gate_summary: str,
 ) -> str:
-    return (
-        "You are a strict code review critic.\n"
-        "Return ONLY valid JSON with this schema:\n"
-        '{"passed": true|false, "findings":[{"severity":"low|medium|high|critical","code":"ID","message":"...","files":["path"],"suggested_fix":"..."}]}\n'
-        "Do not include markdown.\n\n"
-        f"Project: {project_name}\n"
-        f"Milestone: {milestone_text}\n"
-        f"Files written: {', '.join(files_written) if files_written else '(none)'}\n"
-        f"Strict-gate summary: {gate_summary or '(none)'}\n"
+    return render_prompt(
+        "gateway/orchestration/critic_review.md",
+        project_name=project_name,
+        milestone_text=milestone_text,
+        files_written=", ".join(files_written) if files_written else "(none)",
+        gate_summary=gate_summary or "(none)",
     )
-

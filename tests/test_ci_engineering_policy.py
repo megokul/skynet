@@ -138,6 +138,11 @@ def test_template_docstrings_fail_outside_allowlist(tmp_path: Path) -> None:
 def test_template_docstrings_allowed_for_deferred_allowlist_paths(tmp_path: Path) -> None:
     policy = _load_policy_module()
     _write_required_docs(tmp_path, policy)
+    if not policy.TEMPLATE_DOCSTRING_ALLOWLIST:
+        violations = policy.evaluate_policy(tmp_path, [], strict=False)
+        assert violations == []
+        return
+
     rel_path = next(iter(sorted(policy.TEMPLATE_DOCSTRING_ALLOWLIST)))
     _write_template_docstring(tmp_path / rel_path)
 

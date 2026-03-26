@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any
 
+from skynet.prompt_library import render_prompt
+
 
 def build_director_prompt(
     *,
@@ -15,19 +17,13 @@ def build_director_prompt(
 ) -> str:
     constraint_lines = "\n".join(f"- {item}" for item in (constraints or []) if str(item).strip())
     memory_blob = json.dumps(memory_snapshot or {}, ensure_ascii=True)
-    return (
-        "You are the Director agent for a coding orchestration loop.\n"
-        "Return ONLY valid JSON with this schema:\n"
-        '{"objective":"...",'
-        '"scope":"...",'
-        '"success_metrics":["..."],'
-        '"risk_budget":{"max_repairs":1,"max_runtime_seconds":3600},'
-        '"constraints":["..."]}\n'
-        "Do not return markdown.\n\n"
-        f"Project: {project_name} ({project_type})\n"
-        f"Goal:\n{goal}\n\n"
-        f"Constraints:\n{constraint_lines or '- none'}\n\n"
-        f"Memory snapshot JSON:\n{memory_blob}\n"
+    return render_prompt(
+        "gateway/orchestration/director_contract.md",
+        project_name=project_name,
+        project_type=project_type,
+        goal=goal,
+        constraint_lines=constraint_lines or "- none",
+        memory_blob=memory_blob,
     )
 
 

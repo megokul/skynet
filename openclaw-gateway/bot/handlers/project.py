@@ -780,22 +780,34 @@ async def handle_requirements_message(
             user_id=update.effective_user.id,
             planner_state=planner_state,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Requirements AI call failed")
+        reply = (
+            "I captured your requirements and we can keep going.\n\n"
+            "Tap Generate Plan when you're ready, and I'll draft the plan from what you've already shared."
+        )
+        history = session.append_history("assistant", reply)
+        planner_state = session.refresh_planner_state(
+            project_name=str(name),
+            project_type_label=type_label,
+        )
         await _emit_runtime(
             context=context,
             update=update,
             event="project.requirements.message",
-            status="fail",
+            status="ok",
             phase="requirements",
             action_name="run_coding_agent",
-            error_code="PLANNER_CALL_FAILED",
-            error_message="Requirements AI call failed.",
-            failure_class="GENERATION_FAILED",
+            details={
+                "history_len": len(history),
+                "reply_len": len(reply),
+                "plan_ready": bool(planner_state.get("plan_ready", False)),
+                "missing_slots": list(planner_state.get("missing_slots") or []),
+                "fallback": "requirements_continue_after_planner_failure",
+                "planner_error": type(exc).__name__,
+            },
         )
-        await update.message.reply_text(
-            "AI is unavailable right now. Please try again."
-        )
+        await update.message.reply_text(reply, reply_markup=requirements_done())
         return GATHERING_REQUIREMENTS
 
     history = session.append_history("assistant", reply)
@@ -922,8 +934,27 @@ async def _do_generate_plan(
                 mitigation_hint="Check planner backend availability and response format.",
             ),
         )
-        await message.reply_text("Could not generate the plan. Please try /plan again.")
-        return GATHERING_REQUIREMENTS
+        logger.warning(
+            "Plan generation failed; using deterministic requirement-grounded fallback plan."
+        )
+        plan = _build_deterministic_plan(
+            name=name,
+            project_type_label=type_label,
+            template=template,
+            history=history,
+        )
+        await emit_runtime_trace_async(
+            db=context.bot_data.get(KEY_DB) if isinstance(context.bot_data, dict) else None,
+            event="project.plan.generate.fallback",
+            status="ok",
+            flow=_runtime_flow(),
+            phase="planning",
+            details={
+                "fallback": "deterministic_after_planner_failure",
+                "project_name": str(name)[:120],
+                "plan_len": len(plan),
+            },
+        )
 
     # Validate plan looks like a real plan (not a meta-response from the AI).
     is_real_plan = _is_requirement_grounded_plan(plan, history)

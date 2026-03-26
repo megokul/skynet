@@ -6,8 +6,8 @@ Current high-drift areas and the cleanup direction for each.
 
 1. `openclaw-gateway/ssh_tunnel_executor.py`
    - Problem: still mixes remote execution policy, session lifecycle, coding-agent orchestration, and diagnostics.
-   - Current pass: SSH config, support helpers, and circuit-breaker/diagnostic state are now extracted.
-   - Next pass: split remote file operations and coding-agent orchestration away from the executor core.
+   - Current pass: SSH config/support helpers, circuit-breaker diagnostics, and runtime session/trace bookkeeping are now extracted; template docstring debt was cleared and the temporary allowlist removed.
+   - Next pass: keep splitting remote file operations, command flow, and coding-agent orchestration away from the executor core.
 
 2. `openclaw-agent/executor/actions.py`
    - Problem: action registry, subprocess lifecycle, and coding/session orchestration are still co-located.
@@ -22,8 +22,8 @@ Current high-drift areas and the cleanup direction for each.
 
 3. `openclaw-gateway/bot/handlers/coding.py`
    - Problem: still a very large orchestration surface.
-   - Current status: stage execution, tracker state, transport helpers, and milestone planning are now split into helper modules.
-   - Next pass: continue peeling tracker message lifecycle, stop/resume flow, and control-loop orchestration into narrower seams.
+   - Current status: stage execution, tracker state, transport helpers, milestone planning, tracker lifecycle, stop-cleanup tracing, and shared milestone contract logic are now split into helper modules.
+   - Next pass: finish peeling the remaining legacy milestone loop and other oversized orchestration branches into narrower seams.
 
 4. `openclaw-gateway/db/store.py`
    - Problem: the facade still exports a large persistence surface.
@@ -46,12 +46,17 @@ This cleanup pass stayed behavior-frozen and focused on low-risk truth-alignment
 - gateway store domains now split into `store_memory.py`, `store_runtime_trace.py`, and `store_worker_policy.py`
 - control-plane queue helper logic now lives in `skynet/ledger/task_queue_support.py`
 - docs and workflow commands now point at the same authoritative test/policy entrypoints
-- `scripts/ci/check_engineering_policy.py` now ratchets template-docstring debt with a reduced temporary allowlist
+- `scripts/ci/check_engineering_policy.py` now enforces template-docstring debt with no temporary allowlist entries remaining
+- SSH runtime session bookkeeping now lives in `openclaw-gateway/ssh_tunnel_sessions.py`
+- the tracker lifecycle now lives behind `bot/handlers/coding_tracker_runtime.py`
+- stop-request remote cancel cleanup now lives behind `bot/handlers/coding_stop_cleanup.py`
+- the permanently skipped legacy gateway integration test was retired in favor of deterministic `test_e2e.py` coverage
+- control-loop milestone execution now runs on normalized structured milestone contracts with `deliverables`, `acceptance`, `required_for_completion`, and `satisfaction_checks`
+- already-satisfied milestones can now be detected before provider execution instead of burning live quota on redundant work
+- stage execution now classifies quota/rate-limit failures before any `coding.stage.success` event is emitted
 
 ## Debt Snapshot
 
-- Temporary ratchet allowlist:
-  - `openclaw-gateway/ssh_tunnel_executor.py`
 - Remaining oversized modules to treat as architectural refactor targets:
   - `openclaw-gateway/ssh_tunnel_executor.py`
   - `openclaw-gateway/bot/handlers/coding.py`
@@ -62,7 +67,7 @@ This cleanup pass stayed behavior-frozen and focused on low-risk truth-alignment
 ## Next Extraction Boundaries
 
 - `openclaw-gateway/ssh_tunnel_executor.py`: isolate remote file ops, command execution, and coding-agent orchestration behind narrower helpers.
-- `openclaw-gateway/bot/handlers/coding.py`: separate tracker message lifecycle, stop/resume flow, and control-loop orchestration.
+- `openclaw-gateway/bot/handlers/coding.py`: finish the remaining legacy milestone loop extraction and remove leftover dead delegation residue.
 - `openclaw-gateway/db/store.py`: keep one facade but continue moving architecture/task-strategy/learning domains behind focused modules.
 - `skynet/ledger/task_queue.py`: split file-ownership and transition authority from the manager facade.
 - `openclaw-agent/executor/actions.py`: extract the remaining coding-agent orchestration once the current monkeypatch seams are replaced with narrower tests.

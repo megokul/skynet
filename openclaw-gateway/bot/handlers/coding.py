@@ -43,7 +43,9 @@ from bot.handlers import (
     coding_planning,
     coding_stage_execution,
     coding_stage_policy,
+    coding_stop_cleanup,
     coding_terminal,
+    coding_tracker_runtime,
     coding_tracker_state,
     coding_transport,
 )
@@ -110,6 +112,13 @@ from orchestration.learning import (
     build_pattern_key,
 )
 from orchestration.loop_controller import ClosedLoopController
+from orchestration.milestone_contracts import (
+    build_completion_contract,
+    evaluate_milestone_satisfaction,
+    normalize_milestone_spec,
+    normalize_node_specs,
+    parse_planner_task_graph_payload,
+)
 from orchestration.openclaw_runner import get_openclaw_runner
 from orchestration.trace import format_timeline_lines, load_trace_timeline
 from runtime_trace import (
@@ -121,29 +130,14 @@ from runtime_trace import (
     emit_runtime_trace_async,
 )
 from orchestration.worker_pool import select_worker
+from skynet.prompt_library import load_prompt, render_prompt
 
 logger = logging.getLogger("skynet.bot.coding")
 
-# ---------------------------------------------------------------------------
-# Coding system prompt Ã¢â‚¬â€ shared between router-based and Ollama SSH paths.
-# ---------------------------------------------------------------------------
-_CODING_SYSTEM_PROMPT = (
-    "You are an expert coding agent. Implement the task completely.\n"
-    "For EVERY file you create or modify, output it in a fenced code block.\n"
-    "The opening fence MUST be the filename (not a language name).\n\n"
-    "Example:\n"
-    "```main.py\n"
-    "print('hello')\n"
-    "```\n\n"
-    "Rules:\n"
-    "- The opening ``` MUST be followed by the actual filename, NEVER a language like python or js.\n"
-    "- Write complete, working code Ã¢â‚¬â€ no placeholders, no '...'.\n"
-    "- Include every file needed (source, config, requirements, etc.).\n"
-    "- Do NOT add explanations outside code blocks.\n"
-    "- Name the main entry-point file after the project name given in the task.\n"
-)
+def _coding_system_prompt() -> str:
+    return load_prompt("gateway/coding/system.md")
 
-# Language tag Ã¢â€ â€™ file extension for fallback naming.
+# Language tag -> file extension for fallback naming.
 _LANG_EXT: dict[str, str] = {
     "python": ".py", "py": ".py", "javascript": ".js", "js": ".js",
     "typescript": ".ts", "ts": ".ts", "java": ".java", "c": ".c",
@@ -500,15 +494,37 @@ def _tracker_is_terminal_status(status: str | None) -> bool:
 
 
 def _tracker_reply_markup(state: dict[str, Any]):
-    return tracker_session_controls(status=str(state.get("status") or "running"))
+    return coding_tracker_runtime.tracker_reply_markup(
+        state=state,
+        tracker_session_controls=tracker_session_controls,
+    )
 
 
 def _tracker_render_text(state: dict[str, Any]) -> str:
-    return coding_tracker_state.tracker_render_text(
-        state,
+    return coding_tracker_runtime.tracker_render_text(
+        state=state,
+        tracker_state_api=coding_tracker_state,
         bar_width=_tracker_bar_width(),
         stale_warn_seconds_value=_tracker_stale_warn_seconds(),
         verbose_pipeline=_tracker_verbose_pipeline(),
+    )
+
+
+def _tracker_lifecycle_deps() -> coding_tracker_runtime.TrackerLifecycleDeps:
+    return coding_tracker_runtime.TrackerLifecycleDeps(
+        cfg=cfg,
+        logger=logger,
+        state_api=coding_tracker_state,
+        use_acp_orchestration=_use_acp_orchestration,
+        tracker_enabled=_tracker_enabled,
+        tracker_default_transport=_tracker_default_transport,
+        tracker_default_runtime_mode=_tracker_default_runtime_mode,
+        tracker_render_text=_tracker_render_text,
+        tracker_reply_markup=_tracker_reply_markup,
+        tracker_state_key=_tracker_state_key,
+        active_project_key=_active_project_key,
+        tracker_get_state=_tracker_get_state,
+        tracker_edit_interval=_tracker_edit_interval,
     )
 
 
@@ -521,45 +537,14 @@ async def _tracker_init_message(
     working_dir: str,
     strict_mode: bool,
 ) -> None:
-    if not _tracker_enabled():
-        return
-    project_id = str(project.get("id") or "").strip()
-    if not project_id:
-        return
-
-    now = time.monotonic()
-    state = coding_tracker_state.build_tracker_initial_state(
-        project_id=project_id,
-        project_name=str(project.get("name") or "").strip(),
+    await coding_tracker_runtime.init_tracker_message(
+        deps=_tracker_lifecycle_deps(),
+        app=app,
+        chat_id=chat_id,
+        user_id=user_id,
+        project=project,
         working_dir=working_dir,
         strict_mode=strict_mode,
-        transport=_tracker_default_transport(),
-        runtime_mode=_tracker_default_runtime_mode(),
-        queue_mode=(
-            str(getattr(cfg, "OPENCLAW_QUEUE_MODE", "require_empty_queue") or "require_empty_queue")
-            if _use_acp_orchestration()
-            else ""
-        ),
-        now=now,
-    )
-    text = _tracker_render_text(state)
-    msg = await app.bot.send_message(
-        chat_id,
-        text,
-        reply_markup=_tracker_reply_markup(state),
-    )
-    state["message_id"] = int(getattr(msg, "message_id", 0) or 0)
-    state["last_rendered_text"] = text
-    state["last_edit_monotonic"] = now
-    app.bot_data[_tracker_state_key(user_id, project_id)] = state
-    app.bot_data[_active_project_key(user_id)] = project_id
-    logger.info(
-        "telegram.tracker.init project_id=%s task_id=%s phase=%s percent=%s status=%s",
-        project_id,
-        None,
-        state.get("phase"),
-        state.get("percent"),
-        state.get("status"),
     )
 
 
@@ -596,144 +581,40 @@ async def _tracker_update(
     transport: str | None = None,
     force: bool = False,
 ) -> None:
-    if not _tracker_enabled():
-        return
-
-    pid = str(project_id or app.bot_data.get(_active_project_key(user_id)) or "").strip()
-    if not pid:
-        return
-    state = _tracker_get_state(bot_data=app.bot_data, user_id=user_id, project_id=pid)
-    if state is None:
-        return
-
-    now = time.monotonic()
-    prior = dict(state)
-    coding_tracker_state.apply_tracker_updates(
-        state,
-        now=now,
-        default_transport=_tracker_default_transport(),
-        phase=phase,
-        phase_detail=phase_detail,
-        status=status,
-        milestone_index=milestone_index,
-        milestones_total=milestones_total,
-        attempt=attempt,
-        stage=stage,
-        gate=gate,
-        run_contract_status=run_contract_status,
-        session_id=session_id,
-        runtime_mode=runtime_mode,
-        queue_mode=queue_mode,
-        graph_id=graph_id,
-        arch_version=arch_version,
-        node_key=node_key,
-        node_type=node_type,
-        worker_id=worker_id,
-        critic_name=critic_name,
-        setup_progress=setup_progress,
-        extraction_progress=extraction_progress,
-        execution_progress=execution_progress,
-        gates_progress=gates_progress,
-        final_progress=final_progress,
-        heartbeat_elapsed=heartbeat_elapsed,
-        transport=transport,
-    )
-    prior_percent = int(prior.get("percent", 0) or 0)
-    text = _tracker_render_text(state)
-    if text == str(state.get("last_rendered_text") or "") and not force:
-        return
-
-    significant_change = any(
-        str(prior.get(key) or "") != str(state.get(key) or "")
-        for key in (
-            "phase",
-            "phase_detail",
-            "status",
-            "milestone_index",
-            "milestones_total",
-            "attempt",
-            "stage",
-            "gate",
-            "run_contract_status",
-            "session_id",
-            "runtime_mode",
-            "queue_mode",
-            "graph_id",
-            "arch_version",
-            "node_key",
-            "node_type",
-            "worker_id",
-            "critic_name",
-            "transport",
-        )
-    ) or int(state.get("percent", 0) or 0) != prior_percent
-
-    edit_interval = _tracker_edit_interval()
-    since_last_edit = now - float(state.get("last_edit_monotonic", 0.0) or 0.0)
-    if not force and not significant_change and edit_interval > 0 and since_last_edit < edit_interval:
-        return
-
-    message_id = int(state.get("message_id", 0) or 0)
-    if message_id <= 0:
-        return
-
-    try:
-        await app.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=text,
-            reply_markup=_tracker_reply_markup(state),
-        )
-    except Exception as exc:  # pragma: no cover - network behavior
-        err_text = str(exc).lower()
-        if "message is not modified" in err_text:
-            state["last_rendered_text"] = text
-            state["last_edit_monotonic"] = now
-            return
-        if "message to edit not found" in err_text or "message can't be edited" in err_text:
-            try:
-                replacement = await app.bot.send_message(
-                    chat_id,
-                    text,
-                    reply_markup=_tracker_reply_markup(state),
-                )
-                state["message_id"] = int(getattr(replacement, "message_id", 0) or 0)
-                logger.info(
-                    "telegram.tracker.replace_message project_id=%s task_id=%s phase=%s percent=%s status=%s",
-                    pid,
-                    None,
-                    state.get("phase"),
-                    state.get("percent"),
-                    state.get("status"),
-                )
-            except Exception as send_exc:  # pragma: no cover - network behavior
-                logger.warning(
-                    "telegram.tracker.error project_id=%s task_id=%s stage=replace error_excerpt=%s",
-                    pid,
-                    None,
-                    str(send_exc)[:220],
-                )
-                return
-        else:
-            logger.warning(
-                "telegram.tracker.error project_id=%s task_id=%s stage=edit error_excerpt=%s",
-                pid,
-                None,
-                str(exc)[:220],
-            )
-            return
-
-    state["last_rendered_text"] = text
-    state["last_edit_monotonic"] = now
-    logger.info(
-        "telegram.tracker.update project_id=%s task_id=%s phase=%s percent=%s status=%s stage=%s gate=%s",
-        pid,
-        None,
-        state.get("phase"),
-        state.get("percent"),
-        state.get("status"),
-        state.get("stage"),
-        state.get("gate"),
+    await coding_tracker_runtime.update_tracker_message(
+        deps=_tracker_lifecycle_deps(),
+        app=app,
+        chat_id=chat_id,
+        user_id=user_id,
+        project_id=project_id,
+        request=coding_tracker_runtime.TrackerUpdateRequest(
+            phase=phase,
+            phase_detail=phase_detail,
+            status=status,
+            milestone_index=milestone_index,
+            milestones_total=milestones_total,
+            attempt=attempt,
+            stage=stage,
+            gate=gate,
+            run_contract_status=run_contract_status,
+            session_id=session_id,
+            runtime_mode=runtime_mode,
+            queue_mode=queue_mode,
+            graph_id=graph_id,
+            arch_version=arch_version,
+            node_key=node_key,
+            node_type=node_type,
+            worker_id=worker_id,
+            critic_name=critic_name,
+            setup_progress=setup_progress,
+            extraction_progress=extraction_progress,
+            execution_progress=execution_progress,
+            gates_progress=gates_progress,
+            final_progress=final_progress,
+            heartbeat_elapsed=heartbeat_elapsed,
+            transport=transport,
+            force=force,
+        ),
     )
 
 
@@ -746,26 +627,14 @@ async def _tracker_finalize(
     status: str,
     detail: str,
 ) -> None:
-    await _tracker_update(
+    await coding_tracker_runtime.finalize_tracker_message(
+        deps=_tracker_lifecycle_deps(),
         app=app,
         chat_id=chat_id,
         user_id=user_id,
         project_id=project_id,
-        phase="finalization",
-        phase_detail=detail,
         status=status,
-        final_progress=1.0,
-        stage="",
-        gate="",
-        force=True,
-    )
-    logger.info(
-        "telegram.tracker.final project_id=%s task_id=%s phase=%s percent=%s status=%s",
-        project_id,
-        None,
-        "finalization",
-        (_tracker_get_state(bot_data=app.bot_data, user_id=user_id, project_id=project_id) or {}).get("percent", 0),
-        status,
+        detail=detail,
     )
 
 
@@ -1208,133 +1077,21 @@ async def _send_action_with_heartbeat(
                 elapsed += interval
                 if user_id is not None and app.bot_data.get(_stop_request_key(user_id)):
                     db = app.bot_data.get(KEY_DB) if isinstance(app.bot_data, dict) else None
-                    session_key = str(params.get("session_key") or "").strip()
-                    transport_mode = _tracker_default_transport()
-                    runtime_mode = _tracker_default_runtime_mode()
-                    await emit_runtime_trace_async(
+                    await coding_stop_cleanup.stop_requested_during_action(
+                        deps=coding_stop_cleanup.StopCleanupDeps(
+                            cfg=cfg,
+                            send_action=send_action,
+                            emit_runtime_trace_async=emit_runtime_trace_async,
+                            build_debug_bundle=build_debug_bundle,
+                            action_inner_result=_action_inner_result,
+                            runtime_flow=_runtime_flow,
+                            tracker_default_transport=_tracker_default_transport,
+                            tracker_default_runtime_mode=_tracker_default_runtime_mode,
+                        ),
                         db=db,
-                        event="coding.stop.requested",
-                        status="start",
-                        flow=_runtime_flow(),
-                        project_id=str(params.get("project_id") or ""),
-                        task_id=str(params.get("task_id") or ""),
-                        graph_id=str(params.get("graph_id") or ""),
-                        node_key=str(params.get("node_key") or ""),
-                        node_type=str(params.get("node_type") or ""),
-                        phase="coding_generation",
-                        stage=str(params.get("agent") or params.get("stage") or ""),
-                        worker_id=str(params.get("worker_id") or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
-                        transport=transport_mode,
-                        runtime_mode=runtime_mode,
-                        action_name=action,
-                        working_dir=str(params.get("working_dir") or ""),
-                        session_key=session_key,
+                        action=action,
+                        params=params,
                     )
-                    if session_key and bool(getattr(cfg, "RUNTIME_TRACE_STOP_CLEANUP_EVENTS", True)):
-                        await emit_runtime_trace_async(
-                            db=db,
-                            event="coding.stop.remote_cancel",
-                            status="start",
-                            flow=_runtime_flow(),
-                            project_id=str(params.get("project_id") or ""),
-                            task_id=str(params.get("task_id") or ""),
-                            graph_id=str(params.get("graph_id") or ""),
-                            node_key=str(params.get("node_key") or ""),
-                            node_type=str(params.get("node_type") or ""),
-                            phase="coding_generation",
-                            stage=str(params.get("agent") or params.get("stage") or ""),
-                            worker_id=str(params.get("worker_id") or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
-                            transport=transport_mode,
-                            runtime_mode=runtime_mode,
-                            action_name="cancel_runtime_session",
-                            working_dir=str(params.get("working_dir") or ""),
-                            session_key=session_key,
-                        )
-                        cancel = await send_action(
-                            "cancel_runtime_session",
-                            {
-                                "session_key": session_key,
-                                "project_id": str(params.get("project_id") or ""),
-                                "task_id": str(params.get("task_id") or ""),
-                                "graph_id": str(params.get("graph_id") or ""),
-                                "node_key": str(params.get("node_key") or ""),
-                                "node_type": str(params.get("node_type") or ""),
-                                "worker_id": str(params.get("worker_id") or ""),
-                                "working_dir": str(params.get("working_dir") or ""),
-                            },
-                            timeout=max(20, int(getattr(cfg, "RUNTIME_TRACE_REMOTE_PROBE_TIMEOUT_SECONDS", 8) or 8) * 3),
-                            confirmed=True,
-                        )
-                        cancel_inner = _action_inner_result(cancel) if cancel.get("status") != "error" else {}
-                        cancel_fail = cancel.get("status") == "error" or int(cancel_inner.get("returncode", 0) or 0) != 0
-                        process_tree = list(cancel_inner.get("process_tree") or [])
-                        prompt_file = dict(cancel_inner.get("prompt_file") or {})
-                        artifact_snapshot = list(cancel_inner.get("artifact_snapshot") or [])
-                        artifact_count = int(cancel_inner.get("artifact_count") or 0)
-                        remote_pid = str(cancel_inner.get("remote_pid") or "")
-                        cleanup_status = str(cancel_inner.get("cleanup_status") or "")
-                        await emit_runtime_trace_async(
-                            db=db,
-                            event="coding.stop.remote_cancel",
-                            status="fail" if cancel_fail else "ok",
-                            level="error" if cancel_fail else "info",
-                            flow=_runtime_flow(),
-                            project_id=str(params.get("project_id") or ""),
-                            task_id=str(params.get("task_id") or ""),
-                            graph_id=str(params.get("graph_id") or ""),
-                            node_key=str(params.get("node_key") or ""),
-                            node_type=str(params.get("node_type") or ""),
-                            phase="coding_generation",
-                            stage=str(params.get("agent") or params.get("stage") or ""),
-                            worker_id=str(params.get("worker_id") or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
-                            transport=transport_mode,
-                            runtime_mode=runtime_mode,
-                            action_name="cancel_runtime_session",
-                            working_dir=str(params.get("working_dir") or ""),
-                            session_key=session_key,
-                            remote_pid=remote_pid,
-                            artifact_count=artifact_count,
-                            error_code="REMOTE_CANCEL_FAILED" if cancel_fail else "",
-                            error_message=str(cancel.get("error") or cancel_inner.get("stderr") or "")[:1200] if cancel_fail else "",
-                            debug_bundle=build_debug_bundle(
-                                failure_class="REMOTE_CANCEL_FAILED" if cancel_fail else "STOP_REQUESTED",
-                                error_message=str(cancel.get("error") or cancel_inner.get("stderr") or "stop cleanup attempted")[:1200],
-                                process_tree=process_tree,
-                                prompt_file=prompt_file,
-                                artifact_snapshot=artifact_snapshot,
-                                artifact_count=artifact_count,
-                                stop_cleanup_status=cleanup_status,
-                                mitigation_hint="Inspect whether the remote wrapper PID and descendants were terminated cleanly.",
-                            ),
-                            details={"stop_cleanup_status": cleanup_status, "process_tree_summary": process_tree[:10]},
-                        )
-                        if cancel_inner.get("orphaned"):
-                            await emit_runtime_trace_async(
-                                db=db,
-                                event="coding.stop.orphan_process.detected",
-                                status="fail",
-                                level="error",
-                                flow=_runtime_flow(),
-                                project_id=str(params.get("project_id") or ""),
-                                task_id=str(params.get("task_id") or ""),
-                                graph_id=str(params.get("graph_id") or ""),
-                                node_key=str(params.get("node_key") or ""),
-                                node_type=str(params.get("node_type") or ""),
-                                phase="coding_generation",
-                                stage=str(params.get("agent") or params.get("stage") or ""),
-                                worker_id=str(params.get("worker_id") or getattr(cfg, "CONTROL_LOOP_DEFAULT_WORKER_ID", "") or "worker-primary"),
-                                transport=transport_mode,
-                                runtime_mode=runtime_mode,
-                                action_name="cancel_runtime_session",
-                                working_dir=str(params.get("working_dir") or ""),
-                                session_key=session_key,
-                                remote_pid=remote_pid,
-                                artifact_count=artifact_count,
-                                error_code="ORPHAN_PROCESS_DETECTED",
-                                error_message="Remote processes or prompt files remained after stop cleanup.",
-                                details={"process_tree_summary": process_tree[:10], "prompt_file": prompt_file},
-                            )
-                    raise RuntimeError("STOP_REQUESTED: session stop requested by user")
                 if max_wait_seconds is not None and elapsed >= max_wait_seconds:
                     raise RuntimeError(
                         f"WAIT_TIMEOUT: {label} exceeded {max_wait_seconds}s"
@@ -2109,26 +1866,14 @@ async def _run_quality_fix_pass(
             line += f" | error: {summary}"
         failure_lines.append(line)
 
-    fix_prompt = (
-        f"Project: {project['name']} ({project['project_type']})\n"
-        f"Working directory: {working_dir}\n\n"
-        f"Milestone task:\n{milestone_text}\n\n"
-        "The previous implementation failed strict quality gates. "
-        "Fix the code and update any needed files so all gates pass:\n"
-        + "\n".join(failure_lines)
-        + "\n\nRequirements:\n"
-          f"- Include a valid {_RUN_CONTRACT_FILE}.\n"
-          "- Add runnable tests if missing (Python: tests/test_smoke.py).\n"
-          "- Ensure lint and tests pass.\n"
-          "- Return complete files only."
-    )
-
-    prompt_for_payload = (
-        fix_prompt
-        + "\n\nExecution instructions:\n"
-          "- Use coding tools to directly create or update files in the working directory.\n"
-          "- Do not ask clarifying questions; implement the fixes now.\n"
-          "- Print a short completion summary after file edits."
+    prompt_for_payload = render_prompt(
+        "gateway/coding/quality_fix.md",
+        project_name=project["name"],
+        project_type=project["project_type"],
+        working_dir=working_dir,
+        milestone_text=milestone_text,
+        failure_lines="\n".join(failure_lines) or "- No failing gates were captured.",
+        run_contract_file=_RUN_CONTRACT_FILE,
     )
     effective_stage_chain = [
         stage
@@ -2313,28 +2058,17 @@ def _build_strict_rescue_prompt(
         if stdout_marker
         else ""
     )
-    return (
-        f"Project: {project['name']} ({project['project_type']})\n"
-        f"Working directory: {working_dir}\n\n"
-        "STRICT RECOVERY MODE:\n"
-        "Previous coding attempts exited successfully but produced no files.\n"
-        "Write files now. Do not ask clarifying questions.\n\n"
-        "Milestone task:\n"
-        f"{milestone_text}\n\n"
-        "Required outputs:\n"
-        f"1) {entrypoint}\n"
-        f"- Must be runnable with `{interpreter} {entrypoint}`\n"
-        f"{marker_req}"
-        "- Exit code must be 0.\n\n"
-        f"2) {_RUN_CONTRACT_FILE} with:\n"
-        "{\n"
-        f'  \"interpreter\": \"{interpreter}\",\n'
-        f'  \"entrypoint\": \"{entrypoint}\",\n'
-        "  \"args\": []\n"
-        "}\n\n"
-        f"3) {tests_file}\n"
-        "- Must execute the entrypoint and assert exit code 0.\n\n"
-        "Output only fenced code blocks where each fence tag is the filename."
+    return render_prompt(
+        "gateway/coding/strict_rescue.md",
+        project_name=project["name"],
+        project_type=project["project_type"],
+        working_dir=working_dir,
+        milestone_text=milestone_text,
+        entrypoint=entrypoint,
+        interpreter=interpreter,
+        marker_requirement=marker_req,
+        run_contract_file=_RUN_CONTRACT_FILE,
+        tests_file=tests_file,
     )
 
 
@@ -4042,26 +3776,16 @@ def _control_loop_work_prompt(
     preferred_entrypoint = f"{str(project.get('name') or 'main').strip().lower().replace(' ', '_')}.py"
     plan_context = str(project.get("description") or "").strip()
     plan_section = f"\nFull project plan (for reference):\n{plan_context}\n" if plan_context else ""
-    return (
-        f"Project: {project['name']} ({project['project_type']})\n"
-        f"Working directory: {working_dir}\n\n"
-        f"Task:\n{milestone_text}\n\n"
-        "Implement this task completely by writing files directly in the working directory.\n"
-        "This is an implementation task, not a planning task.\n"
-        f"{plan_section}\n"
-        "Requirements:\n"
-        f'- Include {_RUN_CONTRACT_FILE} with this exact JSON schema: '
-        f'{{"interpreter": "python", "entrypoint": "{preferred_entrypoint}"}}\n'
-        f"- Prefer entrypoint file `{preferred_entrypoint}` unless an existing entrypoint already exists.\n"
-        "- Create or update tests needed to validate behavior.\n"
-        "- Write complete files and ensure they run.\n"
-        "- The entrypoint in skynet_run.json MUST be the main script that "
-        "demonstrates the project's core functionality. Do NOT create a stub "
-        "entrypoint that just prints a message — the entrypoint IS what the "
-        "user runs. For GUI/popup apps, the entrypoint should show the GUI. "
-        "For server apps, the entrypoint should start the server.\n"
-        "- Do not ask clarifying questions.\n"
-        "- Do NOT return architecture plans, checklists, or mermaid diagrams."
+    return render_prompt(
+        "gateway/coding/control_loop_work.md",
+        project_name=project["name"],
+        project_type=project["project_type"],
+        working_dir=working_dir,
+        milestone_text=milestone_text,
+        plan_section=plan_section,
+        run_contract_file=_RUN_CONTRACT_FILE,
+        run_contract_schema=f'{{"interpreter": "python", "entrypoint": "{preferred_entrypoint}"}}',
+        preferred_entrypoint=preferred_entrypoint,
     )
 
 
@@ -4099,19 +3823,14 @@ def _control_loop_repair_prompt(
                 "Make sure the entrypoint IS the real application, not a stub.\n"
             )
             break
-    return (
-        f"Project: {project['name']} ({project['project_type']})\n"
-        f"Working directory: {working_dir}\n\n"
-        f"{milestone_block}"
-        "Repair task generated by critic findings.\n"
-        "Apply minimal code edits to resolve these issues:\n"
-        f"{finding_block}\n"
-        f"{timeout_hint}\n"
-        "Requirements:\n"
-        "- Keep existing behavior intact unless findings require changes.\n"
-        "- Ensure lint/tests/smoke pass in strict gates.\n"
-        "- Return complete updated files only.\n"
-        "- Do NOT return architecture plans, checklists, or mermaid diagrams."
+    return render_prompt(
+        "gateway/coding/control_loop_repair.md",
+        project_name=project["name"],
+        project_type=project["project_type"],
+        working_dir=working_dir,
+        milestone_block=milestone_block,
+        finding_block=finding_block,
+        timeout_hint=timeout_hint,
     )
 
 
@@ -4147,18 +3866,17 @@ async def _run_control_loop_v1(
     update_tracker: Callable[..., Awaitable[None]],
     finalize_tracker: Callable[..., Awaitable[None]],
 ) -> None:
-    completion_contract = dict(project.get("_loop_success_contract") or {})
-    if bool(getattr(cfg, "CONTROL_LOOP_COMPLETION_CONTRACT_REQUIRED", True)):
-        required_artifacts = [
-            str(item).strip()
-            for item in (completion_contract.get("required_artifacts") or [])
-            if str(item).strip()
-        ]
-        if _RUN_CONTRACT_FILE not in required_artifacts:
-            required_artifacts.append(_RUN_CONTRACT_FILE)
-        completion_contract["required_artifacts"] = required_artifacts
-    else:
-        completion_contract = {"required_artifacts": []}
+    node_specs = normalize_node_specs(
+        node_specs=list(project.get("_loop_node_specs") or []),
+        milestones=milestones,
+    )
+    project["_loop_node_specs"] = node_specs
+    completion_contract = build_completion_contract(
+        base_contract=(project.get("_loop_success_contract") or {}),
+        node_specs=node_specs,
+        require_run_contract=bool(getattr(cfg, "CONTROL_LOOP_COMPLETION_CONTRACT_REQUIRED", True)),
+        run_contract_file=_RUN_CONTRACT_FILE,
+    )
     controller = ClosedLoopController(
         db=db,
         project_id=str(project["id"]),
@@ -4173,7 +3891,7 @@ async def _run_control_loop_v1(
         max_tokens=max(1000, int(getattr(cfg, "CONTROL_LOOP_BUDGET_MAX_TOKENS", 250000) or 250000)),
         deadlock_idle_ticks=max(1, int(getattr(cfg, "CONTROL_LOOP_DEADLOCK_IDLE_TICKS", 3) or 3)),
         success_contract=completion_contract,
-        node_specs=list(project.get("_loop_node_specs") or []),
+        node_specs=node_specs,
     )
     graph_id = await controller.bootstrap(planner_summary=str(project.get("description") or ""))
     loop_v2_enabled = _use_control_loop_v2(project)
@@ -4477,7 +4195,39 @@ async def _run_control_loop_v1(
         )
         if result.get("status") == "error" or _action_exit_code(result) != 0:
             return ""
-        return str(_action_inner_result(result).get("content") or "")
+        inner = _action_inner_result(result)
+        return str(inner.get("content") or inner.get("stdout") or "")
+
+    async def _list_worker_files(_working_dir: str) -> list[str]:
+        result = await send_action(
+            "list_directory",
+            {"directory": _working_dir, "recursive": True},
+            timeout=60,
+            confirmed=True,
+        )
+        if result.get("status") == "error" or _action_exit_code(result) != 0:
+            return []
+        listing = str(_action_inner_result(result).get("stdout") or "")
+        return _extract_file_paths_from_listing(listing, working_dir=_working_dir)
+
+    async def _validate_worker_run_contract(_working_dir: str) -> dict[str, Any] | None:
+        contract, _summary, _infra = await _load_and_validate_run_contract(working_dir=_working_dir)
+        return contract if isinstance(contract, dict) else None
+
+    async def _run_satisfaction_tests(_working_dir: str) -> tuple[bool, str]:
+        runner = "npm" if _project_prefers_node(str(project.get("project_type") or "")) else "pytest"
+        result = await send_action(
+            "run_tests",
+            {"working_dir": _working_dir, "runner": runner},
+            timeout=300,
+            confirmed=True,
+        )
+        if result.get("status") == "error" or _action_exit_code(result) != 0:
+            detail = _action_error_text(result, "run_tests") or _action_excerpt(result)
+            return False, (detail[:220] if detail else "Existing tests failed.")
+        inner = _action_inner_result(result)
+        summary = str(inner.get("stdout") or inner.get("stderr") or "").strip()
+        return True, summary[:220] or "Existing tests already pass."
 
     async def _index_written_files(node: LoopNode, files_written: list[str]) -> list[dict[str, Any]]:
         if not bool(getattr(cfg, "CONTROL_LOOP_CODE_INDEX_ENABLED", True)):
@@ -4680,6 +4430,72 @@ async def _run_control_loop_v1(
         if app.bot_data.get(stop_request_cache_key):
             return {"stopped": True, "summary": "Stop requested"}
 
+        milestone_spec = normalize_milestone_spec(
+            {
+                "node_key": node.node_key,
+                "title": milestone_text,
+                "owner": node.owner,
+                "worker_id": node.worker_id,
+                "deps": list(node.deps),
+                "priority": int(node.priority or 200),
+                "tools_required": list(payload.get("tools_required") or node.tools_required or []),
+                "acceptance": list(payload.get("acceptance") or []),
+                "deliverables": list(payload.get("deliverables") or []),
+                "required_for_completion": bool(payload.get("required_for_completion", True)),
+                "satisfaction_checks": list(payload.get("satisfaction_checks") or []),
+                "risk": dict(payload.get("risk") or {}),
+                "risk_level": str(payload.get("risk_level") or node.risk_level or "medium"),
+            },
+            index=milestone_index,
+        )
+        if node.node_type == "work" and milestone_spec is not None:
+            satisfaction = await evaluate_milestone_satisfaction(
+                milestone_spec,
+                working_dir=working_dir,
+                list_files=_list_worker_files,
+                read_file=lambda rel_path: _read_worker_file(rel_path),
+                validate_run_contract=_validate_worker_run_contract,
+                run_tests=_run_satisfaction_tests,
+            )
+            if satisfaction.satisfied:
+                pre_satisfied_run_contract = await _validate_worker_run_contract(working_dir)
+                if isinstance(pre_satisfied_run_contract, dict):
+                    last_valid_run_contract = pre_satisfied_run_contract
+                summary = satisfaction.summary or f"{node.node_key} already satisfied before execution."
+                await update_tracker(
+                    phase="milestone_execution",
+                    phase_detail=summary,
+                    milestone_index=milestone_index,
+                    milestones_total=total,
+                    stage=node.node_key,
+                    graph_id=str(graph_id),
+                    arch_version=architecture_version,
+                    node_key=node.node_key,
+                    node_type=node.node_type,
+                    worker_id=node.worker_id or active_worker_id,
+                )
+                await _trace_event(
+                    node=node,
+                    event_type="milestone.pre_satisfied",
+                    status="done",
+                    details=satisfaction.as_dict(),
+                )
+                work_context[node.node_key] = {
+                    "task_id": None,
+                    "milestone_text": milestone_text,
+                    "files_written": [],
+                    "summary": summary,
+                    "pre_satisfied": True,
+                    "satisfaction": satisfaction.as_dict(),
+                }
+                successful_milestones += 1
+                return {
+                    "ok": True,
+                    "summary": summary,
+                    "pre_satisfied": True,
+                    "details": satisfaction.as_dict(),
+                }
+
         task_title = (
             f"Milestone {milestone_index}: {milestone_text[:80].splitlines()[0]}"
             if node.node_type == "work"
@@ -4741,8 +4557,14 @@ async def _run_control_loop_v1(
         )
         if not generation_result.get("ok"):
             attempted = generation_result.get("attempted_stages") or []
-            error_message = f"GENERATION_FAILED: {','.join(attempted) or 'codex'}"
-            failure_type = classify_generation_error(error_message)
+            stage_failures = generation_result.get("stage_failures") or []
+            failure_excerpt = ""
+            if stage_failures:
+                failure_excerpt = str(stage_failures[-1].get("error_excerpt") or "").strip()
+            error_message = failure_excerpt or f"GENERATION_FAILED: {','.join(attempted) or 'codex'}"
+            failure_type = str(generation_result.get("failure_type") or "").strip().upper()
+            if not failure_type:
+                failure_type = classify_generation_error(error_message)
             await update_task_status(
                 db,
                 task_rec["id"],
@@ -4754,7 +4576,7 @@ async def _run_control_loop_v1(
                 event_type="generation.failed",
                 status="failed",
                 failure_type=failure_type,
-                details={"error": error_message, "attempted": attempted},
+                details={"error": error_message, "attempted": attempted, "stage_failures": stage_failures},
             )
             if node.node_type == "work":
                 failed_milestones += 1
@@ -4763,20 +4585,6 @@ async def _run_control_loop_v1(
         inner = generation_result.get("inner", {})
         written = _normalize_written_files(inner.get("files_written"))
         summary = str(inner.get("stdout") or inner.get("stderr") or "").strip()[:500]
-
-        # Detect provider quota exhaustion masquerading as success
-        _QUOTA_PATTERNS = ("quota exceeded", "quota has been reached", "rate limit", "daily quota")
-        if any(p in summary.lower() for p in _QUOTA_PATTERNS):
-            error_msg = f"PROVIDER_QUOTA_EXHAUSTED: {summary[:220]}"
-            await update_task_status(db, task_rec["id"], status="failed", error_message=error_msg)
-            await _trace_event(
-                node=node, event_type="generation.quota_exhausted",
-                status="failed", failure_type=FAIL_ENVIRONMENT,
-                details={"error": error_msg},
-            )
-            if node.node_type == "work":
-                failed_milestones += 1
-            return {"ok": False, "error": error_msg, "failure_type": FAIL_ENVIRONMENT}
 
         tools_ok, tools_error, tools_failure_type = await _run_required_tools(node, written)
         if not tools_ok:
@@ -6080,12 +5888,12 @@ async def _coding_loop(
                 failed_milestones += 1
                 continue
 
-            prompt = (
-                f"Project: {project['name']} ({project['project_type']})\n"
-                f"Working directory: {working_dir}\n\n"
-                f"Task:\n{milestone_text}\n\n"
-                "Implement this task completely. Write all necessary files, "
-                "then run tests if applicable."
+            prompt = render_prompt(
+                "gateway/coding/legacy_milestone_execution.md",
+                project_name=project["name"],
+                project_type=project["project_type"],
+                working_dir=working_dir,
+                milestone_text=milestone_text,
             )
 
             # Feed previously written code so the model builds incrementally.
@@ -6295,7 +6103,7 @@ async def _coding_loop(
                     try:
                         coding_resp = await router.chat(
                             messages=[{"role": "user", "content": prompt}],
-                            system=_CODING_SYSTEM_PROMPT,
+                            system=_coding_system_prompt(),
                             max_tokens=4096,
                             task_type="coding",
                         )
@@ -7416,61 +7224,7 @@ def _parse_json_string_list(raw: str) -> list[str] | None:
 
 
 def _parse_planner_task_graph_payload(raw: str) -> dict[str, Any] | None:
-    text = str(raw or "").strip()
-    if not text:
-        return None
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    try:
-        parsed = json.loads(text)
-    except Exception:
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    nodes_raw = parsed.get("nodes")
-    if not isinstance(nodes_raw, list):
-        return None
-    milestones: list[str] = []
-    normalized_nodes: list[dict[str, Any]] = []
-    for node in nodes_raw:
-        if not isinstance(node, dict):
-            continue
-        node_type = str(node.get("node_type") or node.get("type") or "").strip().lower()
-        title = str(node.get("title") or "").strip()
-        if not title:
-            continue
-        if node_type and node_type not in {"work", "milestone"}:
-            continue
-        deps = [str(dep).strip() for dep in (node.get("deps") or []) if str(dep).strip()]
-        try:
-            priority = int(node.get("priority") or 200)
-        except Exception:
-            priority = 200
-        normalized = {
-            "node_key": str(node.get("node_key") or "").strip(),
-            "title": title,
-            "node_type": "work",
-            "owner": str(node.get("owner") or "codex").strip() or "codex",
-            "worker_id": str(node.get("worker_id") or "").strip(),
-            "deps": deps,
-            "priority": priority,
-            "tools_required": list(node.get("tools_required") or []),
-            "acceptance": list(node.get("acceptance") or []),
-            "risk": dict(node.get("risk") or {}),
-            "risk_level": str(node.get("risk_level") or (node.get("risk") or {}).get("level") or "medium"),
-        }
-        milestones.append(title)
-        normalized_nodes.append(normalized)
-    if not milestones:
-        return None
-    return {
-        "milestones": milestones,
-        "nodes": normalized_nodes,
-        "success_contract": parsed.get("success_contract") if isinstance(parsed.get("success_contract"), dict) else {},
-        "execution_strategy": parsed.get("execution_strategy") if isinstance(parsed.get("execution_strategy"), dict) else {},
-        "parallel_lanes": parsed.get("parallel_lanes") if isinstance(parsed.get("parallel_lanes"), list) else [],
-        "risk_assessment": parsed.get("risk_assessment") if isinstance(parsed.get("risk_assessment"), list) else [],
-    }
+    return parse_planner_task_graph_payload(raw)
 
 
 async def _extract_milestones_codex_then_router(
@@ -7530,83 +7284,6 @@ async def _extract_milestones_router(router, project: dict) -> list[str]:
         parse_milestones_fallback=_parse_milestones_fallback,
     )
 
-    """
-    Ask the LLM to extract an ordered list of coding milestones from the plan.
-    Returns a list of milestone description strings.
-    """
-    plan = project.get("description", "")
-    if not plan:
-        return []
-
-    system = (
-        "You are a project planner. Extract the coding milestones from the project plan "
-        "as a JSON array of strings. Each element is ONE self-contained coding task "
-        "(e.g. 'Set up project structure', 'Implement login endpoint'). "
-        "Output ONLY a valid JSON array, no extra text."
-    )
-    messages = [
-        {
-            "role": "user",
-            "content": f"Project: {project['name']}\n\nPlan:\n{plan}\n\n"
-                       "Return the milestones as a JSON array of strings.",
-        }
-    ]
-
-    try:
-        response = await router.chat(
-            messages=messages,
-            system=system,
-            max_tokens=1024,
-            task_type="planning",
-        )
-        raw = (response.text or "").strip()
-        # Strip markdown code fences if present.
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-        milestones = json.loads(raw)
-        if isinstance(milestones, list) and all(isinstance(m, str) for m in milestones):
-            return [m.strip() for m in milestones if m.strip()]
-    except Exception:
-        logger.warning("JSON milestone extraction failed Ã¢â‚¬â€ falling back to line parsing")
-
-    # Fallback: split on numbered list items (1. ... 2. ...)
-    fallback = _parse_milestones_fallback(plan)
-    if fallback:
-        return fallback
-
-    # Last resort: ask the LLM to generate milestones from the project name and type
-    # (handles cases where the plan text is garbage or a meta-response).
-    logger.warning("No milestones found in plan text Ã¢â‚¬â€ generating from project info")
-    try:
-        gen_system = (
-            "You are a project planner. Generate 2-4 coding milestones for the given project. "
-            "Each milestone is ONE self-contained coding task. "
-            "Output ONLY a valid JSON array of strings, no extra text."
-        )
-        gen_messages = [{
-            "role": "user",
-            "content": (
-                f"Project name: {project['name']}\n"
-                f"Type: {project.get('project_type', 'Other')}\n"
-                f"Description: {plan[:500]}\n\n"
-                "Generate milestones as a JSON array of strings."
-            ),
-        }]
-        response = await router.chat(
-            messages=gen_messages, system=gen_system,
-            max_tokens=512, task_type="planning",
-        )
-        raw = (response.text or "").strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-        milestones = json.loads(raw)
-        if isinstance(milestones, list) and all(isinstance(m, str) for m in milestones):
-            return [m.strip() for m in milestones if m.strip()]
-    except Exception:
-        logger.warning("Last-resort milestone generation also failed")
-
-    return []
-
 
 async def _extract_milestones_with_heartbeat(
     *,
@@ -7629,47 +7306,6 @@ async def _extract_milestones_with_heartbeat(
         stop_request_cache_key=stop_request_cache_key,
         heartbeat_hook=heartbeat_hook,
     )
-
-    heartbeat = max(
-        1,
-        int(getattr(cfg, "MILESTONE_EXTRACTION_HEARTBEAT_SECONDS", 20) or 20),
-    )
-    max_wait = max(
-        heartbeat,
-        int(getattr(cfg, "MILESTONE_EXTRACTION_MAX_WAIT_SECONDS", 180) or 180),
-    )
-    pending = asyncio.create_task(
-        _extract_milestones(
-            router,
-            project,
-            working_dir=working_dir,
-        )
-    )
-    elapsed = 0
-    try:
-        while True:
-            try:
-                return await asyncio.wait_for(asyncio.shield(pending), timeout=heartbeat)
-            except asyncio.TimeoutError:
-                elapsed += heartbeat
-                if app.bot_data.get(stop_request_cache_key):
-                    raise RuntimeError("STOP_REQUESTED: session stop requested by user")
-                if elapsed >= max_wait:
-                    raise RuntimeError(
-                        f"MILESTONE_EXTRACTION_TIMEOUT: exceeded {max_wait}s"
-                    )
-                await app.bot.send_message(
-                    chat_id,
-                    f"\u23f3 Still breaking the plan into milestones ({elapsed}s elapsed)...",
-                )
-                if heartbeat_hook is not None:
-                    with contextlib.suppress(Exception):
-                        await heartbeat_hook(elapsed)
-    finally:
-        if not pending.done():
-            pending.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await pending
 
 
 def _parse_milestones_fallback(plan: str) -> list[str]:
